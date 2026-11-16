@@ -1,0 +1,155 @@
+---
+title: Hooks personalizados
+description: Extraer lógica con estado a funciones reutilizables. Reglas, convenciones, tipado de retornos y ejemplos útiles en React Native.
+difficulty: intermedio
+time: 18
+prerequisites:
+  - react-typescript/useeffect
+  - react-typescript/useref
+related:
+  - arquitectura/custom-hooks
+  - react-typescript/context-api
+  - sistema-de-componentes/logica-y-presentacion
+resources:
+  - title: React — Reutilizar lógica con hooks personalizados
+    url: https://react.dev/learn/reusing-logic-with-custom-hooks
+  - title: React — Reglas de los hooks
+    url: https://react.dev/reference/rules/rules-of-hooks
+keywords: [custom hooks, hooks personalizados, useDebounce, useToggle, reutilizar lógica, reglas de los hooks]
+---
+
+## Introducción conceptual
+
+Un **hook personalizado** es una función cuyo nombre empieza por `use` y que llama a otros hooks. Sirve para **extraer lógica con estado** de un componente y reutilizarla en otros. No comparte el estado entre componentes: cada componente que lo usa obtiene su propia copia.
+
+Piensa en ellos como "componentes sin interfaz": encapsulan el **cómo** (temporizadores, suscripciones, validaciones) para que el componente se quede con el **qué** (qué mostrar).
+
+<Overview
+  purpose="Reutilizar lógica con estado y efectos entre componentes, y separar esa lógica de la presentación."
+  importance="Componentes más cortos y legibles, lógica testeable por separado y menos duplicación."
+  when="Cuando dos componentes repiten la misma combinación de hooks, o cuando la lógica oscurece el JSX de un componente."
+  problem="Evita copiar y pegar efectos y estados, y los componentes 'gigantes' con lógica y UI mezcladas."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'Componente con lógica', desc: 'useState + useEffect + handlers' },
+    { title: 'Extraer', desc: 'function useAlgo()', tone: 'brand' },
+    { title: 'Componente limpio', desc: 'const x = useAlgo()' },
+    { title: 'Reutilizable', desc: 'En otros componentes' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+Tres hooks pequeños y muy útiles: `useDebouncedValue`, `useToggle` y `useAppIsActive`.
+
+<CodeTabs>
+
+```ts title="src/hooks/use-debounced-value.ts"
+import { useEffect, useState } from 'react';
+
+/** Devuelve `value` solo cuando deja de cambiar durante `delay` ms. */
+export function useDebouncedValue<T>(value: T, delay = 400): T {
+  const [debounced, setDebounced] = useState(value);
+
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(id);
+  }, [value, delay]);
+
+  return debounced;
+}
+```
+
+```ts title="src/hooks/use-toggle.ts"
+import { useCallback, useState } from 'react';
+
+/** Booleano con acciones semánticas. Devuelve una tupla tipada. */
+export function useToggle(initial = false) {
+  const [value, setValue] = useState(initial);
+  const on = useCallback(() => setValue(true), []);
+  const off = useCallback(() => setValue(false), []);
+  const toggle = useCallback(() => setValue((v) => !v), []);
+  return [value, { on, off, toggle }] as const;
+}
+```
+
+```ts title="src/hooks/use-app-is-active.ts"
+import { useEffect, useState } from 'react';
+import { AppState } from 'react-native';
+
+/** true cuando la app está en primer plano. */
+export function useAppIsActive() {
+  const [active, setActive] = useState(AppState.currentState === 'active');
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => setActive(state === 'active'));
+    return () => sub.remove();
+  }, []);
+
+  return active;
+}
+```
+
+```tsx title="src/app/buscar.tsx"
+import { useState } from 'react';
+import { Pressable, Text, TextInput, View } from 'react-native';
+import { useQuery } from '@tanstack/react-query';
+import { useDebouncedValue } from '@/hooks/use-debounced-value';
+import { useToggle } from '@/hooks/use-toggle';
+import { searchProducts } from '@/services/products';
+
+export default function SearchScreen() {
+  const [query, setQuery] = useState('');
+  const debouncedQuery = useDebouncedValue(query, 350);
+  const [showFilters, filters] = useToggle();
+
+  // Solo se lanza la búsqueda cuando el usuario deja de escribir
+  const { data = [] } = useQuery({
+    queryKey: ['search', debouncedQuery],
+    queryFn: () => searchProducts(debouncedQuery),
+    enabled: debouncedQuery.length >= 2,
+  });
+
+  return (
+    <View style={{ flex: 1, padding: 16, gap: 12 }}>
+      <TextInput value={query} onChangeText={setQuery} placeholder="Buscar productos" />
+      <Pressable onPress={filters.toggle}>
+        <Text>{showFilters ? 'Ocultar filtros' : 'Mostrar filtros'}</Text>
+      </Pressable>
+      {data.map((p) => (
+        <Text key={p.id}>{p.name}</Text>
+      ))}
+    </View>
+  );
+}
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`useDebouncedValue<T>`** es genérico: funciona con strings, números u objetos y conserva el tipo. Reinicia el temporizador en cada cambio gracias a la limpieza del efecto.
+- **`useToggle`** devuelve una tupla con `as const`, así TypeScript sabe que el primer elemento es `boolean` y el segundo el objeto de acciones (en lugar de un array de tipos mezclados).
+- **`useAppIsActive`** encapsula la suscripción a `AppState` con su limpieza. Cualquier pantalla puede saber si la app está activa en una línea.
+- **En la pantalla de búsqueda** no queda ningún `useEffect`: la lógica está en los hooks y la pantalla solo describe qué mostrar. Con `enabled`, TanStack Query no lanza la petición hasta que haya al menos dos caracteres.
+
+## Buenas prácticas
+
+- **Empieza el nombre con `use`**: el linter y React Compiler lo necesitan para aplicar las reglas de los hooks.
+- **Devuelve objetos** cuando hay más de dos valores (`{ data, error, retry }`) y **tuplas** cuando imitas a `useState`.
+- **Un hook, una responsabilidad**: mejor varios hooks pequeños que uno que lo hace todo.
+- **Guárdalos en `src/hooks`** si son genéricos, o junto a la funcionalidad (`src/features/cart/hooks`) si son específicos. Profundizamos en [Custom Hooks en la arquitectura](/docs/arquitectura/custom-hooks).
+
+### Errores comunes
+
+- Creer que un hook comparte estado entre componentes: cada llamada tiene su propio estado. Para compartir, usa Context o Zustand.
+- Llamar hooks dentro de condiciones o bucles.
+- Crear un hook para algo que no usa otros hooks: entonces es una función normal (por ejemplo, `formatPrice`).
+
+### Cuándo usar otra solución
+
+Si la lógica no usa estado ni efectos, escríbela como función utilitaria en `src/lib` o `src/utils`. Si necesitas compartir el **mismo** estado entre componentes, combina el hook con [Context](/docs/react-typescript/context-api) o un [store de Zustand](/docs/arquitectura/estado-global-zustand).

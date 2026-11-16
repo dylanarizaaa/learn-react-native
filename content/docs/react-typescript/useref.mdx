@@ -1,0 +1,170 @@
+---
+title: useRef
+description: Referencias a componentes nativos y valores mutables que no provocan renders. Enfocar inputs, desplazar listas, temporizadores y valores previos.
+difficulty: intermedio
+time: 12
+prerequisites:
+  - react-typescript/useeffect
+related:
+  - fundamentos/textinput
+  - react-typescript/hooks-personalizados
+  - fundamentos/scrollview-y-flatlist
+resources:
+  - title: React — useRef
+    url: https://react.dev/reference/react/useRef
+  - title: React — Manipular el DOM con refs
+    url: https://react.dev/learn/manipulating-the-dom-with-refs
+keywords: [useRef, ref, focus, scrollToIndex, mutable, debounce, forwardRef, ref como prop]
+---
+
+## Introducción conceptual
+
+`useRef` devuelve un objeto `{ current }` que **persiste entre renders** y que puedes modificar **sin provocar un nuevo render**. Tiene dos usos principales:
+
+1. **Acceder a un componente nativo**: enfocar un `TextInput`, desplazar una `FlatList` o medir una vista.
+2. **Guardar valores mutables** que no afectan a la interfaz: el id de un temporizador, el valor anterior de una prop o si una petición ya se lanzó.
+
+<Overview
+  purpose="Interactuar de forma imperativa con vistas nativas y recordar valores sin re-renderizar."
+  importance="Algunas acciones (enfocar, hacer scroll, medir) no se pueden expresar de forma declarativa con props."
+  when="Para focus, scroll, medición, temporizadores, debounce o cualquier valor auxiliar que no deba mostrarse."
+  problem="Evita guardar en estado valores que no afectan a la UI, lo que provocaría renders innecesarios."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="useState">
+    - Cambiarlo provoca un render.
+    - El valor se lee en el JSX.
+    - Para datos que se muestran.
+  </Column>
+  <Column title="useRef" tone="brand">
+    - Cambiar `ref.current` **no** provoca render.
+    - No se debe leer durante el render para decidir la UI.
+    - Para vistas nativas y valores auxiliares.
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+Un chat que hace scroll al último mensaje, mantiene el foco en el input y aplica *debounce* al indicador de "escribiendo":
+
+```tsx title="src/app/chat.tsx"
+import { useEffect, useRef, useState } from 'react';
+import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+
+type Message = { id: string; text: string };
+
+export default function ChatScreen() {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [draft, setDraft] = useState('');
+  const [typing, setTyping] = useState(false);
+
+  // Refs a componentes nativos
+  const listRef = useRef<FlatList<Message>>(null);
+  const inputRef = useRef<TextInput>(null);
+
+  // Ref como valor mutable: id del temporizador
+  const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function handleChange(text: string) {
+    setDraft(text);
+    setTyping(true);
+    if (typingTimer.current) clearTimeout(typingTimer.current);
+    typingTimer.current = setTimeout(() => setTyping(false), 1200);
+  }
+
+  function send() {
+    const text = draft.trim();
+    if (!text) return;
+    setMessages((m) => [...m, { id: String(Date.now()), text }]);
+    setDraft('');
+    inputRef.current?.focus(); // mantener el teclado abierto
+  }
+
+  // Desplazar al final cuando llega un mensaje nuevo
+  useEffect(() => {
+    if (messages.length > 0) listRef.current?.scrollToEnd({ animated: true });
+  }, [messages.length]);
+
+  // Limpiar el temporizador al desmontar
+  useEffect(() => () => {
+    if (typingTimer.current) clearTimeout(typingTimer.current);
+  }, []);
+
+  return (
+    <View style={styles.screen}>
+      <FlatList
+        ref={listRef}
+        data={messages}
+        keyExtractor={(m) => m.id}
+        contentContainerStyle={{ padding: 16, gap: 8 }}
+        renderItem={({ item }) => <Text style={styles.bubble}>{item.text}</Text>}
+      />
+      {typing && <Text style={styles.typing}>Escribiendo…</Text>}
+      <View style={styles.composer}>
+        <TextInput
+          ref={inputRef}
+          value={draft}
+          onChangeText={handleChange}
+          onSubmitEditing={send}
+          submitBehavior="submit"
+          placeholder="Mensaje"
+          style={styles.input}
+        />
+        <Pressable onPress={send} style={styles.send} accessibilityRole="button" accessibilityLabel="Enviar">
+          <Text style={{ color: '#fff' }}>➤</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  screen: { flex: 1 },
+  bubble: { alignSelf: 'flex-end', backgroundColor: '#0284c7', color: '#fff', padding: 10, borderRadius: 14, overflow: 'hidden' },
+  typing: { paddingHorizontal: 16, color: '#6b7280', fontStyle: 'italic' },
+  composer: { flexDirection: 'row', gap: 8, padding: 12, borderTopWidth: 1, borderColor: '#e5e7eb' },
+  input: { flex: 1, borderWidth: 1, borderColor: '#d1d5db', borderRadius: 20, paddingHorizontal: 14 },
+  send: { backgroundColor: '#111827', width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
+});
+```
+
+## Explicación del código
+
+- **`useRef<FlatList<Message>>(null)`** tipa la referencia con el componente concreto: TypeScript autocompleta métodos como `scrollToEnd` y `scrollToIndex`.
+- **`listRef.current?.`** usa encadenamiento opcional porque la referencia es `null` hasta que el componente se monta.
+- **`typingTimer`** guarda el id del temporizador. Si lo guardáramos con `useState`, cada pulsación provocaría un render extra solo para almacenar un número que nunca se muestra.
+- **`ReturnType<typeof setTimeout>`** obtiene el tipo correcto del id del temporizador sin depender de la plataforma.
+- **El efecto con dependencia `messages.length`** hace scroll al final solo cuando cambia el número de mensajes.
+
+### Pasar refs a tus propios componentes
+
+En React 19 `ref` es una prop normal: ya no necesitas `forwardRef`.
+
+```tsx
+import type { Ref } from 'react';
+import { TextInput, type TextInputProps } from 'react-native';
+
+type FieldProps = TextInputProps & { ref?: Ref<TextInput> };
+
+export function Field({ ref, ...props }: FieldProps) {
+  return <TextInput ref={ref} {...props} />;
+}
+```
+
+## Buenas prácticas
+
+- **No leas ni escribas `ref.current` durante el render** para decidir qué mostrar: hazlo en manejadores de eventos o efectos.
+- **Prefiere props declarativas** cuando existan (por ejemplo, `autoFocus` en lugar de llamar a `focus()` al montar).
+- **Limpia temporizadores guardados en refs** al desmontar.
+
+### Errores comunes
+
+- Esperar que la UI se actualice al cambiar `ref.current`: no provoca render.
+- Usar refs como sustituto del estado para "optimizar": la interfaz quedará desincronizada.
+
+### Cuándo usar otra solución
+
+Para animaciones, usa los *shared values* de [Reanimated](/docs/estilos/reanimated) en lugar de refs con `Animated` manual. Para valores derivados, calcula durante el render.

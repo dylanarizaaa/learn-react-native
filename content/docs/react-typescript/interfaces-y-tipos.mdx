@@ -1,0 +1,152 @@
+---
+title: Interfaces y tipos
+description: type vs interface, uniones, tipos utilitarios, satisfies, inferencia desde Zod y cómo modelar el dominio de tu app con TypeScript.
+difficulty: intermedio
+time: 18
+prerequisites:
+  - react-typescript/jsx-y-tsx
+related:
+  - react-typescript/tipado-de-componentes
+  - datos/apis-rest
+  - arquitectura/gestion-de-constantes
+resources:
+  - title: TypeScript — Tipos comunes
+    url: https://www.typescriptlang.org/docs/handbook/2/everyday-types.html
+  - title: TypeScript — Tipos utilitarios
+    url: https://www.typescriptlang.org/docs/handbook/utility-types.html
+  - title: Zod — Documentación
+    url: https://zod.dev
+keywords: [type, interface, unión, Partial, Pick, Omit, Record, satisfies, as const, zod, z.infer, modelado]
+---
+
+## Introducción conceptual
+
+TypeScript te permite describir la **forma de los datos** de tu app: un `Product`, un `Order`, la respuesta de una API. Hay dos formas de declarar tipos de objetos, `type` e `interface`, y en la práctica son casi intercambiables. Lo importante es **modelar bien el dominio**: tipos precisos que hagan imposibles los estados inválidos.
+
+<Overview
+  purpose="Describir con precisión los datos de la aplicación para que el compilador detecte usos incorrectos."
+  importance="Los tipos del dominio se usan en servicios, stores, pantallas y tests: un buen modelo se propaga a todo el proyecto."
+  when="Al definir entidades de negocio, respuestas de API, props, estados y configuraciones."
+  problem="Evita errores de forma (campos inexistentes, null inesperados, strings mal escritos) en toda la app."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="type">
+    - Uniones: `'a' | 'b'`.
+    - Tipos derivados: `Pick`, `Omit`, mapeados.
+    - Tuplas y funciones.
+    - **Recomendado por defecto** en este curso.
+  </Column>
+  <Column title="interface">
+    - Solo objetos.
+    - Se puede extender con `extends` y **fusionar** (declaration merging).
+    - Útil para ampliar tipos de librerías.
+  </Column>
+</Columns>
+
+| Utilitario | Resultado |
+| --- | --- |
+| `Partial<T>` | Todas las propiedades opcionales |
+| `Required<T>` | Todas obligatorias |
+| `Pick<T, 'a' \| 'b'>` | Solo esas propiedades |
+| `Omit<T, 'id'>` | Todas menos esas |
+| `Record<K, V>` | Objeto con claves `K` y valores `V` |
+| `ReturnType<typeof fn>` | Tipo de retorno de una función |
+| `Awaited<T>` | Tipo resuelto de una promesa |
+
+## Ejemplo práctico
+
+Modelo de dominio de una app de pedidos, con el esquema de Zod como **única fuente de verdad** para validar la API y generar los tipos:
+
+```ts title="src/types/order.ts"
+import { z } from 'zod';
+
+// 1. Constantes con as const → uniones literales
+export const ORDER_STATUSES = ['pending', 'paid', 'shipped', 'cancelled'] as const;
+export type OrderStatus = (typeof ORDER_STATUSES)[number]; // 'pending' | 'paid' | ...
+
+// 2. Esquemas de Zod: validan en tiempo de ejecución
+export const orderItemSchema = z.object({
+  productId: z.string(),
+  name: z.string().min(1),
+  quantity: z.number().int().positive(),
+  unitPrice: z.number().nonnegative(),
+});
+
+export const orderSchema = z.object({
+  id: z.string(),
+  status: z.enum(ORDER_STATUSES),
+  customerEmail: z.email(),
+  items: z.array(orderItemSchema).min(1),
+  createdAt: z.iso.datetime(),
+  notes: z.string().nullable(),
+});
+
+// 3. Tipos inferidos: nunca se desincronizan del esquema
+export type OrderItem = z.infer<typeof orderItemSchema>;
+export type Order = z.infer<typeof orderSchema>;
+
+// 4. Tipos derivados para casos de uso concretos
+export type NewOrder = Omit<Order, 'id' | 'status' | 'createdAt'>;
+export type OrderSummary = Pick<Order, 'id' | 'status' | 'createdAt'> & { total: number };
+
+// 5. Unión discriminada para el resultado de una operación
+export type Result<T> = { ok: true; data: T } | { ok: false; error: string };
+
+// 6. satisfies: valida la forma sin perder los tipos literales
+export const STATUS_LABELS = {
+  pending: 'Pendiente',
+  paid: 'Pagado',
+  shipped: 'Enviado',
+  cancelled: 'Cancelado',
+} satisfies Record<OrderStatus, string>;
+
+export function orderTotal(order: Pick<Order, 'items'>): number {
+  return order.items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+}
+```
+
+Uso en un servicio:
+
+```ts title="src/services/orders.ts"
+import { orderSchema, type Order, type Result } from '@/types/order';
+
+export async function getOrder(id: string): Promise<Result<Order>> {
+  const response = await fetch(`${process.env.EXPO_PUBLIC_API_URL}/orders/${id}`);
+  if (!response.ok) return { ok: false, error: `Error ${response.status}` };
+
+  const parsed = orderSchema.safeParse(await response.json());
+  if (!parsed.success) return { ok: false, error: 'La respuesta del servidor no es válida' };
+
+  return { ok: true, data: parsed.data };
+}
+```
+
+## Explicación del código
+
+- **`as const` + `(typeof X)[number]`** genera una unión de literales a partir de un array, así la lista de estados existe una sola vez y sirve tanto en tiempo de ejecución (validación, menús) como en tipos.
+- **Zod 4** valida datos externos. Fíjate en las APIs actuales: `z.email()` y `z.iso.datetime()` son funciones de nivel superior (en Zod 3 eran `z.string().email()` y `z.string().datetime()`).
+- **`z.infer`** extrae el tipo de TypeScript del esquema: si añades un campo al esquema, el tipo se actualiza solo.
+- **`Omit` y `Pick`** crean variantes del tipo para cada caso de uso (crear, resumir) sin duplicar campos.
+- **`Result<T>`** es una unión discriminada por `ok`: quien la usa está obligado a comprobar el caso de error antes de acceder a `data`.
+- **`satisfies`** comprueba que `STATUS_LABELS` tiene exactamente una etiqueta por estado; si añades un estado nuevo y olvidas su etiqueta, falla la compilación.
+- **`safeParse`** no lanza excepciones: devuelve `success` y `data` o `error`.
+
+## Buenas prácticas
+
+- **Valida en los bordes** (respuestas de API, almacenamiento, deep links) y confía en los tipos dentro de la app.
+- **Una única fuente de verdad**: esquema → tipo, constante → unión.
+- **Activa `strict: true`** (lo está por defecto en la plantilla de Expo).
+- **Organiza los tipos del dominio** en `src/types` o junto a cada funcionalidad.
+
+### Errores comunes
+
+- Usar `as Order` para "convencer" al compilador de que un JSON tiene la forma correcta: no valida nada en tiempo de ejecución.
+- Duplicar el mismo tipo en varios archivos con pequeñas diferencias.
+- Usar `enum` de TypeScript: las uniones de literales con `as const` son más simples y no generan código extra.
+
+### Cuándo usar otra solución
+
+Si tu backend publica un esquema OpenAPI o GraphQL, **genera los tipos automáticamente** con herramientas como `openapi-typescript` o GraphQL Code Generator en lugar de escribirlos a mano.

@@ -1,0 +1,159 @@
+---
+title: Props
+description: Cómo pasar datos y funciones a los componentes, tiparlos con TypeScript, valores por defecto, children y el principio de flujo de datos unidireccional.
+difficulty: principiante
+time: 15
+prerequisites:
+  - react-typescript/jsx-y-tsx
+related:
+  - react-typescript/state
+  - react-typescript/tipado-de-componentes
+  - arquitectura/componentes-de-presentacion
+resources:
+  - title: React — Pasar props a un componente
+    url: https://react.dev/learn/passing-props-to-a-component
+  - title: React — Compartir estado entre componentes
+    url: https://react.dev/learn/sharing-state-between-components
+keywords: [props, children, valores por defecto, callback, flujo unidireccional, desestructuración]
+---
+
+## Introducción conceptual
+
+Las <Term slug="props">props</Term> son los **parámetros de entrada** de un componente. Igual que una función recibe argumentos, un componente recibe props y devuelve interfaz. Gracias a ellas un mismo componente (`ProductCard`) puede mostrar cualquier producto.
+
+Dos principios fundamentales:
+
+1. **Las props son de solo lectura.** Un componente nunca modifica sus props.
+2. **Los datos bajan, los eventos suben.** El padre pasa datos a los hijos mediante props, y los hijos avisan al padre llamando a funciones que también recibieron como props (`onPress`, `onChange`).
+
+<Overview
+  purpose="Hacer componentes reutilizables y configurables desde fuera."
+  importance="Son el contrato de cada componente: unas props bien diseñadas y tipadas hacen el código predecible y fácil de reutilizar."
+  when="Siempre que un componente necesite datos o deba notificar algo a su padre."
+  problem="Evita duplicar componentes casi idénticos y acoplar componentes entre sí."
+/>
+
+## Explicación visual
+
+<Flow
+  direction="vertical"
+  steps={[
+    { title: 'Pantalla (padre)', desc: 'Tiene los datos y la lógica', tone: 'brand' },
+    { title: 'Props hacia abajo', desc: 'product, isFavorite' },
+    { title: 'ProductCard (hijo)', desc: 'Solo muestra y emite eventos' },
+    { title: 'Callback hacia arriba', desc: 'onToggleFavorite(product.id)', tone: 'muted' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+```tsx title="src/components/product-card.tsx"
+import type { ReactNode } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+
+export type Product = { id: string; name: string; price: number };
+
+type ProductCardProps = {
+  product: Product;
+  isFavorite: boolean;
+  onToggleFavorite: (id: string) => void;
+  /** Opcional: con valor por defecto */
+  currency?: string;
+  /** Contenido extra que decide el padre (por ejemplo, un badge) */
+  children?: ReactNode;
+};
+
+export function ProductCard({
+  product,
+  isFavorite,
+  onToggleFavorite,
+  currency = 'USD',
+  children,
+}: ProductCardProps) {
+  return (
+    <View style={styles.card}>
+      <View style={{ flex: 1, gap: 4 }}>
+        <Text style={styles.name}>{product.name}</Text>
+        <Text style={styles.price}>
+          {product.price.toLocaleString('es', { style: 'currency', currency })}
+        </Text>
+        {children}
+      </View>
+      <Pressable
+        onPress={() => onToggleFavorite(product.id)}
+        accessibilityRole="button"
+        accessibilityLabel={isFavorite ? 'Quitar de favoritos' : 'Añadir a favoritos'}
+        hitSlop={10}
+      >
+        <Text style={styles.heart}>{isFavorite ? '♥' : '♡'}</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  card: { flexDirection: 'row', alignItems: 'center', padding: 16, borderRadius: 14, backgroundColor: '#fff' },
+  name: { fontSize: 16, fontWeight: '600' },
+  price: { color: '#6b7280' },
+  heart: { fontSize: 24, color: '#e11d48' },
+});
+```
+
+El padre controla los datos y decide qué hacer cuando el hijo emite el evento:
+
+```tsx title="src/app/favoritos.tsx"
+import { useState } from 'react';
+import { FlatList, Text } from 'react-native';
+import { ProductCard, type Product } from '@/components/product-card';
+
+const PRODUCTS: Product[] = [
+  { id: '1', name: 'Auriculares', price: 59.9 },
+  { id: '2', name: 'Teclado', price: 89 },
+];
+
+export default function FavoritesScreen() {
+  const [favorites, setFavorites] = useState<string[]>([]);
+
+  function toggleFavorite(id: string) {
+    setFavorites((current) => (current.includes(id) ? current.filter((f) => f !== id) : [...current, id]));
+  }
+
+  return (
+    <FlatList
+      data={PRODUCTS}
+      keyExtractor={(p) => p.id}
+      contentContainerStyle={{ padding: 16, gap: 12 }}
+      renderItem={({ item }) => (
+        <ProductCard product={item} isFavorite={favorites.includes(item.id)} onToggleFavorite={toggleFavorite}>
+          {item.price < 60 && <Text style={{ color: '#059669' }}>Oferta</Text>}
+        </ProductCard>
+      )}
+    />
+  );
+}
+```
+
+## Explicación del código
+
+- **El tipo `ProductCardProps`** documenta el contrato del componente. TypeScript avisa si falta una prop obligatoria o si pasas un tipo incorrecto.
+- **`currency = 'USD'`** en la desestructuración es el valor por defecto de una prop opcional (`?`).
+- **`children`** es una prop especial: todo lo que escribas entre `<ProductCard>` y `</ProductCard>` llega aquí. Permite que el padre inyecte contenido sin que el hijo lo conozca.
+- **`onToggleFavorite`** es un *callback*: el hijo no sabe cómo se guardan los favoritos, solo avisa de que el usuario pulsó. El padre tiene el estado y la lógica.
+- **Comentarios JSDoc** (`/** … */`) sobre cada prop aparecen al pasar el cursor en el editor: documentación gratis.
+
+## Buenas prácticas
+
+- **Nombra los callbacks con `on…`** (`onPress`, `onSelect`) y las funciones que los implementan con `handle…`.
+- **Pasa el mínimo necesario**: mejor `product` que el store completo.
+- **Exporta el tipo de las props** si otros componentes lo necesitan.
+- **Evita props booleanas que se excluyen entre sí** (`primary`, `secondary`, `danger`): usa una prop `variant` con una unión de strings.
+
+### Errores comunes
+
+- Modificar una prop (`product.price = 0`): rompe el flujo de datos y provoca errores difíciles de rastrear.
+- *Prop drilling* excesivo: pasar la misma prop por cinco niveles. Es la señal para usar [Context](/docs/react-typescript/context-api) o un store.
+- Crear objetos o funciones nuevas en cada render y pasarlas a componentes memoizados sin necesidad (lo vemos en [useMemo y useCallback](/docs/react-typescript/usememo-y-usecallback)).
+
+### Cuándo usar otra solución
+
+Si muchos componentes lejanos necesitan el mismo dato (usuario, tema), usa [Context API](/docs/react-typescript/context-api) o [Zustand](/docs/arquitectura/estado-global-zustand). Si el dato viene del servidor, que cada componente lo lea con [TanStack Query](/docs/datos/tanstack-query).

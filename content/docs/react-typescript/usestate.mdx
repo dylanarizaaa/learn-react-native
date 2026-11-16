@@ -1,0 +1,154 @@
+---
+title: useState
+description: El hook de estado local. Tipado, inicialización perezosa, actualizaciones funcionales, objetos y arrays, y patrones habituales en React Native.
+difficulty: principiante
+time: 15
+prerequisites:
+  - react-typescript/state
+related:
+  - react-typescript/useeffect
+  - react-typescript/hooks-personalizados
+  - fundamentos/textinput
+resources:
+  - title: React — useState
+    url: https://react.dev/reference/react/useState
+  - title: React — Actualizar objetos en el estado
+    url: https://react.dev/learn/updating-objects-in-state
+  - title: React — Actualizar arrays en el estado
+    url: https://react.dev/learn/updating-arrays-in-state
+keywords: [useState, hook, setState, actualización funcional, inicialización perezosa, estado local]
+---
+
+## Introducción conceptual
+
+`useState` es el <Term slug="hook">hook</Term> que añade estado local a un componente funcional. Devuelve un par: el **valor actual** y una **función para actualizarlo**.
+
+```tsx
+const [valor, setValor] = useState(valorInicial);
+```
+
+Cada llamada a `setValor` programa un nuevo render del componente con el nuevo valor. React agrupa varias actualizaciones del mismo evento en un solo render (*batching*).
+
+<Overview
+  purpose="Guardar datos que cambian dentro de un componente: entradas de formulario, interruptores, pestañas activas, contadores."
+  importance="Es el hook más usado de React; usarlo bien (actualizaciones funcionales, inmutabilidad) evita errores sutiles."
+  when="Para estado local de un componente. Si el dato se comparte en muchas pantallas o viene del servidor, hay herramientas mejores."
+  problem="Permite que un componente funcional recuerde valores entre renders y reaccione a sus cambios."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="Actualización directa">
+    `setCount(count + 1)` usa el valor del render actual. Si lo llamas tres veces seguidas en el mismo evento, el resultado suma **1**, no 3.
+  </Column>
+  <Column title="Actualización funcional" tone="good">
+    `setCount((c) => c + 1)` recibe el valor más reciente. Tres llamadas seguidas suman **3**. Úsala cuando el nuevo valor depende del anterior.
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+Un formulario de perfil que reúne los patrones esenciales:
+
+```tsx title="src/app/perfil.tsx"
+import { useState } from 'react';
+import { Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+
+type Profile = {
+  name: string;
+  bio: string;
+  publicProfile: boolean;
+};
+
+function loadDraft(): Profile {
+  // Imagina una lectura costosa (por ejemplo, parsear un JSON grande)
+  return { name: '', bio: '', publicProfile: true };
+}
+
+export default function ProfileScreen() {
+  // 1. Inicialización perezosa: loadDraft solo se ejecuta en el primer render
+  const [profile, setProfile] = useState<Profile>(() => loadDraft());
+
+  // 2. Tipo explícito cuando el valor inicial es null
+  const [savedAt, setSavedAt] = useState<Date | null>(null);
+
+  // 3. Contador con actualización funcional
+  const [edits, setEdits] = useState(0);
+
+  // 4. Actualizar un campo de un objeto sin perder el resto
+  function update<K extends keyof Profile>(key: K, value: Profile[K]) {
+    setProfile((current) => ({ ...current, [key]: value }));
+    setEdits((n) => n + 1);
+  }
+
+  function save() {
+    setSavedAt(new Date());
+    setEdits(0);
+  }
+
+  return (
+    <View style={styles.container}>
+      <TextInput
+        value={profile.name}
+        onChangeText={(text) => update('name', text)}
+        placeholder="Nombre"
+        style={styles.input}
+      />
+      <TextInput
+        value={profile.bio}
+        onChangeText={(text) => update('bio', text)}
+        placeholder="Biografía"
+        multiline
+        style={[styles.input, { minHeight: 96, textAlignVertical: 'top' }]}
+      />
+      <View style={styles.row}>
+        <Text>Perfil público</Text>
+        <Switch value={profile.publicProfile} onValueChange={(v) => update('publicProfile', v)} />
+      </View>
+
+      <Pressable onPress={save} disabled={edits === 0} style={[styles.button, edits === 0 && { opacity: 0.5 }]}>
+        <Text style={styles.buttonText}>{edits > 0 ? `Guardar (${edits} cambios)` : 'Sin cambios'}</Text>
+      </Pressable>
+
+      {savedAt && <Text style={styles.hint}>Guardado a las {savedAt.toLocaleTimeString('es')}</Text>}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, padding: 20, gap: 12 },
+  input: { borderWidth: 1, borderColor: '#d1d5db', borderRadius: 12, padding: 12, fontSize: 16 },
+  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  button: { backgroundColor: '#111827', padding: 14, borderRadius: 12, alignItems: 'center' },
+  buttonText: { color: '#fff', fontWeight: '600' },
+  hint: { color: '#6b7280', textAlign: 'center' },
+});
+```
+
+## Explicación del código
+
+- **Inicialización perezosa** (`useState(() => loadDraft())`): si pasas una función, React solo la ejecuta en el primer render. Si escribieras `useState(loadDraft())`, se ejecutaría en cada render aunque el resultado se descarte.
+- **`useState<Date | null>(null)`**: cuando el valor inicial no refleja todos los tipos posibles, indica el tipo de forma explícita. En el resto de casos TypeScript lo infiere.
+- **La función genérica `update`** usa `keyof Profile` para que `update('name', 42)` sea un error de compilación: el valor debe coincidir con el tipo del campo.
+- **`{ ...current, [key]: value }`** copia el objeto y sobrescribe un campo: nunca mutamos el estado anterior.
+- **`setEdits((n) => n + 1)`** usa la forma funcional porque depende del valor previo.
+
+## Buenas prácticas
+
+- **Nombra el par como `[algo, setAlgo]`**: es la convención que todo el mundo reconoce.
+- **No guardes en estado lo que puedes calcular** (estado derivado).
+- **Si varios `useState` cambian siempre juntos o hay muchas reglas de transición**, considera `useReducer`.
+- **Llama a los hooks siempre en el nivel superior** del componente, nunca dentro de condiciones o bucles.
+
+### Errores comunes
+
+- Mutar el estado: `profile.name = 'Ana'; setProfile(profile)` no provoca render porque la referencia es la misma.
+- Leer el estado justo después de actualizarlo esperando el nuevo valor.
+- Usar `useState` para datos de una API: tendrás que gestionar a mano carga, errores, caché y refresco. Usa [TanStack Query](/docs/datos/tanstack-query).
+
+### Cuándo usar otra solución
+
+- `useReducer` para lógica de estado compleja con muchas acciones.
+- [React Hook Form](/docs/sistema-de-componentes/formularios) para formularios con validación.
+- [Zustand](/docs/arquitectura/estado-global-zustand) para estado compartido entre pantallas.

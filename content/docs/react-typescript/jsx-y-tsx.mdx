@@ -1,0 +1,144 @@
+---
+title: JSX y TSX
+description: La sintaxis para describir interfaces en React. Expresiones, condicionales, listas, fragmentos y qué cambia al usar TypeScript (TSX).
+difficulty: principiante
+time: 12
+prerequisites:
+  - introduccion/que-es-react-native
+related:
+  - react-typescript/props
+  - react-typescript/tipado-de-componentes
+  - fundamentos/componentes-principales
+resources:
+  - title: React — Escribir marcado con JSX
+    url: https://react.dev/learn/writing-markup-with-jsx
+  - title: React — Renderizado condicional
+    url: https://react.dev/learn/conditional-rendering
+  - title: TypeScript — JSX
+    url: https://www.typescriptlang.org/docs/handbook/jsx.html
+keywords: [jsx, tsx, expresiones, condicional, map, key, fragmento, sintaxis]
+---
+
+## Introducción conceptual
+
+<Term slug="jsx">JSX</Term> es una extensión de sintaxis que permite escribir la interfaz con etiquetas dentro de JavaScript. No es HTML: cada etiqueta se transforma en una llamada a una función que crea un elemento de React. **TSX** es exactamente lo mismo dentro de archivos TypeScript (`.tsx`), con la ventaja de que el compilador comprueba las props de cada componente.
+
+<Overview
+  purpose="Describir la interfaz de forma declarativa: qué debe mostrarse según los datos, no cómo modificar la pantalla paso a paso."
+  importance="Es el lenguaje con el que escribirás cada componente; dominar sus reglas evita los errores más comunes de los principiantes."
+  when="En todos los archivos de componentes (.tsx). Los archivos sin interfaz (servicios, utilidades) usan .ts."
+  problem="Une estructura, lógica y datos en un mismo lugar legible, con validación de tipos en tiempo de compilación."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'TSX', desc: '<Text style={s}>Hola</Text>', tone: 'brand' },
+    { title: 'Babel', desc: 'Transforma JSX' },
+    { title: 'JavaScript', desc: 'jsx(Text, { style: s, children: "Hola" })' },
+    { title: 'Elemento', desc: 'Objeto que React renderiza' },
+  ]}
+/>
+
+Las reglas esenciales:
+
+| Regla | Ejemplo |
+| --- | --- |
+| Un único elemento raíz (o un fragmento) | `<>…</>` |
+| Las expresiones van entre llaves | `<Text>{user.name}</Text>` |
+| Los atributos son camelCase | `onPress`, `numberOfLines` |
+| Las etiquetas se cierran siempre | `<Image />` |
+| Los componentes empiezan por mayúscula | `<ProductCard />` |
+| Comentarios dentro de JSX | `{/* comentario */}` |
+
+## Ejemplo práctico
+
+Una pantalla de pedido que usa expresiones, condicionales, listas y fragmentos:
+
+```tsx title="src/components/order-summary.tsx"
+import { Fragment } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
+
+type OrderItem = { id: string; name: string; quantity: number; price: number };
+
+type OrderSummaryProps = {
+  items: OrderItem[];
+  coupon?: string;
+  status: 'draft' | 'paid' | 'shipped';
+};
+
+const currency = new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' });
+
+export function OrderSummary({ items, coupon, status }: OrderSummaryProps) {
+  const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+
+  // Condicional temprano: devolvemos otra UI si no hay productos
+  if (items.length === 0) {
+    return <Text style={styles.empty}>Tu carrito está vacío.</Text>;
+  }
+
+  return (
+    <View style={styles.container}>
+      {items.map((item, index) => (
+        <Fragment key={item.id}>
+          {index > 0 && <View style={styles.divider} />}
+          <View style={styles.row}>
+            <Text style={styles.name}>
+              {item.quantity} × {item.name}
+            </Text>
+            <Text>{currency.format(item.price * item.quantity)}</Text>
+          </View>
+        </Fragment>
+      ))}
+
+      {/* Solo si hay cupón (ternario con null) */}
+      {coupon ? <Text style={styles.coupon}>Cupón aplicado: {coupon}</Text> : null}
+
+      <View style={styles.row}>
+        <Text style={styles.total}>Total</Text>
+        <Text style={styles.total}>{currency.format(total)}</Text>
+      </View>
+
+      {/* Ternario: elige entre dos textos */}
+      <Text style={styles.status}>{status === 'shipped' ? 'En camino 🚚' : status === 'paid' ? 'Pagado' : 'Borrador'}</Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { padding: 16, gap: 10, backgroundColor: '#fff', borderRadius: 16 },
+  row: { flexDirection: 'row', justifyContent: 'space-between' },
+  name: { flexShrink: 1, marginRight: 8 },
+  divider: { height: 1, backgroundColor: '#f3f4f6' },
+  coupon: { color: '#059669' },
+  total: { fontWeight: '700', fontSize: 16 },
+  status: { color: '#6b7280', textAlign: 'right' },
+  empty: { textAlign: 'center', color: '#6b7280', padding: 24 },
+});
+```
+
+## Explicación del código
+
+- **Las llaves** insertan cualquier expresión de JavaScript: variables, llamadas a funciones (`currency.format(...)`) u operaciones.
+- **`items.map`** transforma cada dato en un elemento. Cada elemento de una lista necesita una **`key`** única y estable; aquí va en el `Fragment` porque es el elemento más externo de cada iteración.
+- **`Fragment`** agrupa varios elementos sin crear una vista extra. La sintaxis corta `<>…</>` no admite `key`, por eso usamos `Fragment` explícito.
+- **El retorno temprano** (`if (items.length === 0) return …`) mantiene el JSX principal limpio.
+- **`coupon ? … : null`** evita el riesgo de `&&` con valores como `0` o `''`, que React Native intentaría renderizar como texto fuera de un `Text`.
+- **TSX** comprueba que `status` solo pueda ser uno de los tres valores y que `items` tenga la forma correcta.
+
+## Buenas prácticas
+
+- **Extrae lógica compleja fuera del JSX** a variables o funciones con nombre.
+- **Prefiere ternarios con `null`** a `&&` cuando la condición no sea un booleano.
+- **Divide componentes grandes**: si un JSX supera la pantalla, probablemente contiene varios componentes.
+
+### Errores comunes
+
+- Usar `class` o `onclick`: en React se escriben `className` (NativeWind) y `onPress`.
+- Devolver dos elementos hermanos sin contenedor ni fragmento.
+- Usar el índice como `key` en listas que cambian de orden.
+
+### Cuándo usar otra solución
+
+JSX es la forma estándar de escribir componentes en React; no hay una alternativa práctica. Lo que sí puedes elegir es dónde poner la lógica: componentes pequeños, [hooks personalizados](/docs/react-typescript/hooks-personalizados) o funciones utilitarias.

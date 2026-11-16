@@ -1,0 +1,151 @@
+---
+title: State
+description: Qué es el estado, por qué provoca renders, dónde debe vivir, estado derivado e inmutabilidad. El modelo mental antes de los hooks.
+difficulty: principiante
+time: 15
+prerequisites:
+  - react-typescript/props
+related:
+  - react-typescript/usestate
+  - arquitectura/estado-global-zustand
+  - introduccion/mapa-del-ecosistema
+resources:
+  - title: React — El estado como memoria de un componente
+    url: https://react.dev/learn/state-a-components-memory
+  - title: React — Elegir la estructura del estado
+    url: https://react.dev/learn/choosing-the-state-structure
+  - title: React — Render y commit
+    url: https://react.dev/learn/render-and-commit
+keywords: [estado, state, render, inmutabilidad, estado derivado, lifting state up, fuente de verdad]
+---
+
+## Introducción conceptual
+
+El <Term slug="state">estado</Term> es la **memoria de un componente**: datos que cambian con el tiempo por acciones del usuario o por respuestas del sistema (un contador, el texto de un buscador, si un modal está abierto). Cuando el estado cambia, React **vuelve a ejecutar el componente** (un <Term slug="render">render</Term>) y actualiza la interfaz.
+
+La interfaz es una función del estado: `UI = f(estado)`. No modificas la pantalla a mano; cambias el estado y React se encarga del resto.
+
+<Overview
+  purpose="Guardar datos que cambian y que deben reflejarse en la interfaz."
+  importance="Un estado bien ubicado y mínimo hace los componentes simples; un estado duplicado o mal ubicado genera errores de sincronización."
+  when="Para datos que cambian durante la vida del componente y afectan a lo que se muestra."
+  problem="Mantiene la interfaz sincronizada automáticamente con los datos, sin manipulaciones manuales de la vista."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'Evento', desc: 'onPress, onChangeText…' },
+    { title: 'setState', desc: 'Programa un nuevo valor', tone: 'brand' },
+    { title: 'Render', desc: 'React ejecuta el componente' },
+    { title: 'Commit', desc: 'Actualiza solo lo que cambió' },
+  ]}
+/>
+
+<Columns>
+  <Column title="Props" tone="neutral">
+    - Vienen del padre.
+    - Solo lectura.
+    - El componente no las controla.
+  </Column>
+  <Column title="State" tone="brand">
+    - Pertenece al componente.
+    - Se cambia con su función `set`.
+    - Cambiarlo provoca un render.
+  </Column>
+</Columns>
+
+### ¿Dónde debe vivir el estado?
+
+En el **ancestro común más cercano** de los componentes que lo necesitan. Si dos hermanos necesitan el mismo dato, súbelo al padre (*lifting state up*) y pásalo con props.
+
+## Ejemplo práctico
+
+Un filtro de tareas que muestra los tres conceptos clave: estado mínimo, estado derivado e inmutabilidad.
+
+```tsx title="src/app/tareas.tsx"
+import { useState } from 'react';
+import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+
+type Task = { id: string; title: string; done: boolean };
+type Filter = 'all' | 'pending' | 'done';
+
+export default function TasksScreen() {
+  // Estado mínimo: la lista y el filtro elegido
+  const [tasks, setTasks] = useState<Task[]>([
+    { id: '1', title: 'Diseñar la pantalla', done: true },
+    { id: '2', title: 'Conectar la API', done: false },
+    { id: '3', title: 'Escribir tests', done: false },
+  ]);
+  const [filter, setFilter] = useState<Filter>('all');
+
+  // Estado derivado: se calcula, NO se guarda en otro useState
+  const visible = tasks.filter((t) => (filter === 'all' ? true : filter === 'done' ? t.done : !t.done));
+  const pendingCount = tasks.filter((t) => !t.done).length;
+
+  function toggle(id: string) {
+    // Inmutabilidad: creamos un array y un objeto nuevos
+    setTasks((current) => current.map((t) => (t.id === id ? { ...t, done: !t.done } : t)));
+  }
+
+  return (
+    <View style={styles.screen}>
+      <Text style={styles.counter}>{pendingCount} pendientes</Text>
+      <View style={styles.filters}>
+        {(['all', 'pending', 'done'] as const).map((f) => (
+          <Pressable key={f} onPress={() => setFilter(f)} style={[styles.chip, filter === f && styles.chipActive]}>
+            <Text style={filter === f && styles.chipTextActive}>
+              {f === 'all' ? 'Todas' : f === 'pending' ? 'Pendientes' : 'Hechas'}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+      <FlatList
+        data={visible}
+        keyExtractor={(t) => t.id}
+        renderItem={({ item }) => (
+          <Pressable onPress={() => toggle(item.id)} style={styles.task}>
+            <Text style={item.done && styles.done}>{item.title}</Text>
+          </Pressable>
+        )}
+      />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  screen: { flex: 1, padding: 16, gap: 12 },
+  counter: { fontSize: 20, fontWeight: '700' },
+  filters: { flexDirection: 'row', gap: 8 },
+  chip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, borderWidth: 1, borderColor: '#d1d5db' },
+  chipActive: { backgroundColor: '#111827', borderColor: '#111827' },
+  chipTextActive: { color: '#fff' },
+  task: { paddingVertical: 14, borderBottomWidth: 1, borderColor: '#f3f4f6' },
+  done: { textDecorationLine: 'line-through', color: '#9ca3af' },
+});
+```
+
+## Explicación del código
+
+- **Estado mínimo**: guardamos solo `tasks` y `filter`. La lista visible y el contador **se derivan** en cada render. Si los guardáramos en otro `useState`, tendríamos que mantenerlos sincronizados a mano y aparecerían errores.
+- **Inmutabilidad**: `map` devuelve un array nuevo y `{ ...t, done: !t.done }` un objeto nuevo. React compara referencias para saber que algo cambió; si mutas el array original (`tasks[0].done = true`), la interfaz no se actualiza.
+- **Actualización funcional** (`setTasks((current) => …)`) usa siempre el valor más reciente, importante si hay varias actualizaciones seguidas.
+- **`as const`** hace que TypeScript trate el array como `readonly ['all', 'pending', 'done']`, así `f` tiene el tipo `Filter`.
+
+## Buenas prácticas
+
+- **Pregúntate si un dato es estado**: si se puede calcular a partir de props u otro estado, no lo es.
+- **Agrupa estado relacionado** en un objeto si siempre cambia junto; sepáralo si cambia por separado.
+- **Mantén el estado lo más local posible** y súbelo solo cuando otro componente lo necesite.
+- **Distingue estado del servidor** (datos de la API, mejor con [TanStack Query](/docs/datos/tanstack-query)) de **estado del cliente** (UI, preferencias).
+
+### Errores comunes
+
+- Mutar arrays u objetos del estado (`push`, asignaciones directas).
+- Copiar props en estado (`useState(props.value)`): el estado no se actualizará cuando cambie la prop.
+- Esperar que el estado cambie inmediatamente después de llamar a `setState`: el nuevo valor estará disponible en el siguiente render.
+
+### Cuándo usar otra solución
+
+Cuando la lógica de actualización es compleja (muchas acciones que modifican el mismo estado), usa `useReducer`. Cuando el estado debe compartirse en toda la app, usa [Context](/docs/react-typescript/context-api) o [Zustand](/docs/arquitectura/estado-global-zustand).

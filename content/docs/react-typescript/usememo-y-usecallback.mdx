@@ -1,0 +1,134 @@
+---
+title: useMemo y useCallback
+description: Memoizar cálculos y funciones. Cuándo aportan rendimiento, cuándo sobran y cómo cambia el panorama con React Compiler.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - react-typescript/useeffect
+related:
+  - calidad/memoizacion
+  - calidad/optimizacion-de-flatlist
+  - calidad/rendimiento
+resources:
+  - title: React — useMemo
+    url: https://react.dev/reference/react/useMemo
+  - title: React — useCallback
+    url: https://react.dev/reference/react/useCallback
+  - title: Expo — React Compiler
+    url: https://docs.expo.dev/guides/react-compiler/
+keywords: [useMemo, useCallback, memo, memoización, React Compiler, referencias estables, rendimiento]
+---
+
+## Introducción conceptual
+
+En cada render, el cuerpo del componente se ejecuta de nuevo: los cálculos se repiten y las funciones y objetos se **crean con una referencia nueva**. Casi siempre esto es barato. Pero hay dos situaciones en las que conviene <Term slug="memoizacion">memoizar</Term>:
+
+- **`useMemo`** guarda el **resultado de un cálculo** costoso mientras sus dependencias no cambien.
+- **`useCallback`** guarda **la misma referencia de una función** entre renders, útil cuando la pasas a un componente memoizado (`memo`) o a una lista.
+
+<Callout type="tip" title="React Compiler">
+Expo SDK 54 y posteriores configuran automáticamente Babel para el **React Compiler**, que memoiza componentes y valores en tiempo de build. Con el compilador activado (`experiments.reactCompiler: true` en `app.json`), la mayoría de `useMemo` y `useCallback` manuales sobran. Aun así, conviene entenderlos: los verás en mucho código y siguen siendo útiles en casos puntuales.
+</Callout>
+
+<Overview
+  purpose="Evitar recalcular trabajo costoso y mantener referencias estables entre renders."
+  importance="En listas largas o pantallas con muchos componentes, evitar renders innecesarios mejora la fluidez."
+  when="Cálculos pesados con datos grandes, funciones pasadas a componentes memoizados o a renderItem, dependencias de efectos."
+  problem="Evita trabajo repetido y renders en cadena provocados por referencias que cambian en cada render."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="Sin memoizar">
+    - Render → `filter` sobre 5.000 elementos.
+    - Render → nueva función `onPress`.
+    - Las filas memoizadas reciben una prop "nueva" y se vuelven a renderizar.
+  </Column>
+  <Column title="Con useMemo / useCallback" tone="good">
+    - El filtro solo se recalcula si cambian `items` o `query`.
+    - `onPress` mantiene la misma referencia.
+    - `memo` puede saltarse las filas que no cambiaron.
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+Un buscador sobre un catálogo grande con filas memoizadas:
+
+```tsx title="src/app/catalogo-grande.tsx"
+import { memo, useCallback, useMemo, useState } from 'react';
+import { FlatList, Pressable, Text, TextInput, View } from 'react-native';
+
+type Item = { id: string; name: string; price: number };
+
+const CATALOG: Item[] = Array.from({ length: 5000 }, (_, i) => ({
+  id: String(i),
+  name: `Producto ${i}`,
+  price: Math.round(Math.random() * 10000) / 100,
+}));
+
+// memo: la fila solo se vuelve a renderizar si cambian sus props
+const Row = memo(function Row({ item, onSelect }: { item: Item; onSelect: (id: string) => void }) {
+  return (
+    <Pressable onPress={() => onSelect(item.id)} style={{ padding: 14 }}>
+      <Text>
+        {item.name} · ${item.price.toFixed(2)}
+      </Text>
+    </Pressable>
+  );
+});
+
+export default function BigCatalog() {
+  const [query, setQuery] = useState('');
+  const [selected, setSelected] = useState<string | null>(null);
+
+  // useMemo: filtrar y ordenar 5.000 elementos solo cuando cambia la búsqueda
+  const results = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return CATALOG.filter((item) => item.name.toLowerCase().includes(q)).sort((a, b) => a.price - b.price);
+  }, [query]);
+
+  // useCallback: misma referencia en cada render → Row (memo) no se re-renderiza
+  const handleSelect = useCallback((id: string) => setSelected(id), []);
+
+  const renderItem = useCallback(
+    ({ item }: { item: Item }) => <Row item={item} onSelect={handleSelect} />,
+    [handleSelect],
+  );
+
+  return (
+    <View style={{ flex: 1 }}>
+      <TextInput value={query} onChangeText={setQuery} placeholder="Buscar…" style={{ padding: 14, borderBottomWidth: 1 }} />
+      <Text style={{ padding: 12 }}>
+        {results.length} resultados {selected ? `· seleccionado ${selected}` : ''}
+      </Text>
+      <FlatList data={results} keyExtractor={(i) => i.id} renderItem={renderItem} />
+    </View>
+  );
+}
+```
+
+## Explicación del código
+
+- **`useMemo(() => …, [query])`** ejecuta el filtro y la ordenación solo cuando cambia `query`. Si la pantalla se vuelve a renderizar por otro motivo (por ejemplo, `selected`), reutiliza el resultado.
+- **`memo(Row)`** compara las props anteriores y nuevas de cada fila. Si son iguales (por referencia), se salta el render.
+- **`useCallback`** es imprescindible aquí: sin él, `handleSelect` sería una función nueva en cada render y **todas** las filas memoizadas se volverían a renderizar al seleccionar una.
+- **`setSelected`** es estable por diseño (las funciones `set` de `useState` nunca cambian), por eso la lista de dependencias de `handleSelect` está vacía.
+
+## Buenas prácticas
+
+- **Activa React Compiler** en proyectos nuevos y deja que memoice por ti. Revisa la guía en [Memoización](/docs/calidad/memoizacion).
+- **Mide antes de memoizar**: memoizar tiene un coste (memoria y comparación de dependencias).
+- **Memoiza en conjunto**: `useCallback` sin `memo` en el hijo no aporta nada.
+- **Mantén las dependencias honestas**: una dependencia olvidada produce valores obsoletos.
+
+### Errores comunes
+
+- Envolver todo en `useMemo`/`useCallback` "por si acaso": código más difícil de leer sin beneficio medible.
+- Memoizar un cálculo trivial (`a + b`).
+- Pasar objetos literales (`style={{ … }}`) a componentes memoizados y esperar que `memo` funcione.
+
+### Cuándo usar otra solución
+
+Si una lista sigue lenta tras memoizar, el problema puede estar en la propia lista: revisa [Optimización de FlatList](/docs/calidad/optimizacion-de-flatlist) o usa FlashList. Si un cálculo es muy costoso, considera hacerlo en el servidor o con datos paginados.

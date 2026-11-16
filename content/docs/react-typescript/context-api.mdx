@@ -1,0 +1,160 @@
+---
+title: Context API
+description: Compartir valores con todo un subárbol sin prop drilling. Crear un contexto tipado, el proveedor, un hook de acceso y cuándo usar Zustand.
+difficulty: intermedio
+time: 18
+prerequisites:
+  - react-typescript/props
+  - react-typescript/hooks-personalizados
+related:
+  - arquitectura/estado-global-zustand
+  - datos/autenticacion
+  - estilos/temas-personalizados
+resources:
+  - title: React — Pasar datos en profundidad con contexto
+    url: https://react.dev/learn/passing-data-deeply-with-context
+  - title: React — createContext
+    url: https://react.dev/reference/react/createContext
+  - title: React — use
+    url: https://react.dev/reference/react/use
+keywords: [context, createContext, Provider, useContext, use, prop drilling, estado global, sesión]
+---
+
+## Introducción conceptual
+
+Cuando un dato lo necesitan muchos componentes en distintos niveles (el usuario autenticado, el tema, el idioma), pasarlo como prop por cada nivel intermedio es tedioso y frágil: es el llamado *prop drilling*. El <Term slug="context">Context</Term> resuelve esto: un **proveedor** pone un valor a disposición de todo su subárbol, y cualquier componente dentro puede leerlo directamente.
+
+<Overview
+  purpose="Compartir un valor con muchos componentes de un subárbol sin pasarlo manualmente por cada nivel."
+  importance="Es la herramienta nativa de React para dependencias transversales como sesión, tema, idioma o configuración."
+  when="Para valores que cambian poco y que muchos componentes leen: sesión, tema, locale, feature flags, servicios inyectados."
+  problem="Elimina el prop drilling y desacopla a los componentes intermedios de datos que no usan."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="Prop drilling" tone="bad">
+    - `App` → `Layout` → `Tabs` → `Header` → `Avatar`.
+    - Cada nivel recibe `user` solo para pasarlo.
+    - Cambiar la forma de `user` obliga a tocar todos los niveles.
+  </Column>
+  <Column title="Context" tone="good">
+    - `SessionProvider` envuelve la app.
+    - `Avatar` llama a `useSession()`.
+    - Los niveles intermedios no saben nada de la sesión.
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+Un contexto de sesión tipado, con un hook de acceso seguro y persistencia del token en SecureStore:
+
+```tsx title="src/providers/session-provider.tsx"
+import { createContext, use, useEffect, useMemo, useState, type ReactNode } from 'react';
+import * as SecureStore from 'expo-secure-store';
+
+type User = { id: string; name: string; email: string };
+
+type SessionContextValue = {
+  user: User | null;
+  isLoading: boolean;
+  signIn: (user: User, token: string) => Promise<void>;
+  signOut: () => Promise<void>;
+};
+
+// undefined por defecto: así detectamos usos fuera del proveedor
+const SessionContext = createContext<SessionContextValue | undefined>(undefined);
+
+const TOKEN_KEY = 'session-token';
+const USER_KEY = 'session-user';
+
+export function SessionProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<User | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Restaurar la sesión al abrir la app
+  useEffect(() => {
+    (async () => {
+      const stored = await SecureStore.getItemAsync(USER_KEY);
+      if (stored) setUser(JSON.parse(stored) as User);
+      setIsLoading(false);
+    })();
+  }, []);
+
+  const value = useMemo<SessionContextValue>(
+    () => ({
+      user,
+      isLoading,
+      async signIn(nextUser, token) {
+        await SecureStore.setItemAsync(TOKEN_KEY, token);
+        await SecureStore.setItemAsync(USER_KEY, JSON.stringify(nextUser));
+        setUser(nextUser);
+      },
+      async signOut() {
+        await SecureStore.deleteItemAsync(TOKEN_KEY);
+        await SecureStore.deleteItemAsync(USER_KEY);
+        setUser(null);
+      },
+    }),
+    [user, isLoading],
+  );
+
+  return <SessionContext value={value}>{children}</SessionContext>;
+}
+
+export function useSession() {
+  const context = use(SessionContext);
+  if (!context) throw new Error('useSession debe usarse dentro de <SessionProvider>');
+  return context;
+}
+```
+
+Se usa en el layout raíz y en cualquier componente:
+
+```tsx title="src/app/_layout.tsx"
+import { Stack } from 'expo-router';
+import { SessionProvider } from '@/providers/session-provider';
+
+export default function RootLayout() {
+  return (
+    <SessionProvider>
+      <Stack />
+    </SessionProvider>
+  );
+}
+```
+
+```tsx title="src/components/user-greeting.tsx"
+import { Text } from 'react-native';
+import { useSession } from '@/providers/session-provider';
+
+export function UserGreeting() {
+  const { user } = useSession();
+  return <Text>{user ? `Hola, ${user.name}` : 'Hola, invitado'}</Text>;
+}
+```
+
+## Explicación del código
+
+- **`createContext<… | undefined>(undefined)`** crea el contexto con un valor por defecto `undefined`. Así, si alguien olvida el proveedor, el hook lanza un error claro en lugar de fallar en silencio.
+- **`<SessionContext value={…}>`**: en React 19 el propio contexto se usa como proveedor (ya no hace falta `.Provider`).
+- **`use(SessionContext)`** lee el contexto. Es la API de React 19 (equivalente a `useContext`, que sigue funcionando) y, a diferencia de los hooks, se puede llamar dentro de condicionales.
+- **`useMemo` sobre `value`**: sin él, cada render del proveedor crearía un objeto nuevo y **todos** los consumidores se volverían a renderizar aunque nada hubiera cambiado.
+- **El token se guarda en SecureStore**, no en AsyncStorage, porque es un secreto ([Almacenamiento seguro](/docs/datos/almacenamiento-seguro)).
+
+## Buenas prácticas
+
+- **Exporta un hook (`useSession`) en lugar del contexto**: mejores mensajes de error y una API más limpia.
+- **Divide contextos por responsabilidad**: sesión, tema e idioma en contextos separados para que un cambio en uno no re-renderice a los consumidores de otros.
+- **Coloca el proveedor lo más abajo posible** del árbol que lo necesite.
+
+### Errores comunes
+
+- Usar Context para estado que cambia muy a menudo (posición de scroll, texto de un input global): todos los consumidores se re-renderizan en cada cambio.
+- Un único "AppContext" gigante con todo el estado de la app.
+- Olvidar envolver con el proveedor las pantallas que lo usan.
+
+### Cuándo usar otra solución
+
+Para estado global que cambia con frecuencia o del que cada componente solo necesita una parte (carrito, filtros), usa [Zustand](/docs/arquitectura/estado-global-zustand): permite suscribirse a fragmentos concretos del estado con selectores. Para datos del servidor, usa [TanStack Query](/docs/datos/tanstack-query).

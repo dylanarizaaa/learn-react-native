@@ -1,0 +1,180 @@
+---
+title: Tipado de componentes
+description: Tipar props, children, eventos, estilos y refs. Extender props de componentes nativos, genéricos y uniones discriminadas para APIs a prueba de errores.
+difficulty: intermedio
+time: 20
+prerequisites:
+  - react-typescript/props
+  - react-typescript/interfaces-y-tipos
+related:
+  - sistema-de-componentes/select
+  - arquitectura/componentes-reutilizables
+  - react-typescript/useref
+resources:
+  - title: React — Usar TypeScript
+    url: https://react.dev/learn/typescript
+  - title: React Native — Usar TypeScript
+    url: https://reactnative.dev/docs/typescript
+  - title: TypeScript — Genéricos
+    url: https://www.typescriptlang.org/docs/handbook/2/generics.html
+keywords: [typescript, props, ComponentProps, PressableProps, StyleProp, ViewStyle, genéricos, unión discriminada, ReactNode]
+---
+
+## Introducción conceptual
+
+Tipar un componente es diseñar su **contrato**: qué acepta, qué es obligatorio y qué combinaciones son válidas. Un buen tipado convierte errores que verías en el dispositivo (una prop mal escrita, un valor imposible) en errores del editor, antes de ejecutar nada.
+
+En React Native hay algunos tipos que usarás constantemente:
+
+| Tipo | Para qué |
+| --- | --- |
+| `ReactNode` | Cualquier cosa renderizable (children) |
+| `StyleProp<ViewStyle>` / `StyleProp<TextStyle>` | Props de estilo que aceptan arrays y falsy |
+| `PressableProps`, `TextInputProps`, `ViewProps` | Extender componentes nativos |
+| `ComponentProps<typeof X>` | Obtener las props de cualquier componente |
+| `GestureResponderEvent` | Evento de `onPress` |
+
+<Callout type="info" title="TypeScript estricto en SDK 58">
+Desde React Native 0.87 la API de tipos estricta es la predeterminada: importa todo desde `react-native` y evita rutas internas como `react-native/Libraries/...`, que ahora producen errores de tipos.
+</Callout>
+
+<Overview
+  purpose="Definir contratos claros para los componentes y detectar usos incorrectos en tiempo de compilación."
+  importance="En una base de código compartida por varias personas, los tipos son documentación que nunca queda desactualizada."
+  when="En todos los componentes, y con más cuidado en los reutilizables (botones, inputs, listas genéricas)."
+  problem="Evita combinaciones de props inválidas, errores de nombres y regresiones al refactorizar."
+/>
+
+## Explicación visual
+
+<Columns cols={3}>
+  <Column title="Extender">
+    Hereda las props nativas (`PressableProps`) y añade las tuyas. El componente acepta `accessibilityLabel`, `hitSlop`… sin declararlas.
+  </Column>
+  <Column title="Genéricos" tone="brand">
+    Un `Select<T>` infiere el tipo de las opciones: `onChange` recibe exactamente ese tipo.
+  </Column>
+  <Column title="Uniones discriminadas">
+    Hacen imposibles combinaciones inválidas: un botón con `href` no puede tener `onPress`.
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+<CodeTabs>
+
+```tsx title="Extender props nativas"
+import { Pressable, Text, type PressableProps, type StyleProp, type ViewStyle } from 'react-native';
+
+type Variant = 'primary' | 'secondary' | 'danger';
+
+// Omitimos 'style' y 'children' de Pressable para definirlos a nuestra manera
+type AppButtonProps = Omit<PressableProps, 'style' | 'children'> & {
+  title: string;
+  variant?: Variant;
+  style?: StyleProp<ViewStyle>;
+};
+
+const COLORS: Record<Variant, string> = { primary: '#111827', secondary: '#e5e7eb', danger: '#dc2626' };
+
+export function AppButton({ title, variant = 'primary', style, ...rest }: AppButtonProps) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      {...rest}
+      style={({ pressed }) => [{ backgroundColor: COLORS[variant], padding: 14, borderRadius: 12, opacity: pressed ? 0.85 : 1 }, style]}
+    >
+      <Text style={{ color: variant === 'secondary' ? '#111827' : '#fff', textAlign: 'center', fontWeight: '600' }}>
+        {title}
+      </Text>
+    </Pressable>
+  );
+}
+```
+
+```tsx title="Componente genérico"
+import { FlatList, Pressable, Text } from 'react-native';
+
+type OptionListProps<T> = {
+  options: readonly T[];
+  getKey: (option: T) => string;
+  getLabel: (option: T) => string;
+  selected?: T;
+  onSelect: (option: T) => void;
+};
+
+export function OptionList<T>({ options, getKey, getLabel, selected, onSelect }: OptionListProps<T>) {
+  return (
+    <FlatList
+      data={options}
+      keyExtractor={getKey}
+      renderItem={({ item }) => (
+        <Pressable onPress={() => onSelect(item)} accessibilityState={{ selected: item === selected }}>
+          <Text style={{ padding: 12, fontWeight: item === selected ? '700' : '400' }}>{getLabel(item)}</Text>
+        </Pressable>
+      )}
+    />
+  );
+}
+
+// Uso: T se infiere como { code: string; name: string }
+// <OptionList
+//   options={countries}
+//   getKey={(c) => c.code}
+//   getLabel={(c) => c.name}
+//   onSelect={(c) => setCountry(c.code)}  // c está tipado
+// />
+```
+
+```tsx title="Unión discriminada"
+import { Link, type Href } from 'expo-router';
+import type { ReactNode } from 'react';
+import { Pressable } from 'react-native';
+
+type ActionProps =
+  | { kind: 'link'; href: Href; children: ReactNode }
+  | { kind: 'button'; onPress: () => void; children: ReactNode };
+
+export function Action(props: ActionProps) {
+  if (props.kind === 'link') {
+    // Aquí TypeScript sabe que existe props.href
+    return (
+      <Link href={props.href} asChild>
+        <Pressable>{props.children}</Pressable>
+      </Link>
+    );
+  }
+  // Y aquí, que existe props.onPress
+  return <Pressable onPress={props.onPress}>{props.children}</Pressable>;
+}
+
+// ❌ Error de compilación: 'onPress' no existe cuando kind es 'link'
+// <Action kind="link" href="/ajustes" onPress={() => {}}>Ajustes</Action>
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`Omit<PressableProps, 'style' | 'children'> & {…}`** hereda todas las props de `Pressable` excepto las que redefinimos. Con `...rest` las pasamos al componente nativo, así el botón admite `disabled`, `onLongPress` o `testID` sin escribir nada más.
+- **`StyleProp<ViewStyle>`** es el tipo correcto para una prop `style`: acepta objetos, arrays y valores falsy, igual que los componentes nativos.
+- **`OptionList<T>`** declara un parámetro de tipo. TypeScript lo infiere a partir de `options`, y a partir de ahí `getKey`, `getLabel` y `onSelect` quedan tipados con el mismo `T`.
+- **La unión discriminada** usa una propiedad literal (`kind`) para distinguir variantes. Dentro de cada rama del `if`, TypeScript *estrecha* el tipo y solo permite las props de esa variante.
+- **`Href`** de Expo Router tipa las rutas: con *typed routes* activado, un enlace a una ruta inexistente es un error de compilación.
+
+## Buenas prácticas
+
+- **Usa `type` para props** y exporta el tipo si otros lo necesitan (`export type ButtonProps`).
+- **Prefiere uniones de literales** (`'sm' | 'md' | 'lg'`) a `string`.
+- **Evita `any`**: usa `unknown` y estrecha el tipo, o genéricos.
+- **No tipes de más**: deja que TypeScript infiera valores locales y retornos simples.
+
+### Errores comunes
+
+- Tipar `style` como `ViewStyle` en lugar de `StyleProp<ViewStyle>`: rechaza arrays de estilos.
+- Usar `React.FC`: no aporta ventajas hoy y complica los genéricos. Tipa directamente las props.
+- Importar tipos desde rutas internas de `react-native`: con la API estricta producen errores.
+
+### Cuándo usar otra solución
+
+Para validar datos **en tiempo de ejecución** (respuestas de API, formularios) los tipos no bastan: desaparecen al compilar. Combina TypeScript con esquemas de **Zod** e infiere los tipos a partir de ellos ([Interfaces y tipos](/docs/react-typescript/interfaces-y-tipos)).

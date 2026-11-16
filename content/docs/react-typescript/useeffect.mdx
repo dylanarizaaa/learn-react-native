@@ -1,0 +1,161 @@
+---
+title: useEffect
+description: Sincronizar componentes con sistemas externos. Dependencias, limpieza, suscripciones, AppState y cuándo NO necesitas un efecto.
+difficulty: intermedio
+time: 20
+prerequisites:
+  - react-typescript/usestate
+related:
+  - react-typescript/useref
+  - react-typescript/hooks-personalizados
+  - datos/tanstack-query
+resources:
+  - title: React — useEffect
+    url: https://react.dev/reference/react/useEffect
+  - title: React — Quizás no necesites un efecto
+    url: https://react.dev/learn/you-might-not-need-an-effect
+  - title: React Native — AppState
+    url: https://reactnative.dev/docs/appstate
+keywords: [useEffect, efectos, dependencias, cleanup, limpieza, suscripción, AppState, sincronización]
+---
+
+## Introducción conceptual
+
+`useEffect` sirve para **sincronizar un componente con algo que está fuera de React**: una suscripción a eventos, un temporizador, una conexión WebSocket, el estado de la app (primer o segundo plano) o una API nativa.
+
+Su modelo mental no es "ejecuta esto al montar", sino: **"mientras este componente esté en pantalla con estos valores, mantén esta sincronización; y cuando cambien o el componente desaparezca, deshazla"**.
+
+<Overview
+  purpose="Conectar el componente con sistemas externos y limpiar esa conexión cuando ya no se necesita."
+  importance="Es la fuente de errores más común en React: efectos innecesarios, dependencias incorrectas y fugas de memoria."
+  when="Suscripciones, temporizadores, listeners nativos, sincronizar con librerías no React. No para transformar datos ni para manejar eventos del usuario."
+  problem="Gestiona efectos secundarios fuera del render, con limpieza automática para evitar fugas y estados inconsistentes."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'Render', desc: 'React pinta la UI' },
+    { title: 'Efecto', desc: 'Conecta / suscribe', tone: 'brand' },
+    { title: 'Cambian dependencias', desc: 'o se desmonta' },
+    { title: 'Limpieza', desc: 'Desconecta / cancela', tone: 'muted' },
+  ]}
+  caption="Con nuevas dependencias React ejecuta la limpieza anterior y luego el efecto de nuevo."
+/>
+
+| Dependencias | Cuándo se ejecuta |
+| --- | --- |
+| `useEffect(fn)` | Después de cada render (casi nunca es lo que quieres) |
+| `useEffect(fn, [])` | Solo al montar; limpieza al desmontar |
+| `useEffect(fn, [a, b])` | Al montar y cada vez que cambie `a` o `b` |
+
+## Ejemplo práctico
+
+Un cronómetro que se pausa cuando la app pasa a segundo plano. Combina un temporizador y una suscripción a `AppState`, ambos con limpieza:
+
+```tsx title="src/components/stopwatch.tsx"
+import { useEffect, useState } from 'react';
+import { AppState, Pressable, StyleSheet, Text, View, type AppStateStatus } from 'react-native';
+
+export function Stopwatch() {
+  const [running, setRunning] = useState(false);
+  const [seconds, setSeconds] = useState(0);
+  const [appState, setAppState] = useState<AppStateStatus>(AppState.currentState);
+
+  // Efecto 1: suscripción a los cambios de estado de la app
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', setAppState);
+    return () => subscription.remove(); // limpieza al desmontar
+  }, []);
+
+  // Efecto 2: el intervalo solo existe si corre y la app está activa
+  const active = running && appState === 'active';
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setSeconds((s) => s + 1), 1000);
+    return () => clearInterval(id); // limpieza al pausar o desmontar
+  }, [active]);
+
+  const minutes = String(Math.floor(seconds / 60)).padStart(2, '0');
+  const rest = String(seconds % 60).padStart(2, '0');
+
+  return (
+    <View style={styles.container}>
+      <Text style={styles.time} accessibilityLabel={`${minutes} minutos y ${rest} segundos`}>
+        {minutes}:{rest}
+      </Text>
+      <View style={styles.row}>
+        <Pressable onPress={() => setRunning((r) => !r)} style={styles.button}>
+          <Text style={styles.buttonText}>{running ? 'Pausar' : 'Iniciar'}</Text>
+        </Pressable>
+        <Pressable
+          onPress={() => {
+            setRunning(false);
+            setSeconds(0);
+          }}
+          style={[styles.button, styles.secondary]}
+        >
+          <Text>Reiniciar</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { alignItems: 'center', gap: 16, padding: 24 },
+  time: { fontSize: 56, fontVariant: ['tabular-nums'], fontWeight: '700' },
+  row: { flexDirection: 'row', gap: 12 },
+  button: { backgroundColor: '#111827', paddingHorizontal: 20, paddingVertical: 12, borderRadius: 12 },
+  buttonText: { color: '#fff', fontWeight: '600' },
+  secondary: { backgroundColor: '#e5e7eb' },
+});
+```
+
+## Explicación del código
+
+- **El primer efecto** se suscribe a `AppState` una sola vez (`[]`) y devuelve una función de limpieza que elimina el listener. Sin ella, cada vez que se montara el componente se acumularía una suscripción.
+- **El segundo efecto** depende de `active`, un valor **derivado** del estado. Cuando el cronómetro corre y la app está activa, crea un intervalo; cuando cualquiera cambia, React limpia el intervalo anterior.
+- **`setSeconds((s) => s + 1)`** usa la forma funcional: así el intervalo no necesita `seconds` como dependencia y no se recrea cada segundo.
+- **`fontVariant: ['tabular-nums']`** evita que los dígitos "bailen" al cambiar.
+
+### Cuándo NO necesitas un efecto
+
+```tsx
+// ❌ Estado derivado sincronizado con un efecto: render extra y riesgo de desincronización
+const [fullName, setFullName] = useState('');
+useEffect(() => setFullName(`${first} ${last}`), [first, last]);
+
+// ✅ Calcúlalo durante el render
+const fullName = `${first} ${last}`;
+
+// ❌ Lógica de un evento dentro de un efecto
+useEffect(() => {
+  if (submitted) sendForm(data);
+}, [submitted]);
+
+// ✅ Ejecútala en el manejador del evento
+function handleSubmit() {
+  sendForm(data);
+}
+```
+
+## Buenas prácticas
+
+- **Un efecto por responsabilidad**: no mezcles una suscripción con un temporizador en el mismo efecto.
+- **Declara todas las dependencias** que usa el efecto. El linter de Expo (`eslint-config-expo`) te avisa.
+- **Siempre limpia** suscripciones, listeners, intervalos y peticiones (con `AbortController`).
+- **Para pedir datos, usa TanStack Query** en lugar de `useEffect` + `useState`: gestiona caché, cancelación, reintentos y condiciones de carrera.
+
+### Errores comunes
+
+- Bucles infinitos: un efecto que actualiza un estado que está en sus propias dependencias.
+- Dependencias que cambian en cada render (objetos o funciones creados en el cuerpo del componente).
+- Olvidar que en desarrollo, con *Strict Mode*, React monta, desmonta y vuelve a montar para detectar efectos sin limpieza.
+
+### Cuándo usar otra solución
+
+- Datos remotos: [TanStack Query](/docs/datos/tanstack-query).
+- Ejecutar algo cuando una pantalla recibe el foco (no solo al montarse): `useFocusEffect` de Expo Router.
+- Lógica reutilizable con efectos: encapsúlala en un [hook personalizado](/docs/react-typescript/hooks-personalizados).
