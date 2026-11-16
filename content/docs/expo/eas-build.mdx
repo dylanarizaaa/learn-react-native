@@ -1,0 +1,144 @@
+---
+title: EAS Build
+description: Compilar binarios de Android e iOS en la nube. Perfiles en eas.json, credenciales, distribución interna, versiones automáticas y builds locales.
+difficulty: intermedio
+time: 25
+prerequisites:
+  - expo/app-json
+  - introduccion/expo-go-vs-development-builds
+related:
+  - expo/eas-update
+  - expo/publicacion-en-tiendas
+  - calidad/produccion
+resources:
+  - title: Expo — Crear tu primer build
+    url: https://docs.expo.dev/build/setup/
+  - title: Expo — Configuración de eas.json
+    url: https://docs.expo.dev/build/eas-json/
+  - title: Expo — Credenciales de la app
+    url: https://docs.expo.dev/app-signing/app-credentials/
+keywords: [eas build, expo build, eas.json, perfiles, credenciales, keystore, apk, aab, ipa, distribución interna, autoIncrement, build local]
+---
+
+## Introducción conceptual
+
+Para instalar tu app fuera de Expo Go o publicarla en las tiendas necesitas **compilar un binario**: un APK/AAB para Android y un IPA para iOS. Hacerlo en local exige Android Studio, Xcode (solo en macOS), certificados y firmas. **EAS Build** (llamado **Expo Build** en la documentación actual de Expo) compila en la nube con un solo comando y **gestiona las credenciales de firma por ti**.
+
+<Overview
+  purpose="Generar binarios firmados de tu app para pruebas internas o para publicarlos en las tiendas."
+  importance="Permite compilar iOS sin un Mac, compartir builds con el equipo y tener un proceso reproducible e integrado en CI."
+  when="Para development builds, versiones de prueba (preview) y builds de producción."
+  problem="Elimina la configuración local de Xcode/Gradle, la gestión manual de certificados y las diferencias entre máquinas."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'eas build', desc: 'Sube el proyecto' },
+    { title: 'Prebuild', desc: 'Genera android/ e ios/' },
+    { title: 'Compila y firma', desc: 'Gradle / Xcode en la nube', tone: 'brand' },
+    { title: 'Artefacto', desc: 'APK, AAB o IPA' },
+    { title: 'Instalar o enviar', desc: 'QR interno o tiendas' },
+  ]}
+/>
+
+| Perfil | Para qué | Resultado típico |
+| --- | --- | --- |
+| `development` | Desarrollo diario con `expo-dev-client` | APK / build de simulador |
+| `preview` | Probar con el equipo o clientes | APK / IPA ad hoc (distribución interna) |
+| `production` | Publicar en tiendas | AAB / IPA firmado para la tienda |
+
+## Ejemplo práctico
+
+```bash
+# 1. Instalar la CLI e iniciar sesión
+npm install -g eas-cli
+eas login
+
+# 2. Vincular el proyecto y generar eas.json
+eas init
+eas build:configure
+
+# 3. Builds
+eas build --profile development --platform android
+eas build --profile preview --platform all
+eas build --profile production --platform ios
+
+# Ver el estado de los builds
+eas build:list
+```
+
+Un `eas.json` completo para un proyecto real:
+
+```json title="eas.json"
+{
+  "cli": {
+    "version": ">= 27.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "base": {
+      "node": "22.23.3",
+      "env": { "EXPO_PUBLIC_APP_ENV": "development" }
+    },
+    "development": {
+      "extends": "base",
+      "developmentClient": true,
+      "distribution": "internal",
+      "environment": "development",
+      "ios": { "simulator": true }
+    },
+    "preview": {
+      "extends": "base",
+      "distribution": "internal",
+      "environment": "preview",
+      "channel": "preview",
+      "android": { "buildType": "apk" }
+    },
+    "production": {
+      "extends": "base",
+      "environment": "production",
+      "channel": "production",
+      "autoIncrement": true
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}
+```
+
+Compilar en tu propia máquina (útil para depurar o sin cuota de builds):
+
+```bash
+eas build --profile preview --platform android --local
+```
+
+## Explicación del código
+
+- **`eas init`** crea el proyecto en tu cuenta de Expo y añade `extra.eas.projectId` a la app config. **`eas build:configure`** genera `eas.json`.
+- **`extends`** reutiliza la configuración común (versión de Node, variables) entre perfiles.
+- **`developmentClient: true`** incluye `expo-dev-client`. **`distribution: "internal"`** genera binarios instalables directamente (con un enlace o QR) sin pasar por la tienda. En iOS, la distribución interna necesita registrar los dispositivos (`eas device:create`) o usar `simulator: true`.
+- **`buildType: "apk"`** en Android genera un APK instalable; para Google Play, el perfil de producción genera un **AAB** por defecto.
+- **`environment`** selecciona las variables de EAS de ese entorno ([Variables de entorno](/docs/expo/variables-de-entorno)).
+- **`channel`** conecta el build con un canal de [EAS Update](/docs/expo/eas-update) para recibir actualizaciones OTA.
+- **`appVersionSource: "remote"` + `autoIncrement: true`** hace que EAS lleve el número de build (`versionCode`/`buildNumber`) y lo incremente en cada build de producción: nunca más un rechazo por número de versión repetido.
+- **Credenciales**: en el primer build, EAS ofrece generar el *keystore* de Android y los certificados y perfiles de iOS (necesitas una cuenta de Apple Developer). Se gestionan con `eas credentials`.
+
+## Buenas prácticas
+
+- **Fija la versión de Node** en los perfiles para que el build en la nube sea igual que tu entorno.
+- **Comprueba antes de compilar**: `npx expo-doctor`, `npx tsc --noEmit` y tus tests. Un build fallido gasta tiempo y cuota.
+- **Usa *fingerprint*** (`eas build` lo calcula) para saber si un cambio requiere un build nuevo o basta con una actualización OTA.
+- **Automatiza** builds en CI con *EAS Workflows* o GitHub Actions al hacer merge en la rama principal.
+
+### Errores comunes
+
+- Perder el keystore de Android generado fuera de EAS: sin él no podrás actualizar la app en Google Play. Deja que EAS lo custodie o haz copia de seguridad.
+- Builds de producción con variables de desarrollo por no asignar `environment` al perfil.
+- Instalar un build `preview` de iOS en un dispositivo no registrado.
+
+### Cuándo usar otra solución
+
+Si tienes infraestructura propia de CI con Macs, puedes compilar con `npx expo prebuild` y Fastlane, o con `eas build --local`. Para publicar los binarios generados, continúa en [Publicación en Android e iOS](/docs/expo/publicacion-en-tiendas).

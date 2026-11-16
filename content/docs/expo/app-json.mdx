@@ -1,0 +1,153 @@
+---
+title: Configuración de app.json
+description: La app config de Expo. Identidad, iconos, splash, permisos, plugins, experimentos, versiones y configuración dinámica con app.config.ts.
+difficulty: intermedio
+time: 20
+prerequisites:
+  - expo/estructura-del-proyecto
+related:
+  - expo/variables-de-entorno
+  - expo/eas-build
+  - expo/publicacion-en-tiendas
+resources:
+  - title: Expo — Configuración con app.json / app.config.js
+    url: https://docs.expo.dev/workflow/configuration/
+  - title: Expo — Referencia de app.json
+    url: https://docs.expo.dev/versions/latest/config/app/
+  - title: Expo — Continuous Native Generation
+    url: https://docs.expo.dev/workflow/continuous-native-generation/
+keywords: [app.json, app.config.ts, config plugins, prebuild, CNG, bundleIdentifier, package, version, scheme, icon, splash, typedRoutes, reactCompiler]
+---
+
+## Introducción conceptual
+
+La <Term slug="app-config">app config</Term> (`app.json` o `app.config.ts`) describe tu app: nombre, identificadores, iconos, pantalla de inicio, permisos, plugins nativos y opciones experimentales. Con el enfoque <Term slug="cng">CNG</Term>, Expo **genera los proyectos nativos** (`android/` e `ios/`) a partir de este archivo cada vez que haces un <Term slug="prebuild">prebuild</Term> o un build en EAS.
+
+Por eso, en lugar de editar `Info.plist` o `AndroidManifest.xml` a mano, declaras lo que necesitas en la app config y los <Term slug="config-plugin">config plugins</Term> lo aplican.
+
+<Overview
+  purpose="Centralizar la identidad y la configuración nativa de la app en un archivo declarativo."
+  importance="Facilita actualizar de SDK, reproducir builds y entender la configuración sin abrir Xcode o Android Studio."
+  when="Siempre: desde el nombre de la app hasta permisos, deep links, iconos o variantes por entorno."
+  problem="Evita mantener a mano dos proyectos nativos que se desincronizan y se rompen al actualizar dependencias."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'app.json / app.config.ts', desc: 'Configuración declarativa', tone: 'brand' },
+    { title: 'Config plugins', desc: 'expo-camera, expo-location…' },
+    { title: 'npx expo prebuild', desc: 'o eas build' },
+    { title: 'android/ + ios/', desc: 'Proyectos nativos generados' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+Un `app.json` completo y comentado por secciones:
+
+```json title="app.json"
+{
+  "expo": {
+    "name": "Finanzas",
+    "slug": "finanzas",
+    "version": "1.2.0",
+    "scheme": "finanzas",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "bundleIdentifier": "com.miempresa.finanzas",
+      "supportsTablet": true,
+      "config": { "usesNonExemptEncryption": false }
+    },
+    "android": {
+      "package": "com.miempresa.finanzas",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "backgroundColor": "#0f172a"
+      }
+    },
+    "web": { "bundler": "metro", "output": "static" },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 200,
+          "backgroundColor": "#ffffff",
+          "dark": { "backgroundColor": "#0f172a" }
+        }
+      ],
+      ["expo-camera", { "cameraPermission": "Permite a $(PRODUCT_NAME) fotografiar tus recibos." }],
+      "expo-secure-store"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "extra": {
+      "eas": { "projectId": "00000000-0000-0000-0000-000000000000" }
+    }
+  }
+}
+```
+
+Cuando necesitas lógica (por ejemplo, variantes de desarrollo y producción instalables a la vez), usa `app.config.ts`:
+
+```ts title="app.config.ts"
+import type { ConfigContext, ExpoConfig } from 'expo/config';
+
+const IS_DEV = process.env.APP_VARIANT === 'development';
+const IS_PREVIEW = process.env.APP_VARIANT === 'preview';
+
+const suffix = IS_DEV ? '.dev' : IS_PREVIEW ? '.preview' : '';
+
+export default ({ config }: ConfigContext): ExpoConfig => ({
+  ...config, // valores de app.json
+  name: IS_DEV ? 'Finanzas (Dev)' : IS_PREVIEW ? 'Finanzas (Preview)' : 'Finanzas',
+  slug: 'finanzas',
+  ios: { ...config.ios, bundleIdentifier: `com.miempresa.finanzas${suffix}` },
+  android: { ...config.android, package: `com.miempresa.finanzas${suffix}` },
+});
+```
+
+```json title="eas.json (fragmento)"
+{
+  "build": {
+    "development": { "developmentClient": true, "env": { "APP_VARIANT": "development" } },
+    "preview": { "distribution": "internal", "env": { "APP_VARIANT": "preview" } },
+    "production": {}
+  }
+}
+```
+
+## Explicación del código
+
+- **`name`** es el nombre visible bajo el icono; **`slug`** identifica el proyecto en Expo.
+- **`version`** es la versión visible para el usuario (1.2.0). Los números de build internos (`ios.buildNumber`, `android.versionCode`) los puede gestionar EAS automáticamente con `appVersionSource: "remote"` y `autoIncrement`.
+- **`bundleIdentifier`** (iOS) y **`package`** (Android) identifican la app en las tiendas. **No se pueden cambiar** después de publicar.
+- **`userInterfaceStyle: "automatic"`** permite que la app siga el modo claro/oscuro del sistema.
+- **`plugins`** lista los config plugins. Algunos se declaran solo con su nombre; otros reciben opciones (textos de permisos, colores).
+- **`experiments.typedRoutes`** genera tipos para las rutas de Expo Router; **`reactCompiler`** activa React Compiler.
+- **`usesNonExemptEncryption: false`** evita la pregunta de cumplimiento de exportación en cada envío a App Store si solo usas el cifrado estándar del sistema (HTTPS).
+- **`app.config.ts`** recibe la configuración de `app.json` en `config` y devuelve la final. Se ejecuta en Node, así que puede leer cualquier variable de entorno (no solo las `EXPO_PUBLIC_`).
+
+## Buenas prácticas
+
+- **Elige identificadores definitivos** (`com.empresa.app`) antes del primer envío a las tiendas.
+- **No edites `android/` ni `ios/`** si usas CNG; añádelos al `.gitignore` y regenera con `npx expo prebuild --clean` cuando haga falta.
+- **Usa variantes** para instalar desarrollo, preview y producción en el mismo dispositivo.
+- **Revisa la configuración final** con `npx expo config --type public`.
+
+### Errores comunes
+
+- Cambiar el `package` o el `bundleIdentifier` de una app publicada: se crea una app distinta en la tienda.
+- Añadir una librería nativa con config plugin y no reconstruir el development build.
+- Usar `"newArchEnabled": false`: desde SDK 55 se ignora; la Nueva Arquitectura siempre está activa.
+
+### Cuándo usar otra solución
+
+Si necesitas una modificación nativa que ningún plugin cubre, escribe tu propio **config plugin** (una función que modifica el proyecto nativo durante el prebuild) en lugar de editar los archivos generados.

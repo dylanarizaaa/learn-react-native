@@ -1,0 +1,140 @@
+---
+title: EAS Update
+description: Actualizaciones over-the-air del JavaScript y los assets sin pasar por las tiendas. Canales, ramas, runtimeVersion, rollbacks y comprobación desde la app.
+difficulty: avanzado
+time: 25
+prerequisites:
+  - expo/eas-build
+related:
+  - expo/publicacion-en-tiendas
+  - calidad/produccion
+  - expo/app-json
+resources:
+  - title: Expo — Empezar con Expo Update
+    url: https://docs.expo.dev/eas-update/getting-started/
+  - title: Expo — Versiones de runtime
+    url: https://docs.expo.dev/eas-update/runtime-versions/
+  - title: Expo — expo-updates
+    url: https://docs.expo.dev/versions/latest/sdk/updates/
+keywords: [eas update, expo update, ota, expo-updates, channel, branch, runtimeVersion, fingerprint, rollback, useUpdates]
+---
+
+## Introducción conceptual
+
+Una app de React Native tiene dos partes: el **binario nativo** (compilado y revisado por las tiendas) y el **bundle de JavaScript + assets** que ese binario ejecuta. **EAS Update** (Expo Update en la documentación actual) permite publicar un nuevo bundle y que las apps instaladas lo descarguen **sin pasar por la revisión de las tiendas**: es una <Term slug="ota">actualización OTA</Term>.
+
+La regla de oro: **solo puedes actualizar por OTA lo que no toca código nativo**. Si añades una librería nativa, cambias permisos o actualizas el SDK, necesitas un build nuevo.
+
+<Overview
+  purpose="Publicar correcciones y mejoras de JavaScript, estilos e imágenes en minutos a los usuarios."
+  importance="Un bug crítico se corrige el mismo día, sin esperar la revisión de App Store o Google Play."
+  when="Corrección de errores, textos, estilos, lógica en TypeScript y assets. No para cambios nativos ni para cambiar el propósito de la app."
+  problem="Reduce el ciclo de publicación de días a minutos y permite revertir versiones problemáticas al instante."
+/>
+
+## Explicación visual
+
+<Layers
+  layers={[
+    { title: 'Build (binario)', desc: 'Tiene un channel y un runtimeVersion', items: ['channel: production', 'runtimeVersion: 1.2.0'], tone: 'muted' },
+    { title: 'Channel', desc: 'Apunta a una rama', items: ['production → branch production'] },
+    { title: 'Branch', desc: 'Lista de updates', items: ['update #3 (actual)', 'update #2', 'update #1'], tone: 'brand' },
+    { title: 'Update', desc: 'Bundle JS + assets', items: ['Compatible solo con su runtimeVersion'] },
+  ]}
+  caption="Al arrancar, la app pregunta a su canal si hay un update compatible con su runtimeVersion."
+/>
+
+## Ejemplo práctico
+
+```bash
+npx expo install expo-updates
+eas update:configure
+```
+
+`eas update:configure` añade a la app config la URL de actualizaciones y la versión de runtime:
+
+```json title="app.json (fragmento)"
+{
+  "expo": {
+    "runtimeVersion": { "policy": "appVersion" },
+    "updates": {
+      "url": "https://u.expo.dev/00000000-0000-0000-0000-000000000000",
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0
+    }
+  }
+}
+```
+
+Publicar, revisar y revertir:
+
+```bash
+# Publicar en el canal de producción (rama del mismo nombre)
+eas update --channel production --message "Corrige el cálculo de impuestos"
+
+# Probar primero en preview
+eas update --channel preview --message "Nuevo diseño del carrito"
+
+# Publicar solo a un porcentaje de usuarios (despliegue gradual)
+eas update --channel production --rollout-percentage=10 --message "Nueva pantalla de inicio"
+
+# Ampliar el porcentaje más adelante (hasta 100)
+eas update:edit
+
+# Volver a la versión anterior si algo falla
+eas update:rollback
+```
+
+Mostrar un aviso dentro de la app cuando hay una actualización descargada:
+
+```tsx title="src/components/update-banner.tsx"
+import * as Updates from 'expo-updates';
+import { useEffect } from 'react';
+import { Pressable, Text, View } from 'react-native';
+
+export function UpdateBanner() {
+  const { isUpdateAvailable, isUpdatePending } = Updates.useUpdates();
+
+  // Si hay una actualización disponible, la descargamos en segundo plano
+  useEffect(() => {
+    if (isUpdateAvailable) Updates.fetchUpdateAsync().catch(() => {});
+  }, [isUpdateAvailable]);
+
+  if (__DEV__ || !isUpdatePending) return null;
+
+  return (
+    <View style={{ margin: 16, padding: 14, borderRadius: 12, backgroundColor: '#0f172a', gap: 8 }}>
+      <Text style={{ color: '#fff', fontWeight: '600' }}>Hay una nueva versión disponible</Text>
+      <Pressable onPress={() => Updates.reloadAsync()}>
+        <Text style={{ color: '#38bdf8', fontWeight: '600' }}>Reiniciar y actualizar</Text>
+      </Pressable>
+    </View>
+  );
+}
+```
+
+## Explicación del código
+
+- **`runtimeVersion`** define con qué binarios es compatible un update. Con la política **`appVersion`**, coincide con `version` de la app: cuando haces un cambio nativo, subes la versión, compilas y los updates antiguos dejan de aplicarse a ese binario. La política **`fingerprint`** calcula un hash del código nativo y lo hace de forma automática.
+- **`channel`** se fija en cada perfil de `eas.json` al compilar ([EAS Build](/docs/expo/eas-build)). `eas update --channel production` publica en la rama vinculada a ese canal.
+- **`checkAutomatically: "ON_LOAD"` + `fallbackToCacheTimeout: 0`**: al abrir, la app arranca inmediatamente con el bundle que tiene y busca actualizaciones en segundo plano; el update se aplica en el siguiente arranque.
+- **`useUpdates()`** expone el estado (`isUpdateAvailable`, `isUpdatePending`, `downloadedUpdate`…). `fetchUpdateAsync` descarga y `reloadAsync` reinicia la app con el nuevo bundle.
+- **`--rollout-percentage`** limita el update a una parte de los usuarios para detectar problemas antes de llegar a todos.
+- **`__DEV__`** es `true` en desarrollo, donde no hay updates OTA.
+
+## Buenas prácticas
+
+- **Prueba cada update en el canal `preview`** con un build de preview antes de publicarlo en producción.
+- **Escribe mensajes descriptivos** en cada `eas update`: son tu historial de cambios.
+- **Monitoriza errores tras cada update** (por ejemplo, con Sentry) y ten preparado el rollback.
+- **No fuerces reinicios** en mitad de una tarea del usuario; ofrece el reinicio o aplícalo en el siguiente arranque.
+
+### Errores comunes
+
+- Publicar un update que usa un módulo nativo que el binario no tiene: la app falla al arrancar. Por eso existe `runtimeVersion`.
+- Olvidar subir `version` (con la política `appVersion`) tras un cambio nativo.
+- Usar OTA para cambiar sustancialmente la funcionalidad de la app: las políticas de las tiendas lo prohíben.
+
+### Cuándo usar otra solución
+
+Para cambios nativos, nuevas librerías o actualizaciones del SDK: [nuevo build](/docs/expo/eas-build) y envío a las tiendas. Para activar o desactivar funcionalidades sin publicar código, usa *feature flags* en tu backend o un servicio de configuración remota.

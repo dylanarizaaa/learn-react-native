@@ -1,0 +1,162 @@
+---
+title: Expo FileSystem
+description: La API orientada a objetos de expo-file-system (File, Directory, Paths). Leer, escribir, listar, descargar y mover archivos en SDK 58.
+difficulty: intermedio
+time: 20
+prerequisites:
+  - react-typescript/interfaces-y-tipos
+related:
+  - expo/expo-sharing
+  - expo/expo-image-picker
+  - proyectos/finanzas-personales
+resources:
+  - title: Expo — FileSystem
+    url: https://docs.expo.dev/versions/latest/sdk/filesystem/
+  - title: Expo — FileSystem (legacy)
+    url: https://docs.expo.dev/versions/latest/sdk/filesystem-legacy/
+keywords: [expo-file-system, File, Directory, Paths, document, cache, write, text, downloadFileAsync, archivos, csv, json]
+---
+
+## Introducción conceptual
+
+`expo-file-system` da acceso al sistema de archivos **privado de tu app**. Desde SDK 54 su API principal es **orientada a objetos**: creas instancias de `File` y `Directory` a partir de rutas base (`Paths.document`, `Paths.cache`) y llamas a sus métodos.
+
+En **SDK 58**, `file.write()` pasó a ser **asíncrono** (devuelve una promesa) y existe `writeSync()` para el comportamiento síncrono; además, desde SDK 56 `copy()` y `move()` también son asíncronos (`copySync()` y `moveSync()` para la versión síncrona). La API anterior basada en funciones sigue disponible en `expo-file-system/legacy`, pero no la uses en código nuevo.
+
+<Overview
+  purpose="Crear, leer, escribir, descargar y organizar archivos dentro del espacio de la app."
+  importance="Exportar informes, guardar fotos de forma permanente, cachear descargas o trabajar offline requiere manejar archivos."
+  when="Archivos que no encajan en una base de datos: imágenes, PDFs, CSV, JSON de respaldo, descargas."
+  problem="Ofrece una API tipada y multiplataforma sobre los sistemas de archivos de Android e iOS."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="Paths.document" tone="brand">
+    - Persistente: sobrevive a reinicios.
+    - Se incluye en copias de seguridad.
+    - Datos del usuario: notas, fotos guardadas, exportaciones.
+  </Column>
+  <Column title="Paths.cache">
+    - El sistema puede vaciarlo si falta espacio.
+    - No se respalda.
+    - Descargas temporales, miniaturas, archivos para compartir.
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+```bash
+npx expo install expo-file-system
+```
+
+Un servicio para guardar copias de seguridad en JSON, listarlas, descargar un archivo y copiar una foto a almacenamiento permanente:
+
+```ts title="src/services/backups.ts"
+import { Directory, File, Paths } from 'expo-file-system';
+
+const backupsDir = new Directory(Paths.document, 'backups');
+
+function ensureDir(dir: Directory) {
+  if (!dir.exists) dir.create({ intermediates: true });
+}
+
+export async function saveBackup(data: unknown): Promise<File> {
+  ensureDir(backupsDir);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const file = new File(backupsDir, `backup-${stamp}.json`);
+  file.create();
+  await file.write(JSON.stringify(data, null, 2)); // asíncrono en SDK 58
+  return file;
+}
+
+export function listBackups(): File[] {
+  if (!backupsDir.exists) return [];
+  return backupsDir
+    .list()
+    .filter((entry): entry is File => entry instanceof File && entry.name.endsWith('.json'))
+    .sort((a, b) => b.name.localeCompare(a.name));
+}
+
+export async function readBackup<T>(file: File): Promise<T> {
+  return JSON.parse(await file.text()) as T;
+}
+
+export function deleteBackup(file: File) {
+  file.delete();
+}
+
+/** Copia una foto temporal (caché del image picker) a Documentos. */
+export async function persistPhoto(tempUri: string): Promise<string> {
+  const photos = new Directory(Paths.document, 'photos');
+  ensureDir(photos);
+  const source = new File(tempUri);
+  const target = new File(photos, `${Date.now()}-${source.name}`);
+  await source.copy(target); // asíncrono desde SDK 56
+  return target.uri;
+}
+
+/** Descarga un PDF a la caché y devuelve el archivo. */
+export async function downloadInvoice(url: string): Promise<File> {
+  const invoices = new Directory(Paths.cache, 'invoices');
+  ensureDir(invoices);
+  return File.downloadFileAsync(url, invoices);
+}
+```
+
+Uso en una pantalla:
+
+```tsx title="src/app/respaldos.tsx"
+import { useState } from 'react';
+import { Pressable, Text, View } from 'react-native';
+import { listBackups, saveBackup } from '@/services/backups';
+
+export default function BackupsScreen() {
+  const [backups, setBackups] = useState(() => listBackups());
+
+  async function handleBackup() {
+    await saveBackup({ version: 1, notes: [{ id: 1, title: 'Hola' }] });
+    setBackups(listBackups());
+  }
+
+  return (
+    <View style={{ padding: 16, gap: 8 }}>
+      <Pressable onPress={handleBackup} style={{ padding: 14, backgroundColor: '#111827', borderRadius: 12 }}>
+        <Text style={{ color: '#fff', textAlign: 'center' }}>Crear copia de seguridad</Text>
+      </Pressable>
+      {backups.map((file) => (
+        <Text key={file.uri}>
+          {file.name} · {Math.round((file.size ?? 0) / 1024)} KB
+        </Text>
+      ))}
+    </View>
+  );
+}
+```
+
+## Explicación del código
+
+- **`new Directory(Paths.document, 'backups')`** crea un objeto que representa la carpeta; **no** la crea en disco hasta que llamas a `create()`. `exists` indica si ya existe.
+- **`create({ intermediates: true })`** crea también las carpetas intermedias.
+- **`file.write(...)`** acepta strings, `Uint8Array` o `ArrayBuffer`. En SDK 58 devuelve una promesa; `writeSync` es la alternativa síncrona.
+- **`file.text()`** lee el contenido como string (asíncrono). También existen `textSync()`, `bytes()` y `base64()`.
+- **`list()`** devuelve instancias de `File` y `Directory`; con `instanceof` filtramos solo archivos y TypeScript estrecha el tipo.
+- **`File.downloadFileAsync`** descarga una URL directamente a un archivo o carpeta y devuelve el `File` resultante.
+- **`size`** está en bytes y puede ser `null` si el archivo no existe.
+
+## Buenas prácticas
+
+- **Guarda en `document` lo que el usuario espera conservar** y en `cache` lo regenerable.
+- **No guardes rutas absolutas** en la base de datos: el contenedor de la app puede cambiar entre instalaciones en iOS. Guarda rutas relativas o nombres de archivo y reconstruye con `Paths.document`.
+- **Maneja errores**: `create()` lanza si el archivo ya existe (usa `{ overwrite: true }` si procede) o si no hay permisos.
+
+### Errores comunes
+
+- Mezclar la API nueva con la de `expo-file-system/legacy` (por ejemplo, `writeAsStringAsync`): la API legacy muestra avisos y desaparecerá.
+- Olvidar `await` en `write()` tras actualizar a SDK 58 y leer el archivo antes de que termine de escribirse.
+- Usar la URI temporal del image picker como almacenamiento permanente.
+
+### Cuándo usar otra solución
+
+Para datos estructurados que necesitas consultar, usa [SQLite](/docs/expo/expo-sqlite). Para enviar un archivo a otra app (correo, WhatsApp, Drive), combínalo con [expo-sharing](/docs/expo/expo-sharing). Para que el usuario elija un archivo del dispositivo, usa `File.pickFileAsync()` o `expo-document-picker`.

@@ -1,0 +1,187 @@
+---
+title: Expo Location
+description: Obtener la ubicación del dispositivo, seguir sus cambios en tiempo real, convertir coordenadas en direcciones y gestionar permisos de primer y segundo plano.
+difficulty: intermedio
+time: 20
+prerequisites:
+  - expo/app-json
+  - react-typescript/useeffect
+related:
+  - proyectos/geolocalizacion
+  - expo/expo-linking
+  - calidad/seguridad
+resources:
+  - title: Expo — Location
+    url: https://docs.expo.dev/versions/latest/sdk/location/
+  - title: Expo — TaskManager
+    url: https://docs.expo.dev/versions/latest/sdk/task-manager/
+keywords: [expo-location, geolocalización, GPS, getCurrentPositionAsync, watchPositionAsync, reverseGeocodeAsync, permisos, segundo plano]
+---
+
+## Introducción conceptual
+
+`expo-location` da acceso a la ubicación del dispositivo: posición actual, seguimiento continuo, geocodificación (dirección ↔ coordenadas) y, con configuración adicional, ubicación en segundo plano y *geofencing*.
+
+La ubicación es uno de los datos más sensibles del usuario. Los sistemas operativos distinguen entre permiso **en primer plano** (mientras usas la app) y **en segundo plano** (siempre), y este último está muy restringido y revisado por las tiendas.
+
+<Overview
+  purpose="Conocer y seguir la ubicación del usuario para mostrar contenido cercano, registrar recorridos o calcular distancias."
+  importance="Es la base de apps de delivery, movilidad, deporte, visitas comerciales o búsquedas cercanas."
+  when="Cuando la funcionalidad depende de dónde está el usuario. Pide solo la precisión y la frecuencia que realmente necesitas."
+  problem="Unifica los distintos proveedores de ubicación y modelos de permisos de Android e iOS en una API sencilla."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="Primer plano" tone="good">
+    - `requestForegroundPermissionsAsync`.
+    - Posición actual y seguimiento mientras la app está abierta.
+    - Suficiente para la gran mayoría de apps.
+  </Column>
+  <Column title="Segundo plano">
+    - `requestBackgroundPermissionsAsync` + `expo-task-manager`.
+    - Requiere development build y justificación ante las tiendas.
+    - Uso: navegación, deporte, flotas.
+  </Column>
+</Columns>
+
+| Precisión (`Location.Accuracy`) | Uso típico | Consumo |
+| --- | --- | --- |
+| `Lowest` / `Low` | Ciudad o barrio | Bajo |
+| `Balanced` | Búsquedas cercanas | Medio |
+| `High` | Direcciones exactas | Alto |
+| `BestForNavigation` | Navegación paso a paso | Muy alto |
+
+## Ejemplo práctico
+
+```bash
+npx expo install expo-location
+```
+
+```json title="app.json"
+{
+  "expo": {
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Usamos tu ubicación para mostrarte tiendas cercanas."
+        }
+      ]
+    ]
+  }
+}
+```
+
+Un hook que obtiene la ubicación, la sigue mientras la pantalla está montada y resuelve la dirección:
+
+```ts title="src/hooks/use-current-location.ts"
+import { useEffect, useState } from 'react';
+import * as Location from 'expo-location';
+
+type State =
+  | { status: 'loading' }
+  | { status: 'denied' }
+  | { status: 'error'; message: string }
+  | { status: 'ready'; coords: Location.LocationObjectCoords; address: string | null };
+
+export function useCurrentLocation() {
+  const [state, setState] = useState<State>({ status: 'loading' });
+
+  useEffect(() => {
+    let subscription: Location.LocationSubscription | null = null;
+    let cancelled = false;
+
+    async function start() {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        if (!cancelled) setState({ status: 'denied' });
+        return;
+      }
+
+      try {
+        // Respuesta rápida: última posición conocida (puede ser null)
+        const last = await Location.getLastKnownPositionAsync();
+        if (last && !cancelled) setState({ status: 'ready', coords: last.coords, address: null });
+
+        // Seguimiento: nueva posición al moverse 25 m o cada 10 s
+        subscription = await Location.watchPositionAsync(
+          { accuracy: Location.Accuracy.Balanced, distanceInterval: 25, timeInterval: 10_000 },
+          async (location) => {
+            const [place] = await Location.reverseGeocodeAsync(location.coords);
+            const address = place ? [place.street, place.streetNumber, place.city].filter(Boolean).join(' ') : null;
+            if (!cancelled) setState({ status: 'ready', coords: location.coords, address });
+          },
+        );
+      } catch (error) {
+        if (!cancelled) setState({ status: 'error', message: String(error) });
+      }
+    }
+
+    start();
+    return () => {
+      cancelled = true;
+      subscription?.remove();
+    };
+  }, []);
+
+  return state;
+}
+```
+
+```tsx title="src/app/cerca.tsx"
+import { Linking, Pressable, Text, View } from 'react-native';
+import { useCurrentLocation } from '@/hooks/use-current-location';
+
+export default function NearbyScreen() {
+  const location = useCurrentLocation();
+
+  if (location.status === 'loading') return <Text style={{ padding: 24 }}>Obteniendo ubicación…</Text>;
+  if (location.status === 'denied') {
+    return (
+      <View style={{ padding: 24, gap: 12 }}>
+        <Text>Sin permiso de ubicación no podemos mostrar tiendas cercanas.</Text>
+        <Pressable onPress={() => Linking.openSettings()}>
+          <Text style={{ color: '#0284c7' }}>Abrir ajustes</Text>
+        </Pressable>
+      </View>
+    );
+  }
+  if (location.status === 'error') return <Text style={{ padding: 24 }}>Error: {location.message}</Text>;
+
+  return (
+    <View style={{ padding: 24, gap: 8 }}>
+      <Text style={{ fontSize: 18, fontWeight: '600' }}>{location.address ?? 'Dirección desconocida'}</Text>
+      <Text>
+        {location.coords.latitude.toFixed(5)}, {location.coords.longitude.toFixed(5)} (±{Math.round(location.coords.accuracy ?? 0)} m)
+      </Text>
+    </View>
+  );
+}
+```
+
+## Explicación del código
+
+- **Estado como unión discriminada** (`status`): la pantalla solo puede acceder a `coords` cuando el estado es `ready`. TypeScript lo garantiza.
+- **`getLastKnownPositionAsync`** devuelve al instante la última posición en caché (o `null`), útil para mostrar algo mientras llega una lectura precisa.
+- **`watchPositionAsync`** llama al callback cuando el dispositivo se mueve más de `distanceInterval` metros o pasa `timeInterval` ms. Devuelve una suscripción que **debe eliminarse** en la limpieza del efecto.
+- **`reverseGeocodeAsync`** convierte coordenadas en calle, número y ciudad usando el servicio del sistema. Úsalo con moderación: tiene límites de uso.
+- **La bandera `cancelled`** evita actualizar el estado si el componente se desmontó mientras una operación asíncrona estaba en curso.
+
+## Buenas prácticas
+
+- **Pide la precisión mínima necesaria**: `Balanced` basta para "cerca de ti" y ahorra batería.
+- **Explica el beneficio antes del diálogo del sistema** con una pantalla propia.
+- **Detén el seguimiento** cuando la pantalla deja de verse.
+- **No envíes la ubicación al servidor más de lo necesario** y explícalo en tu política de privacidad.
+
+### Errores comunes
+
+- Pedir permiso de segundo plano sin necesitarlo: las tiendas rechazan apps que no lo justifican.
+- No limpiar la suscripción de `watchPositionAsync`: la app sigue usando GPS en segundo plano.
+- Esperar precisión de metros en interiores o en el emulador: usa ubicaciones simuladas para probar.
+
+### Cuándo usar otra solución
+
+Para mostrar mapas, combina `expo-location` con `expo-maps` o `react-native-maps` (lo hacemos en el [proyecto de geolocalización](/docs/proyectos/geolocalizacion)). Para geofencing y tareas en segundo plano, usa `Location.startGeofencingAsync` junto con `expo-task-manager`.

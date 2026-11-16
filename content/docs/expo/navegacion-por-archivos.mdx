@@ -1,0 +1,190 @@
+---
+title: Navegación mediante archivos
+description: Convenciones de nombres de Expo Router. Rutas dinámicas, catch-all, grupos, not-found, parámetros tipados, redirecciones y rutas protegidas.
+difficulty: intermedio
+time: 25
+prerequisites:
+  - expo/expo-router
+related:
+  - datos/autenticacion
+  - expo/expo-linking
+  - proyectos/autenticacion-con-api
+resources:
+  - title: Expo Router — Notación de rutas
+    url: https://docs.expo.dev/router/basics/notation/
+  - title: Expo Router — Rutas protegidas
+    url: https://docs.expo.dev/router/advanced/protected/
+  - title: Expo Router — Rutas tipadas
+    url: https://docs.expo.dev/router/reference/typed-routes/
+  - title: Expo Router — Parámetros de URL
+    url: https://docs.expo.dev/router/reference/url-parameters/
+keywords: [rutas dinámicas, [id], catch-all, grupos, +not-found, useLocalSearchParams, typed routes, Stack.Protected, redirectTo, Redirect, anchor]
+---
+
+## Introducción conceptual
+
+En Expo Router el **nombre de cada archivo** define su URL. Unas pocas convenciones cubren todos los casos: rutas estáticas, dinámicas, grupos que no afectan a la URL, páginas de error y rutas que solo son accesibles si se cumple una condición (por ejemplo, estar autenticado).
+
+<Overview
+  purpose="Expresar toda la estructura de navegación, incluidos parámetros y acceso condicional, con nombres de archivos."
+  importance="Dominar estas convenciones permite modelar flujos reales (login, onboarding, detalles) sin código de navegación frágil."
+  when="Al diseñar las rutas de cualquier app con Expo Router."
+  problem="Evita redirecciones manuales con efectos, pantallas accesibles sin permiso y parámetros sin tipar."
+/>
+
+## Explicación visual
+
+| Archivo | URL | Notas |
+| --- | --- | --- |
+| `index.tsx` | `/` | Ruta inicial de su carpeta |
+| `ajustes.tsx` | `/ajustes` | Ruta estática |
+| `producto/[id].tsx` | `/producto/42` | Ruta dinámica: `id = '42'` |
+| `docs/[...slug].tsx` | `/docs/a/b/c` | Catch-all: `slug = ['a','b','c']` |
+| `(auth)/login.tsx` | `/login` | El grupo no aparece en la URL |
+| `+not-found.tsx` | Cualquier URL desconocida | Pantalla 404 |
+| `_layout.tsx` | — | Layout de la carpeta |
+
+<Flow
+  steps={[
+    { title: 'Usuario abre la app', desc: 'o un deep link' },
+    { title: 'Stack.Protected', desc: 'guard = ¿sesión?', tone: 'brand' },
+    { title: 'Sin sesión', desc: 'Redirige a /login', tone: 'muted' },
+    { title: 'Con sesión', desc: 'Accede a (app)' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+Un flujo completo de autenticación con rutas protegidas:
+
+```tree title="src/app"
+src/app/
+  _layout.tsx # Decide qué grupo es accesible
+  login.tsx
+  (app)/
+    _layout.tsx # Tabs de la app autenticada
+    index.tsx
+    pedidos/
+      [id].tsx
+  +not-found.tsx
+```
+
+<CodeTabs>
+
+```tsx title="src/app/_layout.tsx"
+import { useEffect } from 'react';
+import { Stack } from 'expo-router';
+import * as SplashScreen from 'expo-splash-screen';
+import { SessionProvider, useSession } from '@/providers/session-provider';
+
+SplashScreen.preventAutoHideAsync();
+
+function RootNavigator() {
+  const { user, isLoading } = useSession();
+
+  useEffect(() => {
+    if (!isLoading) SplashScreen.hideAsync();
+  }, [isLoading]);
+
+  if (isLoading) return null; // la splash sigue visible mientras se restaura la sesión
+
+  return (
+    <Stack screenOptions={{ headerShown: false }}>
+      {/* Solo accesible SIN sesión */}
+      <Stack.Protected guard={!user}>
+        <Stack.Screen name="login" />
+      </Stack.Protected>
+
+      {/* Solo accesible CON sesión; si no, redirige a /login (SDK 58+) */}
+      <Stack.Protected guard={!!user} redirectTo="/login">
+        <Stack.Screen name="(app)" />
+      </Stack.Protected>
+    </Stack>
+  );
+}
+
+export default function RootLayout() {
+  return (
+    <SessionProvider>
+      <RootNavigator />
+    </SessionProvider>
+  );
+}
+```
+
+```tsx title="src/app/(app)/pedidos/[id].tsx"
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Pressable, Text, View } from 'react-native';
+
+export default function OrderDetail() {
+  // Parámetros tipados: id viene de la URL /pedidos/[id]
+  const { id, from } = useLocalSearchParams<{ id: string; from?: string }>();
+  const router = useRouter();
+
+  return (
+    <View style={{ flex: 1, padding: 16, gap: 12 }}>
+      <Stack.Screen options={{ title: `Pedido #${id}`, headerShown: true }} />
+      <Text>Abierto desde: {from ?? 'la lista'}</Text>
+      <Pressable onPress={() => router.setParams({ from: 'detalle' })}>
+        <Text>Actualizar parámetro sin navegar</Text>
+      </Pressable>
+    </View>
+  );
+}
+```
+
+```tsx title="src/app/+not-found.tsx"
+import { Link, Stack } from 'expo-router';
+import { Text, View } from 'react-native';
+
+export default function NotFound() {
+  return (
+    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 }}>
+      <Stack.Screen options={{ title: 'No encontrado' }} />
+      <Text style={{ fontSize: 18, fontWeight: '600' }}>Esta pantalla no existe</Text>
+      <Link href="/" replace>
+        <Text style={{ color: '#0284c7' }}>Volver al inicio</Text>
+      </Link>
+    </View>
+  );
+}
+```
+
+```json title="app.json (fragmento)"
+{
+  "expo": {
+    "scheme": "miapp",
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`Stack.Protected`** muestra u oculta un conjunto de pantallas según `guard`. Si el usuario intenta acceder a una ruta protegida (incluso mediante un deep link), el router lo redirige. Cuando la condición pasa de `true` a `false` (por ejemplo, al cerrar sesión), se eliminan del historial las entradas de esas pantallas.
+- **`redirectTo`** (SDK 58+) indica a qué ruta redirigir; sin él, se usa la ruta *anchor* o la primera disponible.
+- **`isLoading`**: mientras se restaura la sesión desde SecureStore, devolvemos `null` y mantenemos la *splash screen* visible para no mostrar el login un instante.
+- **`useLocalSearchParams<{…}>()`** tipa los parámetros de la ruta y de la query (`?from=lista`). Los valores siempre son strings (o arrays de strings en catch-all).
+- **`router.setParams`** actualiza la query de la ruta actual sin navegar.
+- **`typedRoutes`** genera tipos en `.expo/types` para que `href` y `router.navigate` solo acepten rutas existentes.
+
+## Buenas prácticas
+
+- **Usa `Stack.Protected`** en lugar de `useEffect` + `router.replace` para proteger rutas: es declarativo y funciona con deep links.
+- **Declara cada pantalla una sola vez**: una pantalla no puede estar en dos grupos protegidos.
+- **Valida los parámetros** de rutas dinámicas: llegan como texto desde una URL que cualquiera puede escribir.
+- **Usa `unstable_settings.anchor`** (antes `initialRouteName`, obsoleto en SDK 58) cuando necesites que una pantalla concreta quede siempre en la base de la pila.
+
+### Errores comunes
+
+- Esperar que `useLocalSearchParams` devuelva números: convierte con `Number(id)` y valida.
+- Usar `useGlobalSearchParams` sin necesidad: provoca renders en pantallas que no están enfocadas.
+- Proteger solo la UI pero no la API: la seguridad real siempre la aplica el backend.
+
+### Cuándo usar otra solución
+
+Para lógica de acceso más compleja (roles, permisos por funcionalidad) combina guardas anidadas de `Stack.Protected` con comprobaciones en cada pantalla. Para redirigir desde una pantalla puntual, el componente `<Redirect href="…" />` sigue siendo útil.

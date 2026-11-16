@@ -1,0 +1,146 @@
+---
+title: Estructura del proyecto
+description: Qué hay en un proyecto Expo SDK 58 y para qué sirve cada archivo y carpeta, desde src/app hasta app.json y eas.json.
+difficulty: principiante
+time: 12
+prerequisites:
+  - expo/configuracion-inicial
+related:
+  - expo/expo-router
+  - arquitectura/arquitectura-de-carpetas
+  - expo/app-json
+resources:
+  - title: Expo — Estructura del proyecto
+    url: https://docs.expo.dev/get-started/start-developing/
+  - title: Expo Router — Directorio src
+    url: https://docs.expo.dev/router/reference/src-directory/
+keywords: [estructura, carpetas, src/app, assets, app.json, package.json, eas.json, AGENTS.md, expo-env.d.ts]
+---
+
+## Introducción conceptual
+
+La plantilla por defecto de Expo SDK 58 organiza el código dentro de **`src/`** y reserva **`src/app/`** exclusivamente para las rutas de Expo Router. Todo lo demás (componentes, hooks, constantes, servicios) vive fuera de `src/app`, porque **cualquier archivo dentro de `src/app` se convierte en una pantalla**.
+
+<Overview
+  purpose="Saber dónde está cada cosa en un proyecto Expo y dónde poner el código nuevo."
+  importance="Una estructura clara permite que cualquier persona del equipo encuentre y añada código sin dudas."
+  when="Al empezar un proyecto, al incorporar a alguien al equipo o al decidir dónde crear un archivo."
+  problem="Evita que componentes o utilidades acaben dentro de src/app y se conviertan en rutas por accidente."
+/>
+
+## Explicación visual
+
+```tree title="mi-app (plantilla default, SDK 58)"
+mi-app/
+  src/
+    app/ # Solo rutas (Expo Router)
+      _layout.tsx # Layout raíz: proveedores, tema, navegador
+      index.tsx # Ruta "/"
+      explore.tsx # Ruta "/explore"
+    components/ # Componentes reutilizables
+      app-tabs.native.tsx # Tabs nativas (Android/iOS)
+      app-tabs.tsx # Tabs para web
+    constants/ # Colores, tema, configuración
+    hooks/ # Hooks personalizados
+  assets/
+    images/ # Iconos, splash, imágenes locales
+  app.json # Configuración de la app (nombre, iconos, plugins)
+  package.json # Dependencias y scripts
+  tsconfig.json # TypeScript y alias @/
+  expo-env.d.ts # Tipos de Expo (no editar)
+  AGENTS.md # Contexto del proyecto para agentes de IA
+```
+
+A medida que el proyecto crece añadirás más carpetas. Una evolución típica:
+
+```tree title="Proyecto en crecimiento"
+src/
+  app/
+    (auth)/
+      login.tsx
+    (tabs)/
+      _layout.tsx
+      index.tsx
+      profile.tsx
+    _layout.tsx
+  components/
+    ui/
+      button.tsx
+      input.tsx
+  hooks/
+    use-auth.ts
+  services/
+    api.ts
+  stores/
+    cart-store.ts
+  types/
+    user.ts
+eas.json # Perfiles de compilación (al configurar EAS)
+.env # Variables EXPO_PUBLIC_ (sin secretos)
+```
+
+## Ejemplo práctico
+
+El layout raíz es el punto de entrada de la app: sustituye al antiguo `App.tsx`. Aquí van proveedores, tema y el navegador principal:
+
+```tsx title="src/app/_layout.tsx"
+import { ThemeProvider, DarkTheme, DefaultTheme } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
+import { useColorScheme } from 'react-native';
+import { AppTabs } from '@/components/app-tabs';
+
+export default function RootLayout() {
+  const colorScheme = useColorScheme();
+
+  return (
+    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+      <AppTabs />
+      <StatusBar style="auto" />
+    </ThemeProvider>
+  );
+}
+```
+
+Los archivos `.native.tsx` permiten tener una implementación distinta para móvil y web. Metro elige el correcto según la plataforma:
+
+```tsx title="src/components/app-tabs.native.tsx"
+import { NativeTabs } from 'expo-router/native-tabs';
+
+export function AppTabs() {
+  return (
+    <NativeTabs>
+      <NativeTabs.Trigger name="index">
+        <NativeTabs.Trigger.Label>Inicio</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf="house.fill" md="home" />
+      </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="explore">
+        <NativeTabs.Trigger.Label>Explorar</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf="safari" md="explore" />
+      </NativeTabs.Trigger>
+    </NativeTabs>
+  );
+}
+```
+
+## Explicación del código
+
+- **`src/app/_layout.tsx`** se renderiza antes que cualquier pantalla. Es el lugar para cargar fuentes, configurar proveedores (tema, sesión, TanStack Query) y declarar el navegador raíz.
+- **`ThemeProvider`, `DarkTheme` y `DefaultTheme`** se importan desde `expo-router`. Desde SDK 56 Expo Router no depende de React Navigation, así que no importes de `@react-navigation/*` en proyectos con Expo Router.
+- **`app-tabs.native.tsx` vs `app-tabs.tsx`**: extensiones específicas de plataforma. En Android/iOS se usan las **tabs nativas** (`expo-router/native-tabs`, estable desde SDK 58); en web, unas tabs personalizables.
+- **`sf` y `md`** son los nombres de iconos de SF Symbols (iOS) y Material (Android) que muestra la barra de pestañas nativa.
+
+## Buenas prácticas
+
+- **`src/app` solo para rutas**: nada de componentes, utilidades ni tipos ahí dentro.
+- **Agrupa por funcionalidad** cuando el proyecto crezca (`src/features/cart`), como explicamos en [Arquitectura de carpetas](/docs/arquitectura/arquitectura-de-carpetas).
+- **No edites `expo-env.d.ts`** ni la carpeta `.expo/`: se regeneran.
+- **Mantén `AGENTS.md` actualizado** si usas asistentes de IA: describe convenciones y comandos del proyecto.
+
+### Errores comunes
+
+- Poner un `button.tsx` en `src/app/components/`: Expo Router intentará crear la ruta `/components/button`.
+- Editar `android/` o `ios/` tras un `prebuild` en un proyecto con CNG: los cambios se pierden en el siguiente prebuild. Usa config plugins.
+
+### Cuándo usar otra solución
+
+Si prefieres no usar `src/`, Expo Router también admite `app/` en la raíz del proyecto. Lo importante es ser consistente; la plantilla actual y este curso usan `src/app`.

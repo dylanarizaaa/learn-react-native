@@ -1,0 +1,143 @@
+---
+title: Publicación en Android e iOS
+description: De un build de producción a Google Play y App Store con EAS Submit. Cuentas, pistas de prueba, TestFlight, metadatos, revisión y checklist de lanzamiento.
+difficulty: avanzado
+time: 30
+prerequisites:
+  - expo/eas-build
+related:
+  - expo/eas-update
+  - calidad/produccion
+  - calidad/seguridad
+resources:
+  - title: Expo — Enviar a las tiendas (Expo Submit)
+    url: https://docs.expo.dev/submit/introduction/
+  - title: Google Play Console — Ayuda
+    url: https://support.google.com/googleplay/android-developer/
+  - title: App Store Review Guidelines
+    url: https://developer.apple.com/app-store/review/guidelines/
+  - title: Expo — Metadata de la tienda
+    url: https://docs.expo.dev/eas/metadata/
+keywords: [eas submit, google play, app store, testflight, play console, app store connect, publicación, revisión, metadata, auto-submit]
+---
+
+## Introducción conceptual
+
+Publicar tiene dos partes: **subir el binario** a cada tienda y **completar la ficha** (descripción, capturas, clasificación de contenido, privacidad). **EAS Submit** automatiza la primera: envía el último build de producción a Google Play Console o App Store Connect con un comando. La segunda se hace en la consola de cada tienda (o con **EAS Metadata** para iOS).
+
+| Requisito | Google Play | App Store |
+| --- | --- | --- |
+| Cuenta | Google Play Console (pago único de 25 USD) | Apple Developer Program (99 USD/año) |
+| Formato | AAB | IPA |
+| Pruebas previas | Pista interna / cerrada | TestFlight |
+| Revisión | Horas a pocos días | Normalmente 24–48 h |
+| Privacidad | Formulario de seguridad de datos | Etiquetas de privacidad (App Privacy) |
+
+<Overview
+  purpose="Llevar tu app a los usuarios a través de Google Play y App Store de forma repetible."
+  importance="Un proceso de publicación fiable evita rechazos, versiones incorrectas y fines de semana perdidos."
+  when="Al lanzar la primera versión y en cada versión que incluya cambios nativos."
+  problem="Automatiza la subida de binarios y reduce los errores manuales del proceso de publicación."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'eas build', desc: 'Perfil production' },
+    { title: 'eas submit', desc: 'Sube el binario', tone: 'brand' },
+    { title: 'Pruebas', desc: 'Pista interna / TestFlight' },
+    { title: 'Revisión', desc: 'Google / Apple' },
+    { title: 'Producción', desc: 'Lanzamiento gradual' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+<Steps>
+<Step title="Prepara las cuentas y la app en cada tienda">
+
+- **Google Play**: crea la app en Play Console. La **primera subida** de un AAB debe hacerse manualmente desde la consola (requisito de Google); después, EAS puede subir automáticamente. Crea una **cuenta de servicio** de Google Cloud con acceso a la API de Play y descarga su clave JSON.
+- **App Store**: crea la app en App Store Connect con el mismo `bundleIdentifier` de tu `app.json`. EAS puede crearla por ti en el primer envío si inicias sesión con tu Apple ID.
+
+</Step>
+<Step title="Configura el perfil de envío">
+
+```json title="eas.json (fragmento)"
+{
+  "submit": {
+    "production": {
+      "android": {
+        "serviceAccountKeyPath": "./secrets/google-play-service-account.json",
+        "track": "internal",
+        "releaseStatus": "draft"
+      },
+      "ios": {
+        "ascAppId": "1234567890"
+      }
+    }
+  }
+}
+```
+
+</Step>
+<Step title="Compila y envía">
+
+```bash
+# Envía el último build de producción
+eas submit --platform android --latest
+eas submit --platform ios --latest
+
+# O compila y envía en un solo paso
+eas build --profile production --platform all --auto-submit
+```
+
+</Step>
+<Step title="Prueba y promociona">
+
+- En Android, prueba con la **pista interna** y después promociona a cerrada, abierta o producción con un **lanzamiento gradual** (por ejemplo, 10 % de usuarios).
+- En iOS, el build aparece en **TestFlight** tras procesarse; invita testers internos y externos y luego envíalo a revisión desde App Store Connect.
+
+</Step>
+</Steps>
+
+### Checklist antes de enviar a revisión
+
+<Checklist
+  items={[
+    'Política de privacidad publicada en una URL accesible',
+    'Formulario de seguridad de datos (Play) y App Privacy (Apple) completos',
+    'Capturas de pantalla para cada tamaño de dispositivo requerido',
+    'Textos de permisos claros y justificados en app.json',
+    'Cuenta de prueba para los revisores si la app requiere login',
+    'Opción de eliminar la cuenta desde la app si permites registrarse',
+    'Iconos, nombre y descripción sin marcas registradas de terceros',
+    'Versión y notas de la versión actualizadas',
+  ]}
+/>
+
+## Explicación del código
+
+- **`serviceAccountKeyPath`** apunta a la clave JSON de la cuenta de servicio de Google. Guárdala fuera del repositorio (o súbela como secreto de EAS) y añade la carpeta `secrets/` al `.gitignore`.
+- **`track: "internal"`** sube a la pista de pruebas internas; **`releaseStatus: "draft"`** deja la versión como borrador para revisarla antes de publicarla.
+- **`ascAppId`** es el identificador numérico de la app en App Store Connect; evita preguntas interactivas en CI.
+- **`--latest`** envía el build de producción más reciente; también puedes indicar uno concreto con `--id`.
+- **`--auto-submit`** encadena build y envío, ideal en CI.
+
+## Buenas prácticas
+
+- **Publica primero a testers**: pista interna y TestFlight detectan problemas de firma, permisos o rendimiento antes de la revisión.
+- **Usa lanzamientos graduales** y vigila los informes de fallos antes de llegar al 100 %.
+- **Mantén las notas de versión** útiles para el usuario, no solo "corrección de errores".
+- **Automatiza** con EAS Workflows o GitHub Actions: build + submit al etiquetar una versión.
+
+### Errores comunes
+
+- Rechazo en iOS por textos de permisos genéricos ("Necesitamos tu ubicación"): explica el beneficio concreto.
+- Rechazo por no ofrecer eliminación de cuenta en apps con registro (requisito de Apple y Google).
+- Subir un número de build repetido: activa `autoIncrement` con `appVersionSource: "remote"`.
+- Intentar la primera subida a Google Play con EAS Submit: la primera debe ser manual.
+
+### Cuándo usar otra solución
+
+Para correcciones de JavaScript tras el lanzamiento, no necesitas pasar de nuevo por las tiendas: usa [EAS Update](/docs/expo/eas-update). Para distribuir apps internas de empresa sin tiendas públicas, valora la distribución interna de EAS, Google Play privado o Apple Business Manager.

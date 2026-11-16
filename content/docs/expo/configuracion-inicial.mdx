@@ -1,0 +1,150 @@
+---
+title: Configuración inicial
+description: Crear un proyecto Expo con TypeScript, limpiar la plantilla, configurar alias de importación, ESLint, Prettier y comprobar la salud del proyecto.
+difficulty: principiante
+time: 15
+prerequisites:
+  - introduccion/preparacion-del-entorno
+related:
+  - expo/estructura-del-proyecto
+  - expo/app-json
+  - sistema-de-componentes/configuracion-del-proyecto
+resources:
+  - title: Expo — create-expo-app
+    url: https://docs.expo.dev/more/create-expo/
+  - title: Expo — TypeScript
+    url: https://docs.expo.dev/guides/typescript/
+  - title: Expo — ESLint y Prettier
+    url: https://docs.expo.dev/guides/using-eslint/
+keywords: [create-expo-app, plantilla, template, reset-project, tsconfig, paths, alias, eslint, prettier, expo-doctor]
+---
+
+## Introducción conceptual
+
+Un proyecto bien configurado desde el primer día te ahorra problemas durante meses. Con Expo la base viene casi lista: TypeScript, Expo Router y la carpeta `src/app`. Solo hay que tomar algunas decisiones: qué plantilla usar, cómo importar módulos sin rutas relativas largas y qué herramientas de calidad activar.
+
+<Overview
+  purpose="Dejar un proyecto Expo listo para crecer: plantilla adecuada, TypeScript estricto, alias de importación y linting."
+  importance="Las convenciones que fijes al principio se replican en cada archivo nuevo; cambiarlas después es costoso."
+  when="Al crear un proyecto nuevo o al estandarizar uno existente en tu equipo."
+  problem="Evita importaciones del tipo ../../../components, estilos de código inconsistentes y dependencias desalineadas con el SDK."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'create-expo-app', desc: 'Plantilla default@sdk-58' },
+    { title: 'reset-project', desc: 'Limpia el ejemplo' },
+    { title: 'Alias @/', desc: 'tsconfig paths' },
+    { title: 'Calidad', desc: 'ESLint + Prettier + expo-doctor', tone: 'brand' },
+  ]}
+/>
+
+| Plantilla | Contenido | Cuándo |
+| --- | --- | --- |
+| `default` | Expo Router, TypeScript, tabs, tema claro/oscuro, ejemplos | Recomendada para la mayoría |
+| `blank-typescript` | Un único `App.tsx` con TypeScript | Experimentos o librerías |
+| `--example <nombre>` | Proyectos de ejemplo oficiales | Partir de una integración concreta |
+
+## Ejemplo práctico
+
+```bash
+# 1. Crear el proyecto
+npx create-expo-app@latest mi-app --template default@sdk-58
+cd mi-app
+
+# 2. Mover el código de ejemplo a app-example/ y dejar una app mínima
+npm run reset-project
+
+# 3. Configurar ESLint con las reglas de Expo (incluye React Compiler)
+npx expo lint
+
+# 4. Prettier integrado con ESLint
+npx expo install prettier eslint-config-prettier eslint-plugin-prettier --dev
+
+# 5. Comprobar que las dependencias son compatibles con el SDK
+npx expo install --check
+npx expo-doctor
+```
+
+La plantilla ya incluye el alias `@/` apuntando a `src/`. Así importas sin rutas relativas:
+
+```json title="tsconfig.json"
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "paths": {
+      "@/*": ["./src/*"],
+      "@/assets/*": ["./assets/*"]
+    }
+  },
+  "include": ["**/*.ts", "**/*.tsx", ".expo/types/**/*.ts", "expo-env.d.ts"]
+}
+```
+
+```js title="eslint.config.js"
+// https://docs.expo.dev/guides/using-eslint/
+const { defineConfig } = require('eslint/config');
+const expoConfig = require('eslint-config-expo/flat');
+const eslintPluginPrettierRecommended = require('eslint-plugin-prettier/recommended');
+
+module.exports = defineConfig([
+  expoConfig,
+  eslintPluginPrettierRecommended,
+  {
+    ignores: ['dist/*', 'app-example/*'],
+  },
+]);
+```
+
+```json title=".prettierrc"
+{
+  "singleQuote": true,
+  "printWidth": 100,
+  "trailingComma": "all"
+}
+```
+
+Y los scripts útiles en `package.json`:
+
+```json title="package.json"
+{
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "lint": "expo lint",
+    "typecheck": "tsc --noEmit",
+    "doctor": "npx expo-doctor"
+  }
+}
+```
+
+## Explicación del código
+
+- **`reset-project`** es un script de la plantilla: mueve los ejemplos a `app-example/` y crea un `src/app/index.tsx` vacío. Puedes borrar `app-example/` cuando ya no lo necesites.
+- **`extends: "expo/tsconfig.base"`** hereda la configuración recomendada para el SDK. **`strict: true`** activa todas las comprobaciones estrictas.
+- **`paths`** define los alias. Metro (el empaquetador) los entiende automáticamente, sin configuración extra.
+- **`.expo/types`** contiene los tipos generados de las rutas cuando activas *typed routes*.
+- **`eslint-config-expo/flat`** es la configuración oficial en formato *flat config*; incluye reglas de React, hooks y React Compiler.
+- **`npx expo install --check`** compara tus versiones con las recomendadas para el SDK y te propone corregirlas.
+- **`tsc --noEmit`** comprueba los tipos de todo el proyecto sin generar archivos; añádelo a tu CI.
+
+## Buenas prácticas
+
+- **Usa siempre el alias `@/`** en lugar de rutas relativas que suben más de un nivel.
+- **Ejecuta `lint` y `typecheck` en CI** antes de cada merge.
+- **Fija la versión de Node** en `.nvmrc` y en `eas.json` para que local y la nube coincidan.
+- **Commitea el lockfile** (`package-lock.json`) para builds reproducibles.
+
+### Errores comunes
+
+- Crear el proyecto con `create-expo-app@latest` sin plantilla durante la transición de SDK y acabar en el SDK anterior sin darte cuenta: revisa la versión de `expo` en `package.json`.
+- Instalar paquetes con `npm install` y obtener versiones incompatibles; usa `npx expo install`.
+- Configurar alias en Babel con plugins de terceros: no hace falta, Metro lee los `paths` de `tsconfig.json`.
+
+### Cuándo usar otra solución
+
+Si vas a usar NativeWind desde el principio, sigue la [configuración del proyecto del kit de componentes](/docs/sistema-de-componentes/configuracion-del-proyecto), que añade Tailwind, Babel y Metro sobre esta base. Para monorepos con varias apps, revisa [Biblioteca compartida](/docs/sistema-de-componentes/biblioteca-compartida).

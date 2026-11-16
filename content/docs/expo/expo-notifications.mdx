@@ -1,0 +1,196 @@
+---
+title: Expo Notifications
+description: Notificaciones locales programadas y notificaciones push con el servicio de Expo. Permisos, canales de Android, token, listeners y deep links.
+difficulty: avanzado
+time: 30
+prerequisites:
+  - expo/app-json
+  - introduccion/expo-go-vs-development-builds
+related:
+  - proyectos/notificaciones-push
+  - expo/expo-linking
+  - expo/eas-build
+resources:
+  - title: Expo — Notifications
+    url: https://docs.expo.dev/versions/latest/sdk/notifications/
+  - title: Expo — Configurar notificaciones push
+    url: https://docs.expo.dev/push-notifications/push-notifications-setup/
+  - title: Expo — Enviar notificaciones
+    url: https://docs.expo.dev/push-notifications/sending-notifications/
+keywords: [expo-notifications, push, notificaciones locales, scheduleNotificationAsync, getExpoPushTokenAsync, setNotificationHandler, canal android, FCM, APNs]
+---
+
+## Introducción conceptual
+
+Hay dos tipos de notificaciones:
+
+- **Locales**: las programa la propia app en el dispositivo (un recordatorio a las 9:00, una alarma). No necesitan servidor.
+- **Push (remotas)**: las envía tu servidor a través de los servicios de Apple (APNs) y Google (FCM). Expo ofrece un **servicio de push** que unifica ambos con un único token (`ExponentPushToken[…]`).
+
+`expo-notifications` gestiona las dos: permisos, programación, presentación en primer plano, respuesta del usuario al tocarlas y obtención del token push.
+
+<Callout type="warning" title="Development build obligatorio para push en Android">
+Desde SDK 53, las notificaciones push remotas no funcionan en Expo Go en Android. Usa un [development build](/docs/introduccion/expo-go-vs-development-builds). Las notificaciones locales sí funcionan en Expo Go.
+</Callout>
+
+<Overview
+  purpose="Avisar al usuario de eventos relevantes aunque la app esté cerrada: recordatorios, mensajes, cambios de estado de un pedido."
+  importance="Bien usadas, aumentan la retención; mal usadas, provocan que el usuario desactive los permisos o desinstale la app."
+  when="Eventos que el usuario quiere saber en el momento. No para publicidad indiscriminada."
+  problem="Unifica APNs y FCM, los permisos y la presentación de notificaciones en una sola API."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'App', desc: 'Pide permiso y obtiene el token' },
+    { title: 'Tu backend', desc: 'Guarda el token del usuario', tone: 'brand' },
+    { title: 'Expo Push API', desc: 'exp.host/--/api/v2/push/send' },
+    { title: 'APNs / FCM', desc: 'Entregan al dispositivo' },
+    { title: 'Usuario toca', desc: 'Listener → navegar' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+```bash
+npx expo install expo-notifications expo-device expo-constants
+```
+
+```json title="app.json"
+{
+  "expo": {
+    "plugins": [["expo-notifications", { "color": "#0284c7" }]]
+  }
+}
+```
+
+Un módulo con todo lo necesario: comportamiento en primer plano, registro y notificaciones locales.
+
+```ts title="src/lib/notifications.ts"
+import Constants from 'expo-constants';
+import * as Device from 'expo-device';
+import * as Notifications from 'expo-notifications';
+import { Platform } from 'react-native';
+
+// Cómo se muestran las notificaciones con la app abierta
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
+
+export async function registerForPushNotificationsAsync(): Promise<string | null> {
+  // Android 8+: las notificaciones necesitan un canal
+  if (Platform.OS === 'android') {
+    await Notifications.setNotificationChannelAsync('default', {
+      name: 'General',
+      importance: Notifications.AndroidImportance.HIGH,
+      vibrationPattern: [0, 250, 250, 250],
+    });
+  }
+
+  if (!Device.isDevice) return null; // los simuladores no reciben push
+
+  const { status: existing } = await Notifications.getPermissionsAsync();
+  const { status } = existing === 'granted' ? { status: existing } : await Notifications.requestPermissionsAsync();
+  if (status !== 'granted') return null;
+
+  const projectId = Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
+  if (!projectId) throw new Error('Falta el projectId de EAS (ejecuta eas init)');
+
+  const { data } = await Notifications.getExpoPushTokenAsync({ projectId });
+  return data; // "ExponentPushToken[xxxxxxxx]"
+}
+
+export function scheduleReminder(title: string, body: string, seconds: number) {
+  return Notifications.scheduleNotificationAsync({
+    content: { title, body, data: { url: '/recordatorios' } },
+    trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds },
+  });
+}
+
+export function scheduleDaily(hour: number, minute: number) {
+  return Notifications.scheduleNotificationAsync({
+    content: { title: 'Registra tus gastos', body: '¿Anotaste lo de hoy?', data: { url: '/gastos/nuevo' } },
+    trigger: { type: Notifications.SchedulableTriggerInputTypes.DAILY, hour, minute },
+  });
+}
+```
+
+Un hook que registra el dispositivo y navega al tocar una notificación:
+
+```tsx title="src/hooks/use-notification-setup.ts"
+import { useEffect } from 'react';
+import { router } from 'expo-router';
+import * as Notifications from 'expo-notifications';
+import { registerForPushNotificationsAsync } from '@/lib/notifications';
+import { savePushToken } from '@/services/devices';
+
+function redirect(notification: Notifications.Notification) {
+  const url = notification.request.content.data?.url;
+  if (typeof url === 'string') router.push(url as never);
+}
+
+export function useNotificationSetup() {
+  useEffect(() => {
+    registerForPushNotificationsAsync()
+      .then((token) => token && savePushToken(token))
+      .catch(console.warn);
+
+    // App abierta desde una notificación estando cerrada
+    const last = Notifications.getLastNotificationResponse();
+    if (last) redirect(last.notification);
+
+    // Usuario toca una notificación con la app en segundo plano o abierta
+    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      redirect(response.notification);
+    });
+    return () => subscription.remove();
+  }, []);
+}
+```
+
+Enviar una notificación push desde tu backend (Node.js):
+
+```ts title="server/send-push.ts"
+export async function sendPush(token: string, title: string, body: string, url: string) {
+  const response = await fetch('https://exp.host/--/api/v2/push/send', {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ to: token, title, body, sound: 'default', data: { url } }),
+  });
+  return response.json(); // contiene "tickets" para comprobar errores
+}
+```
+
+## Explicación del código
+
+- **`setNotificationHandler`** decide qué ocurre si llega una notificación con la app en primer plano. En las versiones actuales se usan `shouldShowBanner` y `shouldShowList` (la antigua `shouldShowAlert` está obsoleta).
+- **El canal de Android** define la importancia, el sonido y la vibración; el usuario puede ajustarlo después en los ajustes del sistema.
+- **`projectId`** identifica tu proyecto de EAS y es obligatorio para obtener el token de Expo. Se añade a `app.json` al ejecutar `eas init`.
+- **`SchedulableTriggerInputTypes`** define el disparador: `TIME_INTERVAL` (dentro de N segundos), `DAILY`, `WEEKLY`, `DATE`…
+- **`data.url`** viaja con la notificación; al tocarla, el listener navega a esa ruta con Expo Router.
+- **`getLastNotificationResponse`** cubre el caso en que la app estaba cerrada y se abrió al tocar la notificación.
+- **En el servidor**, la API de Expo devuelve *tickets*; consulta después los *receipts* para detectar tokens inválidos (`DeviceNotRegistered`) y eliminarlos de tu base de datos.
+
+## Buenas prácticas
+
+- **Pide el permiso en el momento adecuado**, tras explicar el valor ("Te avisaremos cuando tu pedido salga"), no al abrir la app por primera vez.
+- **Guarda el token asociado al usuario** y actualízalo al iniciar sesión; elimínalo al cerrar sesión.
+- **Respeta la frecuencia**: agrupa notificaciones y permite configurarlas por tipo.
+- **Usa deep links** en el `data` para llevar al usuario directamente al contenido.
+
+### Errores comunes
+
+- Probar push en un simulador o en Expo Go (Android).
+- No crear el canal en Android: las notificaciones pueden no mostrarse con la importancia esperada.
+- No configurar las credenciales de push: FCM (Android) se configura en EAS con tu archivo de Firebase y APNs (iOS) se gestiona automáticamente con `eas credentials`.
+
+### Cuándo usar otra solución
+
+Si ya usas Firebase o un proveedor como OneSignal, puedes enviar directamente con FCM/APNs usando el token nativo (`getDevicePushTokenAsync`). Para mensajería en tiempo real con la app abierta, usa [WebSockets](/docs/datos/websockets).

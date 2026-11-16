@@ -1,0 +1,221 @@
+---
+title: Expo SQLite
+description: Base de datos SQL local con SQLiteProvider, migraciones con user_version, consultas parametrizadas, transacciones y el almacén clave-valor kv-store.
+difficulty: avanzado
+time: 30
+prerequisites:
+  - react-typescript/context-api
+  - react-typescript/interfaces-y-tipos
+related:
+  - proyectos/notas
+  - proyectos/offline-first
+  - arquitectura/servicios-y-repositorios
+resources:
+  - title: Expo — SQLite
+    url: https://docs.expo.dev/versions/latest/sdk/sqlite/
+  - title: SQLite — Documentación
+    url: https://www.sqlite.org/docs.html
+keywords: [expo-sqlite, sqlite, base de datos, SQLiteProvider, useSQLiteContext, migraciones, user_version, runAsync, getAllAsync, transacciones, kv-store, offline]
+---
+
+## Introducción conceptual
+
+`expo-sqlite` incluye una base de datos **SQLite** completa en el dispositivo. Es la opción adecuada cuando tu app necesita **datos estructurados y consultables sin conexión**: notas, inventario, ventas, mensajes en caché o una cola de cambios pendientes de sincronizar.
+
+La API moderna es asíncrona y tipada: `openDatabaseAsync`, `runAsync`, `getAllAsync`, `getFirstAsync`, transacciones, y un proveedor de React (`SQLiteProvider`) para compartir la conexión con toda la app.
+
+<Overview
+  purpose="Persistir y consultar datos estructurados en el dispositivo con SQL."
+  importance="Permite apps que funcionan sin conexión, arrancan rápido con datos locales y manejan miles de registros con filtros y ordenaciones."
+  when="Datos relacionales o numerosos que deben consultarse con filtros: inventarios, transacciones, notas, catálogos en caché."
+  problem="Evita guardar grandes JSON en AsyncStorage y filtrarlos en memoria, lo que es lento y propenso a corrupciones."
+/>
+
+## Explicación visual
+
+<Layers
+  layers={[
+    { title: 'Pantallas', desc: 'Componentes', items: ['useNotes()', 'useSQLiteContext()'], tone: 'brand' },
+    { title: 'Repositorio', desc: 'Funciones tipadas', items: ['listNotes(db)', 'createNote(db, input)', 'deleteNote(db, id)'] },
+    { title: 'SQLiteProvider', desc: 'Conexión y migraciones', items: ['databaseName', 'onInit', 'PRAGMA user_version'] },
+    { title: 'SQLite', desc: 'Archivo en el dispositivo', items: ['notas.db', 'WAL'], tone: 'muted' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+```bash
+npx expo install expo-sqlite
+```
+
+<CodeTabs>
+
+```ts title="src/db/migrations.ts"
+import type { SQLiteDatabase } from 'expo-sqlite';
+
+const DATABASE_VERSION = 2;
+
+/** Aplica las migraciones pendientes según PRAGMA user_version. */
+export async function migrateDbIfNeeded(db: SQLiteDatabase) {
+  const row = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
+  let version = row?.user_version ?? 0;
+  if (version >= DATABASE_VERSION) return;
+
+  if (version === 0) {
+    await db.execAsync(`
+      PRAGMA journal_mode = WAL;
+      CREATE TABLE IF NOT EXISTS notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+    version = 1;
+  }
+
+  if (version === 1) {
+    // Migración 2: añadimos etiquetas y un índice
+    await db.execAsync(`
+      ALTER TABLE notes ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+      CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes (created_at);
+    `);
+    version = 2;
+  }
+
+  await db.execAsync(`PRAGMA user_version = ${DATABASE_VERSION}`);
+}
+```
+
+```ts title="src/db/notes-repository.ts"
+import type { SQLiteDatabase } from 'expo-sqlite';
+
+export type Note = { id: number; title: string; body: string; pinned: boolean; createdAt: string };
+type NoteRow = { id: number; title: string; body: string; pinned: number; created_at: string };
+
+const toNote = (row: NoteRow): Note => ({
+  id: row.id,
+  title: row.title,
+  body: row.body,
+  pinned: row.pinned === 1,
+  createdAt: row.created_at,
+});
+
+export async function listNotes(db: SQLiteDatabase, search = ''): Promise<Note[]> {
+  const rows = await db.getAllAsync<NoteRow>(
+    `SELECT * FROM notes WHERE title LIKE $q OR body LIKE $q ORDER BY pinned DESC, created_at DESC`,
+    { $q: `%${search}%` },
+  );
+  return rows.map(toNote);
+}
+
+export async function createNote(db: SQLiteDatabase, input: { title: string; body: string }) {
+  const result = await db.runAsync('INSERT INTO notes (title, body) VALUES (?, ?)', input.title, input.body);
+  return result.lastInsertRowId;
+}
+
+export async function togglePinned(db: SQLiteDatabase, id: number) {
+  await db.runAsync('UPDATE notes SET pinned = 1 - pinned WHERE id = ?', id);
+}
+
+export async function deleteNotes(db: SQLiteDatabase, ids: number[]) {
+  // Transacción exclusiva: o se borran todas o ninguna
+  await db.withExclusiveTransactionAsync(async (tx) => {
+    for (const id of ids) await tx.runAsync('DELETE FROM notes WHERE id = ?', id);
+  });
+}
+```
+
+```tsx title="src/app/_layout.tsx"
+import { Stack } from 'expo-router';
+import { SQLiteProvider } from 'expo-sqlite';
+import { Suspense } from 'react';
+import { ActivityIndicator } from 'react-native';
+import { migrateDbIfNeeded } from '@/db/migrations';
+
+export default function RootLayout() {
+  return (
+    <Suspense fallback={<ActivityIndicator style={{ flex: 1 }} />}>
+      <SQLiteProvider databaseName="notas.db" onInit={migrateDbIfNeeded} useSuspense>
+        <Stack />
+      </SQLiteProvider>
+    </Suspense>
+  );
+}
+```
+
+```tsx title="src/app/index.tsx"
+import { useCallback, useState } from 'react';
+import { useFocusEffect } from 'expo-router';
+import { useSQLiteContext } from 'expo-sqlite';
+import { FlatList, Pressable, Text } from 'react-native';
+import { listNotes, togglePinned, type Note } from '@/db/notes-repository';
+
+export default function NotesScreen() {
+  const db = useSQLiteContext();
+  const [notes, setNotes] = useState<Note[]>([]);
+
+  const load = useCallback(() => {
+    listNotes(db).then(setNotes);
+  }, [db]);
+
+  // Recargar cada vez que la pantalla recibe el foco (por ejemplo, al volver del editor)
+  useFocusEffect(load);
+
+  return (
+    <FlatList
+      data={notes}
+      keyExtractor={(n) => String(n.id)}
+      renderItem={({ item }) => (
+        <Pressable onLongPress={() => togglePinned(db, item.id).then(load)} style={{ padding: 16 }}>
+          <Text style={{ fontWeight: '600' }}>
+            {item.pinned ? '📌 ' : ''}
+            {item.title}
+          </Text>
+          <Text numberOfLines={1}>{item.body}</Text>
+        </Pressable>
+      )}
+    />
+  );
+}
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`PRAGMA user_version`** es un número que SQLite guarda en el archivo. Lo usamos como versión del esquema: cada migración se aplica una sola vez y en orden, incluso si el usuario se salta varias versiones de la app.
+- **`journal_mode = WAL`** mejora el rendimiento de lecturas y escrituras concurrentes.
+- **Parámetros** (`?`, `$q`): nunca concatenes valores del usuario en el SQL. Los parámetros evitan inyecciones SQL. Ojo: `execAsync` **no** admite parámetros; úsalo solo para SQL fijo.
+- **`runAsync`** devuelve `lastInsertRowId` y `changes`. **`getAllAsync<T>`** y **`getFirstAsync<T>`** tipan las filas.
+- **El repositorio** traduce filas de SQL (`snake_case`, enteros 0/1) a objetos del dominio (`camelCase`, booleanos). Las pantallas nunca ven SQL.
+- **`withExclusiveTransactionAsync`** garantiza que solo las consultas del callback forman parte de la transacción.
+- **`SQLiteProvider` con `useSuspense`** abre la base de datos, ejecuta `onInit` (migraciones) y muestra el `fallback` de `Suspense` hasta que está lista. `useSQLiteContext` da acceso a la conexión desde cualquier componente.
+
+### Almacén clave-valor
+
+Para preferencias simples, `expo-sqlite` incluye un almacén con la misma API que AsyncStorage:
+
+```ts
+import Storage from 'expo-sqlite/kv-store';
+
+await Storage.setItem('onboarding-done', 'true');
+const done = Storage.getItemSync('onboarding-done') === 'true';
+```
+
+## Buenas prácticas
+
+- **Versiona el esquema desde el primer día** y nunca modifiques una migración ya publicada: añade una nueva.
+- **Crea índices** para las columnas por las que filtras u ordenas con frecuencia.
+- **Agrupa escrituras masivas** en una transacción: es muchísimo más rápido que insertar fila a fila.
+- **Combínalo con TanStack Query** para cachear y refrescar las consultas en la UI, o con un ORM tipado como Drizzle si prefieres no escribir SQL.
+
+### Errores comunes
+
+- Concatenar strings del usuario en el SQL.
+- Hacer migraciones destructivas (`DROP TABLE`) sin copiar los datos.
+- Guardar fechas en formatos inconsistentes: usa ISO 8601 (`datetime('now')`) o timestamps numéricos.
+
+### Cuándo usar otra solución
+
+Para unos pocos valores, `expo-sqlite/kv-store` o AsyncStorage. Para sincronización automática con un backend, valora soluciones como PowerSync o una base de datos reactiva; lo construimos manualmente en [Sincronización de datos](/docs/proyectos/sincronizacion-de-datos). En SDK 58 se eliminó el soporte de libSQL de `expo-sqlite`.

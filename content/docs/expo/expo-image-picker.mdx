@@ -1,0 +1,180 @@
+---
+title: Expo Image Picker
+description: Elegir imágenes y vídeos de la galería o hacer una foto con la interfaz del sistema, recortar, comprimir y subir el archivo a una API.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - expo/app-json
+related:
+  - expo/expo-camera
+  - expo/expo-file-system
+  - fundamentos/image-e-imagebackground
+resources:
+  - title: Expo — ImagePicker
+    url: https://docs.expo.dev/versions/latest/sdk/imagepicker/
+  - title: Expo — FileSystem
+    url: https://docs.expo.dev/versions/latest/sdk/filesystem/
+keywords: [expo-image-picker, galería, launchImageLibraryAsync, launchCameraAsync, mediaTypes, avatar, subir imagen, FormData]
+---
+
+## Introducción conceptual
+
+`expo-image-picker` abre la **interfaz del sistema** para elegir fotos o vídeos de la galería, o para hacer una foto con la cámara. A diferencia de `expo-camera`, no construyes la interfaz: el sistema la proporciona y tú recibes el resultado (la `uri` del archivo, sus dimensiones, tipo y tamaño).
+
+<Overview
+  purpose="Permitir que el usuario seleccione o capture imágenes y vídeos con la interfaz nativa del sistema."
+  importance="Es la forma más rápida y familiar para el usuario de subir avatares, fotos de productos o adjuntos."
+  when="Avatares, adjuntos, fotos de productos o documentos. Para una cámara integrada en tu UI usa expo-camera."
+  problem="Evita construir una galería propia y gestionar la complejidad del acceso a fotos en cada plataforma."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'Usuario pulsa', desc: '«Cambiar foto»' },
+    { title: 'launchImageLibraryAsync', desc: 'Galería del sistema', tone: 'brand' },
+    { title: 'result.canceled?', desc: 'El usuario puede cancelar', tone: 'muted' },
+    { title: 'result.assets[0]', desc: 'uri, width, height, mimeType' },
+    { title: 'Subir', desc: 'FormData a tu API' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+```bash
+npx expo install expo-image-picker expo-image
+```
+
+```json title="app.json"
+{
+  "expo": {
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Permite a $(PRODUCT_NAME) acceder a tus fotos para cambiar tu avatar.",
+          "cameraPermission": "Permite a $(PRODUCT_NAME) usar la cámara para tu foto de perfil."
+        }
+      ]
+    ]
+  }
+}
+```
+
+Un selector de avatar con galería, cámara y subida al servidor:
+
+```tsx title="src/components/avatar-picker.tsx"
+import { useState } from 'react';
+import { Image } from 'expo-image';
+import * as ImagePicker from 'expo-image-picker';
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+
+type AvatarPickerProps = { initialUri?: string; onUploaded: (url: string) => void };
+
+async function uploadAvatar(asset: ImagePicker.ImagePickerAsset): Promise<string> {
+  const form = new FormData();
+  form.append('avatar', {
+    uri: asset.uri,
+    name: asset.fileName ?? 'avatar.jpg',
+    type: asset.mimeType ?? 'image/jpeg',
+  } as unknown as Blob);
+
+  const response = await fetch(`${process.env.EXPO_PUBLIC_API_URL}/me/avatar`, { method: 'POST', body: form });
+  if (!response.ok) throw new Error('No se pudo subir la imagen');
+  const { url } = (await response.json()) as { url: string };
+  return url;
+}
+
+export function AvatarPicker({ initialUri, onUploaded }: AvatarPickerProps) {
+  const [uri, setUri] = useState(initialUri);
+  const [uploading, setUploading] = useState(false);
+
+  async function handleResult(result: ImagePicker.ImagePickerResult) {
+    if (result.canceled) return;
+    const asset = result.assets[0];
+    setUri(asset.uri); // vista previa inmediata
+    try {
+      setUploading(true);
+      onUploaded(await uploadAvatar(asset));
+    } catch {
+      Alert.alert('Error', 'No se pudo subir la foto. Inténtalo de nuevo.');
+      setUri(initialUri);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function pickFromLibrary() {
+    // La galería del sistema no requiere permiso previo para seleccionar
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+    await handleResult(result);
+  }
+
+  async function takePhoto() {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Permiso necesario', 'Activa el acceso a la cámara en los ajustes.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({ allowsEditing: true, aspect: [1, 1], quality: 0.8 });
+    await handleResult(result);
+  }
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.avatarWrapper}>
+        <Image source={uri ? { uri } : require('@/assets/images/avatar-placeholder.png')} style={styles.avatar} />
+        {uploading && <ActivityIndicator style={StyleSheet.absoluteFill} color="#fff" />}
+      </View>
+      <View style={styles.actions}>
+        <Pressable onPress={pickFromLibrary} disabled={uploading} style={styles.button}>
+          <Text>Elegir de la galería</Text>
+        </Pressable>
+        <Pressable onPress={takePhoto} disabled={uploading} style={styles.button}>
+          <Text>Hacer una foto</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { alignItems: 'center', gap: 16 },
+  avatarWrapper: { width: 120, height: 120, borderRadius: 60, overflow: 'hidden', backgroundColor: '#e5e7eb' },
+  avatar: { width: '100%', height: '100%' },
+  actions: { flexDirection: 'row', gap: 12 },
+  button: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: '#d1d5db' },
+});
+```
+
+## Explicación del código
+
+- **`mediaTypes: ['images']`** limita la selección a imágenes (puedes usar `['images', 'videos']`). Es la API actual; la antigua `MediaTypeOptions` está obsoleta.
+- **`allowsEditing` + `aspect: [1, 1]`** muestran el editor de recorte del sistema con proporción cuadrada, ideal para avatares.
+- **`quality: 0.8`** comprime la imagen JPEG para reducir el tamaño de la subida.
+- **`result.canceled`**: el usuario puede cerrar la galería sin elegir. Siempre compruébalo antes de leer `assets`.
+- **Seleccionar de la galería no requiere permiso previo** (el sistema muestra su propio selector), pero **la cámara sí**: por eso solo pedimos permiso en `takePhoto`.
+- **`FormData`** con `{ uri, name, type }` es la forma de enviar un archivo local en React Native. El *cast* es necesario porque el tipo de `FormData` de la web no contempla este objeto.
+- **Vista previa optimista**: mostramos la imagen local antes de que termine la subida y la revertimos si falla.
+
+## Buenas prácticas
+
+- **Redimensiona antes de subir** las imágenes grandes (por ejemplo, con `expo-image-manipulator`) para ahorrar datos y tiempo.
+- **Muestra el progreso o un indicador** durante la subida y deshabilita los botones.
+- **Valida en el servidor** el tipo y el tamaño del archivo.
+
+### Errores comunes
+
+- Acceder a `result.assets[0]` sin comprobar `canceled`.
+- Usar la `uri` temporal como almacenamiento permanente: puede borrarse. Copia el archivo con [expo-file-system](/docs/expo/expo-file-system) si debes conservarlo.
+- Olvidar el texto `photosPermission` en `app.json` antes de publicar en iOS.
+
+### Cuándo usar otra solución
+
+Si necesitas una cámara personalizada (guías visuales, escaneo de códigos), usa [expo-camera](/docs/expo/expo-camera). Para elegir documentos PDF u otros archivos, usa `expo-document-picker` o `File.pickFileAsync()` de `expo-file-system`.

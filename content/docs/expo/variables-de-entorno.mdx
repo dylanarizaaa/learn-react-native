@@ -1,0 +1,139 @@
+---
+title: Variables de entorno
+description: Variables EXPO_PUBLIC_ en archivos .env, configuración por entorno, variables de EAS y por qué ningún secreto debe viajar dentro de la app.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - expo/configuracion-inicial
+related:
+  - expo/app-json
+  - expo/eas-build
+  - calidad/seguridad
+resources:
+  - title: Expo — Variables de entorno
+    url: https://docs.expo.dev/guides/environment-variables/
+  - title: Expo — Variables de entorno en EAS
+    url: https://docs.expo.dev/eas/environment-variables/
+keywords: [variables de entorno, .env, EXPO_PUBLIC_, process.env, eas env, app.config.ts, secretos, staging, producción]
+---
+
+## Introducción conceptual
+
+Las <Term slug="variables-de-entorno">variables de entorno</Term> separan la configuración del código: la URL de la API de desarrollo y la de producción, claves públicas de servicios o *feature flags*.
+
+En Expo, las variables que empiezan por **`EXPO_PUBLIC_`** se **incrustan en el bundle de JavaScript** al compilar. Eso tiene una consecuencia crítica: **cualquiera puede leerlas** descomprimiendo la app. Nunca pongas ahí secretos (claves privadas, tokens de administrador, claves de servicios de pago).
+
+<Overview
+  purpose="Configurar la app según el entorno (desarrollo, preview, producción) sin cambiar el código."
+  importance="Evita publicar por error una app apuntando a la API de pruebas y facilita trabajar con varios entornos."
+  when="Para URLs de API, claves públicas (Supabase publishable key, Sentry DSN), identificadores de entorno y flags."
+  problem="Elimina valores de configuración repetidos o escritos a mano en el código y los centraliza por entorno."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="Puede ir en EXPO_PUBLIC_" tone="good">
+    - URL de tu API.
+    - Clave pública/publishable de Supabase o Firebase.
+    - DSN de Sentry.
+    - Nombre del entorno.
+  </Column>
+  <Column title="Nunca en la app" tone="bad">
+    - Claves secretas de Stripe o pasarelas de pago.
+    - Service role keys de Supabase.
+    - Credenciales de bases de datos.
+    - Tokens de administrador.
+  </Column>
+</Columns>
+
+| Modo | Archivos que se cargan (de mayor a menor prioridad) |
+| --- | --- |
+| Desarrollo (`npx expo start`) | `.env.development.local`, `.env.local`, `.env.development`, `.env` |
+| Producción (`npx expo export`, builds) | `.env.production.local`, `.env.local`, `.env.production`, `.env` |
+
+<Callout type="warning" title="Cambio en SDK 58">
+En SDK 58 cada comando fija `NODE_ENV` según su modo y Expo ya no carga archivos no estándar como `.env.staging` o `.env.test`. Para cambiar de entorno usa `eas env:pull` o un script que sustituya `.env.local`.
+</Callout>
+
+## Ejemplo práctico
+
+```dotenv title=".env"
+# Se pueden commitear: no contienen secretos
+EXPO_PUBLIC_API_URL=https://api.staging.miapp.com
+EXPO_PUBLIC_APP_ENV=development
+```
+
+```dotenv title=".env.production"
+EXPO_PUBLIC_API_URL=https://api.miapp.com
+EXPO_PUBLIC_APP_ENV=production
+```
+
+Valida las variables en un único módulo, así un valor ausente falla al arrancar y no en mitad de una petición:
+
+```ts title="src/config/env.ts"
+import { z } from 'zod';
+
+const envSchema = z.object({
+  EXPO_PUBLIC_API_URL: z.url(),
+  EXPO_PUBLIC_APP_ENV: z.enum(['development', 'preview', 'production']),
+});
+
+// Importante: acceso con punto para que Expo pueda incrustar cada valor
+export const env = envSchema.parse({
+  EXPO_PUBLIC_API_URL: process.env.EXPO_PUBLIC_API_URL,
+  EXPO_PUBLIC_APP_ENV: process.env.EXPO_PUBLIC_APP_ENV,
+});
+
+export const isProduction = env.EXPO_PUBLIC_APP_ENV === 'production';
+```
+
+Variables en EAS para los builds en la nube:
+
+```bash
+# Crear una variable para el entorno de producción
+eas env:create --environment production --name EXPO_PUBLIC_API_URL --value https://api.miapp.com --visibility plaintext
+
+# Descargar las variables de un entorno a .env.local para trabajar en local
+eas env:pull --environment preview
+
+# Listar variables
+eas env:list --environment production
+```
+
+Y en `eas.json`, cada perfil indica qué entorno de variables usa:
+
+```json title="eas.json"
+{
+  "build": {
+    "development": { "developmentClient": true, "distribution": "internal", "environment": "development" },
+    "preview": { "distribution": "internal", "environment": "preview" },
+    "production": { "environment": "production" }
+  }
+}
+```
+
+## Explicación del código
+
+- **El prefijo `EXPO_PUBLIC_`** es obligatorio para que una variable llegue al código de la app. Las demás solo están disponibles en archivos de configuración que se ejecutan en Node (como `app.config.ts`) o en el proceso de build.
+- **Acceso con punto** (`process.env.EXPO_PUBLIC_API_URL`): Expo reemplaza literalmente esa expresión por su valor al empaquetar. `process.env['EXPO_PUBLIC_API_URL']` o la desestructuración (`const { X } = process.env`) **no** funcionan.
+- **Zod** valida tipos y formatos al importar el módulo. `z.url()` es la API de Zod 4.
+- **`eas env:create`** guarda variables en los servidores de Expo por entorno (`development`, `preview`, `production`). La visibilidad (`plaintext`, `sensitive`, `secret`) controla quién puede verlas en el panel; aun así, las `EXPO_PUBLIC_` acaban dentro de la app.
+- **`environment` en cada perfil de `eas.json`** hace que cada build use las variables de su entorno.
+
+## Buenas prácticas
+
+- **Añade `.env*.local` al `.gitignore`**: contienen configuración de tu máquina.
+- **Un único módulo `env.ts`** con validación: el resto de la app importa `env`, nunca `process.env` directamente.
+- **Mueve los secretos al backend**: si la app necesita llamar a un servicio con una clave secreta, hazlo a través de tu servidor o de una función (por ejemplo, Expo API Routes o una Edge Function).
+- **Tras cambiar un `.env`**, recarga la app; si cambias variables usadas en `app.config.ts`, reinicia el servidor.
+
+### Errores comunes
+
+- Poner una clave secreta en `EXPO_PUBLIC_` "porque es una app privada": cualquiera con el APK puede extraerla.
+- Leer variables con desestructuración y obtener `undefined`.
+- Esperar que `.env.staging` se cargue en SDK 58.
+
+### Cuándo usar otra solución
+
+Para valores que dependen del perfil de build (nombre de la app, identificador de paquete por entorno), usa un `app.config.ts` dinámico que lea `process.env.APP_VARIANT` ([Configuración de app.json](/docs/expo/app-json)). Para flags que quieres cambiar sin publicar, usa un servicio de *remote config*.

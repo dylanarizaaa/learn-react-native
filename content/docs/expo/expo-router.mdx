@@ -1,0 +1,189 @@
+---
+title: Expo Router
+description: Navegación basada en archivos. Layouts, Stack, Tabs, tabs nativas, Link, navegación imperativa y cómo se combinan los navegadores.
+difficulty: intermedio
+time: 25
+prerequisites:
+  - expo/estructura-del-proyecto
+related:
+  - expo/navegacion-por-archivos
+  - expo/expo-linking
+  - sistema-de-componentes/navegacion
+resources:
+  - title: Expo Router — Introducción
+    url: https://docs.expo.dev/router/introduction/
+  - title: Expo Router — Conceptos principales
+    url: https://docs.expo.dev/router/basics/core-concepts/
+  - title: Expo Router — Navegación
+    url: https://docs.expo.dev/router/basics/navigation/
+  - title: Expo Router — Tabs nativas
+    url: https://docs.expo.dev/router/advanced/native-tabs/
+keywords: [expo router, navegación, Stack, Tabs, NativeTabs, Link, useRouter, layout, _layout, navigate, push, replace]
+---
+
+## Introducción conceptual
+
+<Term slug="expo-router">Expo Router</Term> es el sistema de navegación de Expo. En lugar de declarar las pantallas en código, **cada archivo dentro de `src/app` es una ruta** y cada carpeta puede tener un **layout** (`_layout.tsx`) que decide cómo se presentan sus pantallas: en una pila (`Stack`), en pestañas (`Tabs`) o en un cajón (`Drawer`).
+
+Ventajas principales:
+
+- **Cada pantalla tiene una URL**, así que los <Term slug="deep-link">deep links</Term> funcionan sin configuración.
+- **Rutas tipadas**: TypeScript detecta enlaces a rutas inexistentes.
+- **Mismo código para Android, iOS y web**.
+
+<Overview
+  purpose="Definir la navegación de la app con la estructura de archivos y moverse entre pantallas."
+  importance="La navegación es el esqueleto de la app; Expo Router la hace predecible, enlazable y fácil de mantener."
+  when="En cualquier app con más de una pantalla. Es la opción por defecto en las plantillas de Expo."
+  problem="Elimina la configuración manual de navegadores y de deep linking, y mantiene alineadas URL y pantallas."
+/>
+
+## Explicación visual
+
+<Layers
+  caption="Los navegadores se anidan siguiendo las carpetas."
+  layers={[
+    { title: 'src/app/_layout.tsx', desc: 'Stack raíz', items: ['(tabs)', 'producto/[id]', 'nuevo-pedido (modal)'], tone: 'brand' },
+    { title: 'src/app/(tabs)/_layout.tsx', desc: 'Tabs', items: ['index', 'buscar', 'perfil'] },
+    { title: 'Pantallas', desc: 'Archivos .tsx', items: ['index.tsx', 'buscar.tsx', 'perfil.tsx', 'producto/[id].tsx'], tone: 'muted' },
+  ]}
+/>
+
+| Navegador | Import | Uso |
+| --- | --- | --- |
+| `Stack` | `expo-router` | Pantallas apiladas con cabecera y gesto atrás |
+| `Tabs` | `expo-router` | Pestañas en JavaScript, muy personalizables |
+| `NativeTabs` | `expo-router/native-tabs` | Barra de pestañas nativa del sistema |
+| `Drawer` | `expo-router/drawer` | Menú lateral |
+
+## Ejemplo práctico
+
+Una app con pestañas dentro de una pila raíz, una pantalla de detalle y un modal:
+
+```tree title="src/app"
+src/app/
+  _layout.tsx # Stack raíz
+  (tabs)/
+    _layout.tsx # Tabs
+    index.tsx # "/"
+    perfil.tsx # "/perfil"
+  producto/
+    [id].tsx # "/producto/123"
+  nuevo-pedido.tsx # "/nuevo-pedido" (modal)
+```
+
+<CodeTabs>
+
+```tsx title="src/app/_layout.tsx"
+import { Stack } from 'expo-router';
+
+export default function RootLayout() {
+  return (
+    <Stack>
+      {/* El grupo de pestañas no muestra la cabecera del Stack */}
+      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+      <Stack.Screen name="producto/[id]" options={{ title: 'Producto' }} />
+      <Stack.Screen name="nuevo-pedido" options={{ presentation: 'modal', title: 'Nuevo pedido' }} />
+    </Stack>
+  );
+}
+```
+
+```tsx title="src/app/(tabs)/_layout.tsx"
+import { NativeTabs } from 'expo-router/native-tabs';
+
+export default function TabsLayout() {
+  return (
+    <NativeTabs>
+      <NativeTabs.Trigger name="index">
+        <NativeTabs.Trigger.Label>Inicio</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf="house.fill" md="home" />
+      </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="perfil">
+        <NativeTabs.Trigger.Label>Perfil</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf="person.fill" md="person" />
+      </NativeTabs.Trigger>
+    </NativeTabs>
+  );
+}
+```
+
+```tsx title="src/app/(tabs)/index.tsx"
+import { Link, useRouter } from 'expo-router';
+import { FlatList, Pressable, Text, View } from 'react-native';
+
+const PRODUCTS = [
+  { id: '1', name: 'Café de grano' },
+  { id: '2', name: 'Prensa francesa' },
+];
+
+export default function HomeScreen() {
+  const router = useRouter();
+
+  return (
+    <View style={{ flex: 1, padding: 16, gap: 12 }}>
+      <FlatList
+        data={PRODUCTS}
+        keyExtractor={(p) => p.id}
+        renderItem={({ item }) => (
+          // Navegación declarativa: Link con asChild delega en Pressable
+          <Link href={{ pathname: '/producto/[id]', params: { id: item.id } }} asChild>
+            <Pressable style={{ paddingVertical: 14 }}>
+              <Text style={{ fontSize: 16 }}>{item.name}</Text>
+            </Pressable>
+          </Link>
+        )}
+      />
+      {/* Navegación imperativa */}
+      <Pressable onPress={() => router.navigate('/nuevo-pedido')} style={{ padding: 14, backgroundColor: '#111827', borderRadius: 12 }}>
+        <Text style={{ color: '#fff', textAlign: 'center' }}>Nuevo pedido</Text>
+      </Pressable>
+    </View>
+  );
+}
+```
+
+```tsx title="src/app/producto/[id].tsx"
+import { Stack, useLocalSearchParams } from 'expo-router';
+import { Text, View } from 'react-native';
+
+export default function ProductScreen() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+
+  return (
+    <View style={{ flex: 1, padding: 16 }}>
+      {/* Las opciones también se pueden fijar desde la propia pantalla */}
+      <Stack.Screen options={{ title: `Producto ${id}` }} />
+      <Text>Detalle del producto {id}</Text>
+    </View>
+  );
+}
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **El Stack raíz** contiene el grupo `(tabs)` como una pantalla más. Por eso, al abrir un producto, la nueva pantalla se apila **encima** de las pestañas, y el botón atrás vuelve a ellas.
+- **`(tabs)`** es un **grupo**: los paréntesis organizan archivos sin añadir un segmento a la URL. `src/app/(tabs)/perfil.tsx` responde a `/perfil`.
+- **`NativeTabs`** usa la barra de pestañas del sistema (con el aspecto *Liquid Glass* en iOS recientes). A diferencia del `Stack`, las pestañas se declaran explícitamente con `NativeTabs.Trigger`.
+- **`Link` con `href` como objeto** (`pathname` + `params`) construye la URL de forma segura. `asChild` pasa la navegación al `Pressable`, así controlas el layout del elemento.
+- **`router.navigate`** empuja una pantalla o vuelve a ella si ya está en la pila. También existen `router.push` (siempre apila), `router.replace` (sustituye la actual, útil tras un login) y `router.back`.
+- **`<Stack.Screen options>` dentro de una pantalla** permite configurar la cabecera con datos que solo conoce esa pantalla.
+
+## Buenas prácticas
+
+- **Activa las rutas tipadas** (`"experiments": { "typedRoutes": true }` en `app.json`) para que los `href` inválidos sean errores de compilación.
+- **Usa `router.navigate` por defecto** y `replace` cuando el usuario no deba volver atrás (por ejemplo, del login a la home).
+- **Mantén los layouts simples**: proveedores y navegador. La lógica de negocio va en las pantallas, hooks o servicios.
+- **Protege rutas con `Stack.Protected`** en lugar de redirecciones manuales ([Navegación mediante archivos](/docs/expo/navegacion-por-archivos)).
+
+### Errores comunes
+
+- Importar `@react-navigation/native` en un proyecto con Expo Router (SDK 56+): el router ya no depende de React Navigation. Usa las exportaciones de `expo-router`.
+- Declarar la misma pantalla en dos grupos distintos.
+- Poner componentes que no son pantallas dentro de `src/app`.
+
+### Cuándo usar otra solución
+
+Si integras React Native en una app nativa existente o necesitas una configuración de navegación totalmente dinámica, React Navigation directamente puede encajar mejor. Para apps nuevas con Expo, Expo Router es la opción recomendada.

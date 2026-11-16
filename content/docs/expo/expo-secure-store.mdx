@@ -1,0 +1,148 @@
+---
+title: Expo SecureStore
+description: Guardar tokens y secretos cifrados en el Keychain de iOS y el Keystore de Android. API, opciones de accesibilidad, biometría y límites.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - react-typescript/useeffect
+related:
+  - datos/almacenamiento-seguro
+  - datos/jwt
+  - calidad/seguridad
+resources:
+  - title: Expo — SecureStore
+    url: https://docs.expo.dev/versions/latest/sdk/securestore/
+  - title: Apple — Keychain Services
+    url: https://developer.apple.com/documentation/security/keychain_services
+  - title: Android — Keystore
+    url: https://developer.android.com/privacy-and-security/keystore
+keywords: [expo-secure-store, SecureStore, keychain, keystore, cifrado, token, biometría, requireAuthentication, keychainAccessible]
+---
+
+## Introducción conceptual
+
+`expo-secure-store` guarda pares clave-valor **cifrados** usando los almacenes seguros del sistema operativo: el <Term slug="keychain">Keychain</Term> en iOS y el Keystore de Android (con valores cifrados en `SharedPreferences`). Es el lugar correcto para **tokens de acceso, refresh tokens, claves de API del usuario o credenciales**.
+
+No es una base de datos: está pensado para **valores pequeños** (unos pocos KB). Para datos grandes o estructurados usa SQLite o archivos, y si son sensibles, cífralos con una clave guardada en SecureStore.
+
+<Overview
+  purpose="Guardar secretos del usuario de forma cifrada y protegida por el sistema operativo."
+  importance="Guardar un token en texto plano (AsyncStorage) permite que cualquiera con acceso al dispositivo o a una copia de seguridad lo robe."
+  when="Tokens de sesión, refresh tokens, PIN o claves privadas. Nunca para listas o datos grandes."
+  problem="Delega el cifrado y la gestión de claves en el hardware y el sistema, en lugar de implementar criptografía propia."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="SecureStore" tone="good">
+    - Cifrado por el sistema.
+    - Valores pequeños (strings).
+    - Opción de exigir biometría.
+    - Tokens, secretos, PIN.
+  </Column>
+  <Column title="AsyncStorage / kv-store" tone="bad">
+    - Texto plano en disco.
+    - Rápido y sin límites estrictos.
+    - Preferencias, caché no sensible.
+    - **Nunca** para tokens.
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+```bash
+npx expo install expo-secure-store
+```
+
+```json title="app.json"
+{
+  "expo": {
+    "plugins": [
+      [
+        "expo-secure-store",
+        {
+          "configureAndroidBackup": true,
+          "faceIDPermission": "Permite a $(PRODUCT_NAME) usar Face ID para proteger tu sesión."
+        }
+      ]
+    ]
+  }
+}
+```
+
+Un módulo tipado para gestionar la sesión:
+
+```ts title="src/lib/secure-session.ts"
+import * as SecureStore from 'expo-secure-store';
+
+const KEYS = {
+  accessToken: 'auth.accessToken',
+  refreshToken: 'auth.refreshToken',
+} as const;
+
+const options: SecureStore.SecureStoreOptions = {
+  // Accesible después del primer desbloqueo (necesario para tareas en segundo plano)
+  keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY,
+};
+
+export type Tokens = { accessToken: string; refreshToken: string };
+
+export async function saveTokens({ accessToken, refreshToken }: Tokens) {
+  await Promise.all([
+    SecureStore.setItemAsync(KEYS.accessToken, accessToken, options),
+    SecureStore.setItemAsync(KEYS.refreshToken, refreshToken, options),
+  ]);
+}
+
+export async function getTokens(): Promise<Tokens | null> {
+  const [accessToken, refreshToken] = await Promise.all([
+    SecureStore.getItemAsync(KEYS.accessToken, options),
+    SecureStore.getItemAsync(KEYS.refreshToken, options),
+  ]);
+  return accessToken && refreshToken ? { accessToken, refreshToken } : null;
+}
+
+export async function clearTokens() {
+  await Promise.all([
+    SecureStore.deleteItemAsync(KEYS.accessToken, options),
+    SecureStore.deleteItemAsync(KEYS.refreshToken, options),
+  ]);
+}
+
+/** Guarda un PIN que solo se puede leer tras Face ID / huella. */
+export async function savePinWithBiometrics(pin: string) {
+  if (!SecureStore.canUseBiometricAuthentication()) return false;
+  await SecureStore.setItemAsync('auth.pin', pin, {
+    requireAuthentication: true,
+    authenticationPrompt: 'Confirma tu identidad',
+  });
+  return true;
+}
+```
+
+## Explicación del código
+
+- **`setItemAsync`, `getItemAsync` y `deleteItemAsync`** son las tres operaciones básicas. Los valores son siempre strings: para objetos usa `JSON.stringify`/`JSON.parse`.
+- **Las claves** solo pueden contener caracteres alfanuméricos, `.`, `-` y `_`. Centralizarlas en un objeto `as const` evita errores tipográficos.
+- **`keychainAccessible`** (iOS) define cuándo se puede leer el valor. `AFTER_FIRST_UNLOCK` permite leerlo en segundo plano tras el primer desbloqueo; las variantes `THIS_DEVICE_ONLY` impiden que se restaure en otro dispositivo desde una copia de seguridad.
+- **Usa las mismas opciones al leer y al escribir**: algunas opciones forman parte de la identidad del elemento en el Keychain.
+- **`requireAuthentication`** protege el valor con biometría o código del dispositivo. Si el usuario cambia sus huellas o su Face ID, el valor queda invalidado: tu app debe manejarlo pidiendo de nuevo el login.
+- **`configureAndroidBackup`** excluye los datos de SecureStore de las copias de seguridad automáticas de Android, donde no podrían descifrarse al restaurar.
+
+## Buenas prácticas
+
+- **Guarda solo secretos** y mantén el resto de la sesión (perfil, preferencias) en otro almacenamiento.
+- **Borra los tokens al cerrar sesión** y si el servidor responde que el refresh token es inválido.
+- **No uses biometría para cada lectura** del access token: tendrías un diálogo constante. Resérvala para acciones sensibles.
+- **Considera que el usuario puede borrar los datos** o reinstalar la app: siempre maneja el caso `null`.
+
+### Errores comunes
+
+- Guardar objetos grandes (listas, respuestas de API completas): SecureStore no está diseñado para eso.
+- Llamar a las versiones síncronas (`getItem`, `setItem`) con `requireAuthentication`: bloquean el hilo de JavaScript mientras se muestra el diálogo biométrico.
+- Pensar que SecureStore protege frente a un dispositivo con root/jailbreak comprometido: reduce el riesgo, pero la seguridad real también depende de tokens de corta duración y del backend.
+
+### Cuándo usar otra solución
+
+Para datos estructurados grandes y sensibles, usa SQLite con cifrado (SQLCipher, configurable en `expo-sqlite`) y guarda la clave en SecureStore. Para la estrategia completa de almacenamiento de sesión, consulta [Almacenamiento seguro](/docs/datos/almacenamiento-seguro).

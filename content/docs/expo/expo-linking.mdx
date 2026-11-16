@@ -1,0 +1,150 @@
+---
+title: Expo Linking
+description: Deep links con el scheme de tu app, enlaces universales, abrir otras apps (teléfono, correo, mapas, ajustes) y navegadores in-app con expo-web-browser.
+difficulty: intermedio
+time: 18
+prerequisites:
+  - expo/expo-router
+related:
+  - expo/navegacion-por-archivos
+  - expo/expo-notifications
+  - expo/app-json
+resources:
+  - title: Expo — Linking (visión general)
+    url: https://docs.expo.dev/linking/overview/
+  - title: Expo — expo-linking
+    url: https://docs.expo.dev/versions/latest/sdk/linking/
+  - title: Expo — Universal Links / App Links
+    url: https://docs.expo.dev/linking/ios-universal-links/
+keywords: [deep linking, expo-linking, scheme, createURL, openURL, canOpenURL, universal links, app links, expo-web-browser, tel, mailto]
+---
+
+## Introducción conceptual
+
+"Linking" cubre dos direcciones:
+
+1. **Entrar a tu app** desde fuera: un enlace `miapp://pedidos/42`, un correo, una notificación o una web (`https://miapp.com/pedidos/42` con *Universal Links* / *App Links*). Con Expo Router **cada pantalla ya tiene una URL**, así que solo necesitas configurar el `scheme`.
+2. **Salir de tu app** hacia otras: llamar por teléfono, abrir el correo, una dirección en mapas, WhatsApp o los ajustes del sistema.
+
+<Overview
+  purpose="Conectar tu app con el resto del sistema: abrir pantallas desde enlaces y abrir otras apps desde la tuya."
+  importance="Los deep links permiten campañas, notificaciones útiles, compartir contenido y flujos como el restablecimiento de contraseña."
+  when="Notificaciones con destino, enlaces compartidos, login con proveedores externos, botones de llamar o enviar correo."
+  problem="Unifica la apertura de URLs entrantes y salientes en Android e iOS, integrado con Expo Router."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'Enlace', desc: 'miapp://pedidos/42' },
+    { title: 'Sistema operativo', desc: 'Encuentra la app por el scheme' },
+    { title: 'Expo Router', desc: 'Resuelve la ruta', tone: 'brand' },
+    { title: 'Pantalla', desc: 'src/app/pedidos/[id].tsx' },
+  ]}
+/>
+
+| Tipo de enlace | Ejemplo | Requisitos |
+| --- | --- | --- |
+| Scheme propio | `miapp://pedidos/42` | `scheme` en `app.json` |
+| Universal / App Links | `https://miapp.com/pedidos/42` | Dominio propio + archivos de asociación |
+| Esquemas del sistema | `tel:`, `mailto:`, `sms:`, `https:` | Ninguno |
+
+## Ejemplo práctico
+
+Define el scheme de la app:
+
+```json title="app.json"
+{
+  "expo": {
+    "scheme": "miapp"
+  }
+}
+```
+
+Con eso, `npx uri-scheme open "miapp://pedidos/42" --android` (o desde Safari en iOS) abre directamente la pantalla `src/app/pedidos/[id].tsx`. No necesitas código extra.
+
+Utilidades para abrir otras apps y generar enlaces compartibles:
+
+```ts title="src/lib/linking.ts"
+import * as Linking from 'expo-linking';
+import * as WebBrowser from 'expo-web-browser';
+import { Platform } from 'react-native';
+
+/** Enlace a una pantalla de tu app, válido en desarrollo y producción. */
+export function orderLink(id: string) {
+  return Linking.createURL(`/pedidos/${id}`, { queryParams: { from: 'compartido' } });
+  // Producción: "miapp://pedidos/42?from=compartido"
+}
+
+export function callPhone(phone: string) {
+  return Linking.openURL(`tel:${phone.replace(/\s/g, '')}`);
+}
+
+export function sendEmail(to: string, subject: string, body = '') {
+  const query = new URLSearchParams({ subject, body }).toString().replace(/\+/g, '%20');
+  return Linking.openURL(`mailto:${to}?${query}`);
+}
+
+export async function openWhatsApp(phone: string, text: string) {
+  const url = `https://wa.me/${phone.replace(/\D/g, '')}?text=${encodeURIComponent(text)}`;
+  if (await Linking.canOpenURL(url)) return Linking.openURL(url);
+  throw new Error('No se pudo abrir WhatsApp');
+}
+
+export function openInMaps(lat: number, lng: number, label: string) {
+  const encoded = encodeURIComponent(label);
+  const url = Platform.select({
+    ios: `maps:0,0?q=${encoded}&ll=${lat},${lng}`,
+    default: `geo:${lat},${lng}?q=${lat},${lng}(${encoded})`,
+  });
+  return Linking.openURL(url);
+}
+
+/** Abre una web dentro de la app (Safari View Controller / Custom Tabs). */
+export function openTerms() {
+  return WebBrowser.openBrowserAsync('https://miapp.com/terminos');
+}
+```
+
+Para reaccionar a la URL con la que se abrió la app (por ejemplo, analíticas de campañas):
+
+```tsx
+import * as Linking from 'expo-linking';
+import { useEffect } from 'react';
+
+export function useCampaignTracking() {
+  const url = Linking.useURL();
+  useEffect(() => {
+    if (!url) return;
+    const { queryParams } = Linking.parse(url);
+    if (queryParams?.utm_source) console.log('Campaña:', queryParams.utm_source);
+  }, [url]);
+}
+```
+
+## Explicación del código
+
+- **`scheme`** registra tu app para las URLs `miapp://`. Expo Router traduce automáticamente la ruta de la URL a la pantalla correspondiente.
+- **`Linking.createURL`** genera la URL correcta según el entorno: en desarrollo con Expo Go usa `exp://…`; en tu build, `miapp://…`. Nunca escribas el prefijo a mano.
+- **`openURL`** abre cualquier URL que el sistema sepa manejar. **`canOpenURL`** comprueba antes si hay una app capaz (en iOS, para esquemas personalizados de terceros debes declararlos en `LSApplicationQueriesSchemes`).
+- **`Platform.select`** elige el formato de enlace de mapas adecuado: Apple Maps en iOS y la intención `geo:` en Android.
+- **`WebBrowser.openBrowserAsync`** muestra una web en un navegador integrado del sistema: comparte cookies con el navegador y es la opción recomendada para términos, ayuda o flujos OAuth.
+- **`useURL`** devuelve la URL de apertura y se actualiza si llega otra con la app abierta.
+
+## Buenas prácticas
+
+- **Valida los parámetros** que llegan por deep link: cualquiera puede construir una URL.
+- **Usa Universal Links / App Links** para enlaces públicos (correos, web): si la app no está instalada, se abre la web en lugar de un error.
+- **Protege las rutas privadas** con `Stack.Protected`: un deep link no debe saltarse el login ([Navegación por archivos](/docs/expo/navegacion-por-archivos)).
+- **Prueba los enlaces** con `npx uri-scheme` durante el desarrollo.
+
+### Errores comunes
+
+- Cambiar el `scheme` después de publicar: los enlaces antiguos dejan de funcionar.
+- Construir URLs de la app concatenando strings en lugar de `createURL`.
+- Abrir páginas web propias con `Linking.openURL`: el usuario sale de la app; usa `expo-web-browser`.
+
+### Cuándo usar otra solución
+
+Para personalizar cómo se traduce una URL entrante (por ejemplo, enlaces antiguos o contenido compartido), Expo Router ofrece el archivo especial `src/app/+native-intent.ts` con la función `redirectSystemPath`.

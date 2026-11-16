@@ -1,0 +1,191 @@
+---
+title: Expo Camera
+description: Mostrar la cámara con CameraView, gestionar permisos, tomar fotos, cambiar de cámara y escanear códigos de barras y QR.
+difficulty: intermedio
+time: 20
+prerequisites:
+  - expo/app-json
+  - react-typescript/useref
+related:
+  - expo/expo-image-picker
+  - proyectos/lector-qr
+  - expo/expo-file-system
+resources:
+  - title: Expo — Camera
+    url: https://docs.expo.dev/versions/latest/sdk/camera/
+  - title: Expo — Permisos
+    url: https://docs.expo.dev/guides/permissions/
+keywords: [expo-camera, CameraView, useCameraPermissions, takePictureAsync, barcode, qr, escáner, permisos]
+---
+
+## Introducción conceptual
+
+`expo-camera` muestra la vista previa de la cámara dentro de tu interfaz con el componente **`CameraView`**. Con él puedes tomar fotos, grabar vídeo, alternar entre cámara frontal y trasera, controlar el flash y **escanear códigos de barras y QR** sin librerías adicionales.
+
+Como cualquier acceso a hardware sensible, requiere **permiso del usuario**. El hook `useCameraPermissions` simplifica todo el ciclo: consultar, pedir y reaccionar a la respuesta.
+
+<Overview
+  purpose="Integrar la cámara en tu propia interfaz: capturas, escaneo de códigos y vista previa en vivo."
+  importance="Escanear códigos y capturar documentos son funciones clave en apps de inventario, logística, pagos o identidad."
+  when="Cuando necesitas la cámara dentro de tu UI. Si solo quieres que el usuario haga una foto, expo-image-picker es más simple."
+  problem="Unifica el acceso a la cámara y al escáner de códigos en Android e iOS con una sola API y gestión de permisos."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'useCameraPermissions', desc: 'permission = null mientras carga' },
+    { title: '¿granted?', desc: 'Si no: explicar y pedir', tone: 'muted' },
+    { title: 'CameraView', desc: 'Vista previa en vivo', tone: 'brand' },
+    { title: 'Acción', desc: 'takePictureAsync / onBarcodeScanned' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+Configura los textos de permiso con el config plugin (obligatorio para publicar en iOS):
+
+```bash
+npx expo install expo-camera
+```
+
+```json title="app.json"
+{
+  "expo": {
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Permite a $(PRODUCT_NAME) usar la cámara para fotografiar tus recibos.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": true
+        }
+      ]
+    ]
+  }
+}
+```
+
+Una pantalla de captura con cambio de cámara, flash y vista previa de la foto:
+
+```tsx title="src/app/camara.tsx"
+import { useRef, useState } from 'react';
+import { CameraView, useCameraPermissions, type CameraType, type FlashMode } from 'expo-camera';
+import { Image } from 'expo-image';
+import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+
+export default function CameraScreen() {
+  const [permission, requestPermission] = useCameraPermissions();
+  const [facing, setFacing] = useState<CameraType>('back');
+  const [flash, setFlash] = useState<FlashMode>('off');
+  const [photoUri, setPhotoUri] = useState<string | null>(null);
+  const cameraRef = useRef<CameraView>(null);
+
+  // 1. Los permisos aún se están consultando
+  if (!permission) return <View style={styles.center} />;
+
+  // 2. Sin permiso: explicamos por qué lo necesitamos
+  if (!permission.granted) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.message}>Necesitamos la cámara para fotografiar tus recibos.</Text>
+        {permission.canAskAgain ? (
+          <Pressable style={styles.button} onPress={requestPermission}>
+            <Text style={styles.buttonText}>Permitir cámara</Text>
+          </Pressable>
+        ) : (
+          <Pressable style={styles.button} onPress={() => Linking.openSettings()}>
+            <Text style={styles.buttonText}>Abrir ajustes</Text>
+          </Pressable>
+        )}
+      </View>
+    );
+  }
+
+  async function takePhoto() {
+    const photo = await cameraRef.current?.takePictureAsync({ quality: 0.7 });
+    if (photo) setPhotoUri(photo.uri);
+  }
+
+  if (photoUri) {
+    return (
+      <View style={styles.flex}>
+        <Image source={{ uri: photoUri }} style={styles.flex} contentFit="contain" />
+        <Pressable style={[styles.button, styles.floating]} onPress={() => setPhotoUri(null)}>
+          <Text style={styles.buttonText}>Repetir</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.flex}>
+      <CameraView ref={cameraRef} style={styles.flex} facing={facing} flash={flash} />
+      <View style={styles.controls}>
+        <Pressable onPress={() => setFlash((f) => (f === 'off' ? 'on' : 'off'))} style={styles.control}>
+          <Text style={styles.controlText}>Flash {flash === 'on' ? 'ON' : 'OFF'}</Text>
+        </Pressable>
+        <Pressable onPress={takePhoto} style={styles.shutter} accessibilityLabel="Tomar foto" />
+        <Pressable onPress={() => setFacing((f) => (f === 'back' ? 'front' : 'back'))} style={styles.control}>
+          <Text style={styles.controlText}>Girar</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  flex: { flex: 1, backgroundColor: '#000' },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 16 },
+  message: { textAlign: 'center', fontSize: 16 },
+  button: { backgroundColor: '#111827', paddingHorizontal: 20, paddingVertical: 12, borderRadius: 12 },
+  buttonText: { color: '#fff', fontWeight: '600' },
+  floating: { position: 'absolute', bottom: 48, alignSelf: 'center' },
+  controls: { position: 'absolute', bottom: 48, left: 0, right: 0, flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center' },
+  control: { padding: 12 },
+  controlText: { color: '#fff', fontWeight: '600' },
+  shutter: { width: 72, height: 72, borderRadius: 36, borderWidth: 5, borderColor: '#fff', backgroundColor: 'rgba(255,255,255,0.3)' },
+});
+```
+
+Escanear un código QR solo requiere dos props más:
+
+```tsx
+<CameraView
+  style={{ flex: 1 }}
+  facing="back"
+  barcodeScannerSettings={{ barcodeTypes: ['qr', 'ean13'] }}
+  onBarcodeScanned={scanned ? undefined : ({ type, data }) => {
+    setScanned(true);
+    handleCode(type, data);
+  }}
+/>
+```
+
+## Explicación del código
+
+- **`useCameraPermissions`** devuelve `[permission, requestPermission]`. `permission` es `null` mientras se consulta; después expone `granted` y `canAskAgain`.
+- **`canAskAgain: false`** significa que el usuario denegó el permiso de forma permanente: el sistema ya no mostrará el diálogo, así que ofrecemos abrir los ajustes con `Linking.openSettings()`.
+- **`useRef<CameraView>`** da acceso a métodos imperativos como `takePictureAsync`, que devuelve la foto con su `uri` en la caché de la app.
+- **`facing` y `flash`** son props controladas por estado.
+- **`onBarcodeScanned`** se ejecuta muchas veces por segundo mientras el código está visible; asignarlo a `undefined` tras el primer escaneo evita procesar el mismo código repetidamente.
+- **El config plugin** escribe los textos de permiso en `Info.plist` y `AndroidManifest.xml` durante el prebuild. `$(PRODUCT_NAME)` se reemplaza por el nombre de la app.
+
+## Buenas prácticas
+
+- **Pide el permiso en contexto**, justo cuando el usuario va a usar la cámara, y explica para qué.
+- **Desmonta la cámara cuando no se ve** (por ejemplo, al cambiar de pestaña) para ahorrar batería; `useIsFocused` o renderizar condicionalmente ayudan.
+- **Mueve la foto a un lugar permanente** con [expo-file-system](/docs/expo/expo-file-system) si debe conservarse: la caché puede borrarse.
+- **Comprime las fotos** (`quality`) antes de subirlas.
+
+### Errores comunes
+
+- Olvidar el config plugin: en iOS la app se cierra al pedir el permiso si falta la descripción en `Info.plist`.
+- Probar en el simulador de iOS: no tiene cámara. Usa un dispositivo físico.
+- Renderizar dos `CameraView` a la vez: solo puede haber una vista previa activa.
+
+### Cuándo usar otra solución
+
+Si solo necesitas que el usuario elija o haga una foto con la interfaz del sistema, usa [expo-image-picker](/docs/expo/expo-image-picker). Para procesamiento de fotogramas en tiempo real (detección de objetos, filtros), considera `react-native-vision-camera` con *frame processors*.
