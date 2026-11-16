@@ -1,0 +1,179 @@
+---
+title: Visión general del kit de componentes
+sidebarTitle: Visión general
+description: Qué vamos a construir en esta sección especial, con qué tecnologías, qué principios seguiremos y cómo se relacionan todos los componentes del kit.
+difficulty: intermedio
+time: 10
+prerequisites:
+  - estilos/nativewind
+  - react-typescript/tipado-de-componentes
+related:
+  - arquitectura/design-system
+  - estilos/configuracion-de-nativewind
+  - arquitectura/componentes-reutilizables
+resources:
+  - title: NativeWind — Documentación
+    url: https://www.nativewind.dev/
+  - title: class-variance-authority
+    url: https://cva.style/docs
+  - title: React Hook Form — React Native
+    url: https://react-hook-form.com/get-started#ReactNative
+keywords: [kit de componentes, ui kit, design system, nativewind, cva, expo, componentes tipados, biblioteca]
+---
+
+## Introducción conceptual
+
+En esta sección construimos, paso a paso, un **kit de componentes** propio para apps Expo: el tipo de biblioteca que las empresas tienen internamente y que hace que cada pantalla nueva sea rápida de construir y consistente. Al terminar tendrás:
+
+- Un proyecto **Expo SDK 58 + TypeScript + NativeWind v4** configurado.
+- **Tokens de diseño** con modo claro/oscuro y variantes tipadas con `cva`.
+- Componentes listos para producción: **Button, Input, Card, Modal/Sheet, Select, Form**, componentes de navegación, carga y estados vacíos.
+- Patrones de **composición** y de **separación entre lógica y presentación**.
+- Una **biblioteca compartida** en un monorepo, reutilizable entre proyectos.
+
+<Overview
+  purpose="Aprender a construir un sistema de componentes reutilizable, tipado y accesible con Expo y NativeWind."
+  importance="Es la habilidad que separa construir pantallas de construir productos mantenibles a largo plazo."
+  when="Al iniciar una app que crecerá o al estandarizar la UI de un equipo o de varias apps."
+  problem="Evita reinventar botones e inputs en cada pantalla, con estilos, estados y accesibilidad inconsistentes."
+/>
+
+## Explicación visual
+
+<Layers
+  layers={[
+    { title: 'Pantallas', desc: 'Usan el kit', items: ['Login', 'Productos', 'Checkout'], tone: 'muted' },
+    { title: 'Formularios', desc: 'RHF + Zod', items: ['FormInput', 'FormSelect', 'useZodForm'] },
+    { title: 'Componentes', desc: 'Con variantes', items: ['Button', 'Input', 'Card', 'Sheet', 'Select', 'EmptyState', 'Skeleton'], tone: 'brand' },
+    { title: 'Primitivas', desc: 'Base del kit', items: ['Text', 'cn()', 'Slot'] },
+    { title: 'Tema', desc: 'Tokens', items: ['tailwind.config.js', 'vars() claro/oscuro', 'ThemeProvider'] },
+  ]}
+  caption="Cada capa solo depende de las inferiores."
+/>
+
+### Principios del kit
+
+<Columns>
+  <Column title="Diseño" tone="brand">
+    - Solo **tokens semánticos** (`bg-primary`, `text-muted-foreground`).
+    - **Variantes tipadas** con `cva`: `variant` y `size`.
+    - Modo oscuro desde el primer componente.
+  </Column>
+  <Column title="Ingeniería">
+    - **Props nativas extendidas** (`PressableProps`, `TextInputProps`).
+    - **Accesibilidad por defecto**: roles, estados, etiquetas.
+    - **Composición** antes que configuración.
+  </Column>
+</Columns>
+
+### Ruta de la sección
+
+| Paso | Tema | Resultado |
+| --- | --- | --- |
+| 1 | [Configuración del proyecto](/docs/sistema-de-componentes/configuracion-del-proyecto) | Expo + NativeWind + utilidades |
+| 2 | [Organización de componentes](/docs/sistema-de-componentes/organizacion-de-componentes) | Estructura de carpetas del kit |
+| 3 | [Temas y variantes](/docs/sistema-de-componentes/temas-y-variantes) | Tokens y `cva` |
+| 4 | [Button](/docs/sistema-de-componentes/button) · [Input](/docs/sistema-de-componentes/input) · [Card](/docs/sistema-de-componentes/card) | Componentes base |
+| 5 | [Modal](/docs/sistema-de-componentes/modal) · [Select](/docs/sistema-de-componentes/select) | Superposiciones |
+| 6 | [Formularios](/docs/sistema-de-componentes/formularios) | RHF + Zod con el kit |
+| 7 | [Navegación](/docs/sistema-de-componentes/navegacion) · [Carga](/docs/sistema-de-componentes/carga) · [Estado vacío](/docs/sistema-de-componentes/estado-vacio) | Componentes de pantalla |
+| 8 | [Composición](/docs/sistema-de-componentes/composicion) · [Lógica y presentación](/docs/sistema-de-componentes/logica-y-presentacion) | Patrones avanzados |
+| 9 | [NativeWind vs StyleSheet](/docs/sistema-de-componentes/nativewind-vs-stylesheet) | Criterio para elegir |
+| 10 | [Biblioteca compartida](/docs/sistema-de-componentes/biblioteca-compartida) | Paquete en un monorepo |
+
+## Ejemplo práctico
+
+Así se verá una pantalla construida con el kit terminado. Fíjate en que no hay ni un color literal ni un estilo repetido:
+
+```tsx title="src/app/(auth)/login.tsx"
+import { Link } from 'expo-router';
+import { View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Button, Card, Text } from '@/components/ui';
+import { FormInput } from '@/components/form';
+import { useLoginForm } from '@/features/auth/hooks/use-login-form';
+
+export default function LoginScreen() {
+  const { control, submit, isSubmitting } = useLoginForm();
+
+  return (
+    <SafeAreaView className="flex-1 justify-center bg-background p-6">
+      <Card>
+        <Card.Header>
+          <Card.Title>Bienvenido de nuevo</Card.Title>
+          <Card.Description>Inicia sesión para continuar</Card.Description>
+        </Card.Header>
+        <Card.Content className="gap-4">
+          <FormInput control={control} name="email" label="Email" inputMode="email" autoComplete="email" />
+          <FormInput control={control} name="password" label="Contraseña" secureTextEntry autoComplete="current-password" />
+        </Card.Content>
+        <Card.Footer className="flex-col items-stretch gap-3 border-t-0">
+          <Button onPress={submit} loading={isSubmitting} fullWidth>
+            Entrar
+          </Button>
+          <View className="flex-row justify-center gap-1">
+            <Text variant="caption">¿No tienes cuenta?</Text>
+            <Link href="/registro">
+              <Text variant="caption" tone="primary">
+                Regístrate
+              </Text>
+            </Link>
+          </View>
+        </Card.Footer>
+      </Card>
+    </SafeAreaView>
+  );
+}
+```
+
+<Screens>
+  <ScreenSketch
+    title="Login con el kit"
+    description="Card, FormInput y Button"
+    blocks={[
+      { type: 'text', label: ' ' },
+      { type: 'header', label: 'Bienvenido de nuevo' },
+      { type: 'text', label: 'Inicia sesión para continuar', muted: true },
+      { type: 'input', label: 'Email' },
+      { type: 'input', label: 'Contraseña' },
+      { type: 'button', label: 'Entrar' },
+      { type: 'text', label: '¿No tienes cuenta? Regístrate', muted: true },
+    ]}
+  />
+  <ScreenSketch
+    title="Catálogo del kit"
+    description="Ruta interna de desarrollo"
+    blocks={[
+      { type: 'header', label: 'Catálogo' },
+      { type: 'chips', items: ['Button', 'Input', 'Card', 'Sheet'], active: 0 },
+      { type: 'button', label: 'Primary' },
+      { type: 'button', label: 'Secondary', variant: 'secondary' },
+      { type: 'button', label: 'Destructive', variant: 'danger' },
+      { type: 'input', label: 'Input con error' },
+      { type: 'card', label: 'Card', value: 'Contenido' },
+    ]}
+  />
+</Screens>
+
+## Explicación del código
+
+- **`Card` con subcomponentes** (`Card.Header`, `Card.Title`…) es composición: la pantalla decide la estructura y la tarjeta aporta el estilo.
+- **`FormInput`** conecta un `Input` del kit con React Hook Form: etiqueta, error de validación y accesibilidad incluidos.
+- **`Button` con `loading` y `fullWidth`**: variantes y estados que cualquier pantalla necesita, resueltos una vez.
+- **`useLoginForm`** contiene la lógica (esquema de Zod, envío, errores del servidor). La pantalla solo describe la interfaz.
+- **`bg-background`** es un token: cambia automáticamente en modo oscuro.
+
+## Buenas prácticas
+
+- **Sigue la sección en orden**: cada componente reutiliza los anteriores (`Select` usa `Sheet`, los formularios usan `Input` y `Select`).
+- **Crea una ruta de catálogo** en desarrollo para ver todos los componentes y variantes juntos.
+- **Adapta los tokens a tu marca**, no los componentes.
+
+### Errores comunes
+
+- Saltar directamente a los componentes sin configurar tokens: acabarás con colores literales por todas partes.
+- Copiar el kit sin entender las decisiones: cada tema explica el porqué para que puedas adaptarlo.
+
+### Cuándo usar otra solución
+
+Si necesitas una UI completa de inmediato, existen kits de la comunidad basados en NativeWind con filosofía similar a shadcn/ui. Construir el tuyo te da control total y entendimiento profundo; usar uno existente te da velocidad. Este curso te prepara para ambas opciones.

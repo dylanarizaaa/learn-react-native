@@ -1,0 +1,156 @@
+---
+title: Organización de componentes
+description: Estructura de carpetas del kit, convenciones de nombres, exportaciones públicas, tests junto al componente y una ruta de catálogo para desarrollo.
+difficulty: intermedio
+time: 12
+prerequisites:
+  - sistema-de-componentes/configuracion-del-proyecto
+related:
+  - arquitectura/arquitectura-de-carpetas
+  - arquitectura/componentes-compartidos
+  - sistema-de-componentes/biblioteca-compartida
+resources:
+  - title: Expo Router — Rutas específicas por plataforma y entorno
+    url: https://docs.expo.dev/router/advanced/platform-specific-modules/
+keywords: [organización, carpetas, ui, form, feedback, navigation, index, barrel, catálogo, convenciones]
+---
+
+## Introducción conceptual
+
+Un kit de componentes crece rápido. Para que siga siendo fácil de encontrar y de mantener, lo organizamos por **categorías de uso**, con una API pública por categoría y convenciones de nombres estrictas.
+
+<Overview
+  purpose="Dar una estructura predecible al kit para encontrar, usar y extender componentes sin dudas."
+  importance="Una organización clara reduce los duplicados: si es fácil encontrar el Button, nadie crea otro."
+  when="Desde el primer componente del kit."
+  problem="Evita carpetas planas con decenas de archivos y componentes duplicados con nombres distintos."
+/>
+
+## Explicación visual
+
+```tree title="src/components"
+src/components/
+  ui/ # Primitivas y controles genéricos
+    badge.tsx
+    button.tsx
+    button.test.tsx
+    input.tsx
+    card.tsx
+    sheet.tsx
+    select.tsx
+    text.tsx
+    slot.tsx
+    index.ts # API pública de ui *
+  form/ # Integración con React Hook Form
+    form-input.tsx
+    form-select.tsx
+    index.ts
+  feedback/ # Carga, vacío, error
+    spinner.tsx
+    skeleton.tsx
+    empty-state.tsx
+    error-state.tsx
+    index.ts
+  navigation/ # Cabeceras y enlaces
+    screen-header.tsx
+    nav-row.tsx
+    index.ts
+src/app/
+  (dev)/
+    catalogo.tsx # Catálogo visual del kit (solo desarrollo)
+```
+
+| Categoría | Contiene | Depende de |
+| --- | --- | --- |
+| `ui` | Text, Button, Input, Card, Sheet, Select | Tema, `cn` |
+| `form` | Campos conectados a React Hook Form | `ui` |
+| `feedback` | Spinner, Skeleton, EmptyState, ErrorState | `ui` |
+| `navigation` | ScreenHeader, NavRow | `ui`, Expo Router |
+
+## Ejemplo práctico
+
+La API pública de cada categoría:
+
+```ts title="src/components/ui/index.ts"
+export { Badge } from './badge';
+export { Button, type ButtonProps } from './button';
+export { Card } from './card';
+export { Input, type InputProps } from './input';
+export { Select, type SelectOption } from './select';
+export { Sheet, useDisclosure } from './sheet';
+export { Slot } from './slot';
+export { Text } from './text';
+```
+
+Una ruta de catálogo que solo existe en desarrollo:
+
+```tsx title="src/app/(dev)/catalogo.tsx"
+import type { ReactNode } from 'react';
+import { Redirect } from 'expo-router';
+import { ScrollView, View } from 'react-native';
+import { Button, Card, Input, Text } from '@/components/ui';
+import { EmptyState } from '@/components/feedback';
+
+export default function CatalogScreen() {
+  if (!__DEV__) return <Redirect href="/" />;
+
+  return (
+    <ScrollView className="flex-1 bg-background" contentContainerClassName="gap-8 p-6">
+      <Section title="Button">
+        <Button>Primary</Button>
+        <Button variant="secondary">Secondary</Button>
+        <Button variant="outline">Outline</Button>
+        <Button variant="ghost">Ghost</Button>
+        <Button variant="destructive">Destructive</Button>
+        <Button loading>Cargando</Button>
+      </Section>
+      <Section title="Input">
+        <Input label="Nombre" placeholder="Ana" />
+        <Input label="Email" error="Introduce un email válido" />
+      </Section>
+      <Section title="Card">
+        <Card>
+          <Card.Header>
+            <Card.Title>Título</Card.Title>
+            <Card.Description>Descripción de la tarjeta</Card.Description>
+          </Card.Header>
+        </Card>
+      </Section>
+      <Section title="EmptyState">
+        <EmptyState title="Sin resultados" description="Prueba con otra búsqueda." />
+      </Section>
+    </ScrollView>
+  );
+}
+
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <View className="gap-3">
+      <Text variant="heading">{title}</Text>
+      {children}
+    </View>
+  );
+}
+```
+
+## Explicación del código
+
+- **Un archivo por componente** en `kebab-case`, con su test al lado (`button.test.tsx`). Al mover o borrar un componente, su test viaja con él.
+- **`index.ts` por categoría**: las pantallas importan `from '@/components/ui'`. Los barrels pequeños por categoría son seguros; evita uno gigante para todo el proyecto.
+- **Dependencias en una sola dirección**: `form`, `feedback` y `navigation` usan `ui`, nunca al revés.
+- **El catálogo** usa el grupo `(dev)` y redirige en producción con `__DEV__`. Es la forma más rápida de revisar todos los estados visuales y el modo oscuro de un vistazo.
+
+## Buenas prácticas
+
+- **Nombres de componentes en inglés y consistentes** con el ecosistema (`Button`, `Sheet`, `Select`): facilita leer documentación y librerías.
+- **Exporta los tipos de props** para que otros componentes puedan extenderlos.
+- **Revisa el catálogo en ambos modos** antes de dar un componente por terminado.
+
+### Errores comunes
+
+- Componentes de una funcionalidad concreta dentro de `ui/`: pertenecen a `features/`.
+- Importar desde rutas internas (`@/components/ui/button`) en unas pantallas y desde el índice en otras.
+
+### Cuándo usar otra solución
+
+Para un catálogo más completo (con controles para cambiar props en vivo), integra Storybook para React Native. Si el kit se comparte entre varias apps, esta misma estructura se convierte en un paquete del monorepo ([Biblioteca compartida](/docs/sistema-de-componentes/biblioteca-compartida)).

@@ -1,0 +1,191 @@
+---
+title: Componentes de estado vacío y error
+sidebarTitle: Estado vacío
+description: EmptyState y ErrorState reutilizables con icono, título, descripción y acción. Cuándo usar cada variante y cómo integrarlos en listas y pantallas.
+difficulty: principiante
+time: 15
+prerequisites:
+  - sistema-de-componentes/button
+related:
+  - datos/estados-de-carga-y-vacios
+  - sistema-de-componentes/carga
+  - datos/manejo-de-errores
+resources:
+  - title: Material 3 — Empty states (patrones)
+    url: https://m3.material.io/foundations/content-design/style-guide/ux-writing-best-practices
+  - title: React Native — FlatList ListEmptyComponent
+    url: https://reactnative.dev/docs/flatlist#listemptycomponent
+keywords: [empty state, estado vacío, error state, reintentar, sin resultados, primera vez, kit, ListEmptyComponent]
+---
+
+## Introducción conceptual
+
+Una lista vacía no es un error, pero tampoco debe ser una pantalla en blanco. Los **estados vacíos** explican qué está pasando y qué puede hacer el usuario. Conviene distinguir tres situaciones:
+
+| Situación | Ejemplo | Mensaje y acción |
+| --- | --- | --- |
+| **Primera vez** | Aún no hay gastos | Explicar el valor + botón "Añadir el primero" |
+| **Sin resultados** | La búsqueda no encuentra nada | Sugerir otra búsqueda + "Limpiar filtros" |
+| **Error** | Falló la conexión | Explicar sin tecnicismos + "Reintentar" |
+
+<Overview
+  purpose="Convertir pantallas vacías o fallidas en mensajes útiles con una acción clara."
+  importance="Son momentos clave: el primer uso de una funcionalidad o un problema de red determinan si el usuario continúa."
+  when="Listas sin elementos, búsquedas sin resultados, errores de carga y funcionalidades sin datos todavía."
+  problem="Evita pantallas en blanco, mensajes técnicos ('Error 500') y callejones sin salida."
+/>
+
+## Explicación visual
+
+<Screens>
+  <ScreenSketch
+    title="Primera vez"
+    blocks={[
+      { type: 'header', label: 'Gastos' },
+      { type: 'empty', label: 'Aún no registras gastos. Anota el primero en segundos.' },
+      { type: 'button', label: 'Añadir gasto' },
+      { type: 'tabs', items: ['Resumen', 'Gastos', 'Ajustes'], active: 1 },
+    ]}
+  />
+  <ScreenSketch
+    title="Sin resultados"
+    blocks={[
+      { type: 'header', label: 'Gastos' },
+      { type: 'search', label: 'cafetería centro' },
+      { type: 'empty', label: 'Ningún gasto coincide con tu búsqueda.' },
+      { type: 'button', label: 'Limpiar búsqueda', variant: 'secondary' },
+    ]}
+  />
+  <ScreenSketch
+    title="Error"
+    blocks={[
+      { type: 'header', label: 'Gastos' },
+      { type: 'empty', label: 'No pudimos cargar tus gastos. Revisa tu conexión.' },
+      { type: 'button', label: 'Reintentar' },
+    ]}
+  />
+</Screens>
+
+## Ejemplo práctico
+
+<CodeTabs>
+
+```tsx title="src/components/feedback/empty-state.tsx"
+import type { ReactNode } from 'react';
+import { View } from 'react-native';
+import { Button, Text } from '@/components/ui';
+import { cn } from '@/lib/cn';
+
+type EmptyStateProps = {
+  title: string;
+  description?: string;
+  icon?: ReactNode;
+  action?: { label: string; onPress: () => void };
+  secondaryAction?: { label: string; onPress: () => void };
+  className?: string;
+};
+
+export function EmptyState({ title, description, icon, action, secondaryAction, className }: EmptyStateProps) {
+  return (
+    <View className={cn('flex-1 items-center justify-center gap-3 px-8 py-12', className)} accessible accessibilityLabel={`${title}. ${description ?? ''}`}>
+      {icon ? <View className="mb-1 h-14 w-14 items-center justify-center rounded-2xl bg-muted">{icon}</View> : null}
+      <Text variant="heading" align="center">
+        {title}
+      </Text>
+      {description ? (
+        <Text variant="caption" align="center" className="max-w-xs">
+          {description}
+        </Text>
+      ) : null}
+      {action || secondaryAction ? (
+        <View className="mt-2 items-center gap-2">
+          {action ? <Button onPress={action.onPress}>{action.label}</Button> : null}
+          {secondaryAction ? (
+            <Button variant="ghost" size="sm" onPress={secondaryAction.onPress}>
+              {secondaryAction.label}
+            </Button>
+          ) : null}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+```
+
+```tsx title="src/components/feedback/error-state.tsx"
+import { EmptyState } from './empty-state';
+
+type ErrorStateProps = {
+  title?: string;
+  description?: string;
+  onRetry?: () => void;
+};
+
+export function ErrorState({
+  title = 'Algo salió mal',
+  description = 'No pudimos cargar la información. Revisa tu conexión e inténtalo de nuevo.',
+  onRetry,
+}: ErrorStateProps) {
+  return (
+    <EmptyState
+      title={title}
+      description={description}
+      action={onRetry ? { label: 'Reintentar', onPress: onRetry } : undefined}
+    />
+  );
+}
+```
+
+```tsx title="Uso en una lista con búsqueda"
+import { router } from 'expo-router';
+import { FlatList } from 'react-native';
+import { EmptyState } from '@/components/feedback';
+
+<FlatList
+  data={filtered}
+  keyExtractor={(e) => e.id}
+  renderItem={({ item }) => <ExpenseRow expense={item} />}
+  contentContainerClassName="grow"
+  ListEmptyComponent={
+    query ? (
+      <EmptyState
+        title="Sin resultados"
+        description={`Ningún gasto coincide con «${query}».`}
+        action={{ label: 'Limpiar búsqueda', onPress: () => setQuery('') }}
+      />
+    ) : (
+      <EmptyState
+        title="Aún no registras gastos"
+        description="Anota tus gastos para ver en qué se va tu dinero cada mes."
+        action={{ label: 'Añadir el primero', onPress: () => router.push('/gastos/nuevo') }}
+      />
+    )
+  }
+/>;
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`EmptyState`** es puramente presentacional: título, descripción, icono opcional y hasta dos acciones. No sabe si se usa para gastos, pedidos o errores.
+- **`ErrorState`** reutiliza `EmptyState` con textos por defecto: es un ejemplo de **especialización por composición**, sin duplicar estilos.
+- **`accessible` + `accessibilityLabel`** agrupan título y descripción para que el lector de pantalla los lea juntos; los botones siguen siendo accesibles por separado.
+- **`contentContainerClassName="grow"`** hace que el contenedor de la lista ocupe todo el alto disponible, así el estado vacío queda centrado.
+- **El mensaje cambia según el contexto** (hay búsqueda o no): misma lista, mensajes y acciones distintos.
+
+## Buenas prácticas
+
+- **Siempre una salida**: añadir, limpiar filtros, reintentar o volver.
+- **Lenguaje humano**: "No pudimos cargar tus gastos", no "NetworkError: timeout".
+- **Ilustraciones con moderación**: un icono sencillo basta; las ilustraciones pesadas ralentizan la carga.
+- **Distingue vacío de error**: confundirlos hace que el usuario crea que perdió sus datos.
+
+### Errores comunes
+
+- Mostrar el estado vacío mientras los datos aún cargan (usa `isPending` antes de evaluar la lista).
+- Mensajes de error con detalles técnicos o códigos HTTP.
+
+### Cuándo usar otra solución
+
+Para errores leves que no impiden usar la pantalla (por ejemplo, no se pudo actualizar pero hay datos en caché), muestra un aviso discreto o un *toast* en lugar de reemplazar el contenido. Ver [Estados de carga y vacíos](/docs/datos/estados-de-carga-y-vacios).

@@ -1,0 +1,216 @@
+---
+title: Componentes de navegación
+sidebarTitle: Navegación
+description: Cabecera de pantalla propia con área segura, filas de navegación con Link, botón atrás inteligente y cómo aplicar el tema del kit a los navegadores de Expo Router.
+difficulty: intermedio
+time: 20
+prerequisites:
+  - expo/expo-router
+  - sistema-de-componentes/button
+related:
+  - expo/navegacion-por-archivos
+  - fundamentos/safe-area
+  - sistema-de-componentes/card
+resources:
+  - title: Expo Router — Navegación
+    url: https://docs.expo.dev/router/basics/navigation/
+  - title: Expo Router — Stack
+    url: https://docs.expo.dev/router/advanced/stack/
+  - title: Expo Router — Link con asChild
+    url: https://docs.expo.dev/versions/latest/sdk/router/link/
+keywords: [navegación, ScreenHeader, NavRow, Link, asChild, useRouter, canGoBack, cabecera, Stack screenOptions, tema de navegación]
+---
+
+## Introducción conceptual
+
+Expo Router ya ofrece navegadores con cabeceras y pestañas nativas. El kit aporta las piezas que se repiten **dentro** de las pantallas y la integración visual con nuestros tokens:
+
+- **`ScreenHeader`**: una cabecera propia para pantallas con diseño especial (por ejemplo, con `headerShown: false`), con área segura, botón atrás y acciones.
+- **`NavRow`**: una fila de menú que navega a otra ruta (ajustes, perfil), construida con `Link` + `asChild` para conservar la semántica de enlace.
+- **Tema de navegación**: colores de cabeceras y fondos del `Stack` coherentes con los tokens.
+
+<Overview
+  purpose="Construir menús, cabeceras y accesos de navegación consistentes con el resto del kit."
+  importance="La navegación aparece en todas las pantallas; pequeñas diferencias de altura o espaciado se notan mucho."
+  when="Pantallas de ajustes y perfil, cabeceras personalizadas, listas de accesos y menús."
+  problem="Evita cabeceras hechas a mano en cada pantalla, con márgenes de área segura y botones atrás inconsistentes."
+/>
+
+## Explicación visual
+
+<Screens>
+  <ScreenSketch
+    title="ScreenHeader"
+    description="Cabecera propia con acción"
+    blocks={[
+      { type: 'header', label: 'Mis pedidos', action: 'Filtrar', back: true },
+      { type: 'segmented', items: ['Activos', 'Entregados'], active: 0 },
+      { type: 'list', items: ['Pedido #1042', 'Pedido #1041', 'Pedido #1039'], meta: ['$45.900', '$12.500', '$87.300'] },
+    ]}
+  />
+  <ScreenSketch
+    title="NavRow"
+    description="Menú de ajustes"
+    blocks={[
+      { type: 'header', label: 'Ajustes' },
+      { type: 'list', items: ['Perfil  ›', 'Notificaciones  ›', 'Apariencia  ›', 'Privacidad  ›'] },
+      { type: 'list', items: ['Cerrar sesión'] },
+      { type: 'tabs', items: ['Inicio', 'Pedidos', 'Ajustes'], active: 2 },
+    ]}
+  />
+</Screens>
+
+## Ejemplo práctico
+
+<CodeTabs>
+
+```tsx title="src/components/navigation/screen-header.tsx"
+import type { ReactNode } from 'react';
+import { useRouter, type Href } from 'expo-router';
+import { Pressable, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Text } from '@/components/ui';
+import { cn } from '@/lib/cn';
+
+type ScreenHeaderProps = {
+  title: string;
+  subtitle?: string;
+  /** Muestra el botón atrás si hay historial (o vuelve a fallbackHref) */
+  back?: boolean;
+  fallbackHref?: Href;
+  right?: ReactNode;
+  className?: string;
+};
+
+export function ScreenHeader({ title, subtitle, back = true, fallbackHref = '/', right, className }: ScreenHeaderProps) {
+  const insets = useSafeAreaInsets();
+  const nav = useRouter();
+
+  function goBack() {
+    if (nav.canGoBack()) nav.back();
+    else nav.replace(fallbackHref); // abierta desde un deep link: no hay pantalla anterior
+  }
+
+  return (
+    <View style={{ paddingTop: insets.top }} className={cn('border-b border-border bg-background', className)}>
+      <View className="h-14 flex-row items-center gap-2 px-4">
+        {back ? (
+          <Pressable onPress={goBack} hitSlop={12} accessibilityRole="button" accessibilityLabel="Volver" className="-ml-1 pr-2">
+            <Text variant="title" tone="primary">
+              ‹
+            </Text>
+          </Pressable>
+        ) : null}
+        <View className="flex-1">
+          <Text variant="heading" numberOfLines={1}>
+            {title}
+          </Text>
+          {subtitle ? <Text variant="caption" numberOfLines={1}>{subtitle}</Text> : null}
+        </View>
+        {right}
+      </View>
+    </View>
+  );
+}
+```
+
+```tsx title="src/components/navigation/nav-row.tsx"
+import type { ReactNode } from 'react';
+import { Link, type Href } from 'expo-router';
+import { Pressable, View } from 'react-native';
+import { Text } from '@/components/ui';
+
+type NavRowProps = { href: Href; label: string; description?: string; icon?: ReactNode; value?: string };
+
+export function NavRow({ href, label, description, icon, value }: NavRowProps) {
+  return (
+    <Link href={href} asChild>
+      <Pressable className="flex-row items-center gap-3 bg-card px-4 py-3.5 active:bg-muted" accessibilityHint="Abre otra pantalla">
+        {icon ? <View className="h-8 w-8 items-center justify-center rounded-lg bg-muted">{icon}</View> : null}
+        <View className="flex-1">
+          <Text className="font-medium">{label}</Text>
+          {description ? <Text variant="caption">{description}</Text> : null}
+        </View>
+        {value ? <Text tone="muted">{value}</Text> : null}
+        <Text tone="muted">›</Text>
+      </Pressable>
+    </Link>
+  );
+}
+
+export function NavGroup({ children }: { children: ReactNode }) {
+  return <View className="overflow-hidden rounded-2xl border border-border">{children}</View>;
+}
+```
+
+```tsx title="src/app/(app)/ajustes/index.tsx"
+import { ScrollView } from 'react-native';
+import { NavGroup, NavRow, ScreenHeader } from '@/components/navigation';
+
+export default function SettingsScreen() {
+  return (
+    <>
+      <ScreenHeader title="Ajustes" back={false} />
+      <ScrollView className="flex-1 bg-background" contentContainerClassName="gap-6 p-4">
+        <NavGroup>
+          <NavRow href="/ajustes/perfil" label="Perfil" description="Nombre, foto y email" />
+          <NavRow href="/ajustes/notificaciones" label="Notificaciones" />
+          <NavRow href="/ajustes/apariencia" label="Apariencia" value="Sistema" />
+        </NavGroup>
+      </ScrollView>
+    </>
+  );
+}
+```
+
+```tsx title="src/app/(app)/_layout.tsx"
+import { Stack } from 'expo-router';
+import { useThemeColor } from '@/theme/use-theme-color';
+
+export default function AppLayout() {
+  const background = useThemeColor('background');
+  const foreground = useThemeColor('foreground');
+  const primary = useThemeColor('primary');
+
+  return (
+    <Stack
+      screenOptions={{
+        headerStyle: { backgroundColor: background },
+        headerTintColor: primary, // botón atrás y acciones
+        headerTitleStyle: { color: foreground, fontWeight: '600' },
+        contentStyle: { backgroundColor: background },
+        headerShadowVisible: false,
+      }}
+    >
+      {/* Pantallas con cabecera propia */}
+      <Stack.Screen name="ajustes/index" options={{ headerShown: false }} />
+    </Stack>
+  );
+}
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`ScreenHeader`** aplica `insets.top` como padding: el fondo llega al borde superior (edge-to-edge) y el contenido queda fuera del notch.
+- **`canGoBack()`**: si la pantalla se abrió desde un deep link o una notificación, no hay historial. En ese caso sustituimos por una ruta de respaldo en lugar de dejar un botón atrás que no hace nada.
+- **`Link` con `asChild`** pasa la navegación al `Pressable` hijo: conservamos el layout personalizado y, en web, el elemento sigue siendo un enlace real.
+- **`Href`** tipa las rutas: con *typed routes*, `href="/ajustes/perfil"` se valida en compilación.
+- **`screenOptions` del `Stack`** usa `useThemeColor` para que las cabeceras nativas usen los mismos tokens que el resto del kit, también en modo oscuro.
+
+## Buenas prácticas
+
+- **Prefiere las cabeceras nativas** del `Stack` (títulos grandes, gestos, accesibilidad del sistema) y usa `ScreenHeader` solo cuando el diseño lo exija.
+- **Agrupa las filas de menú** por temas con `NavGroup`.
+- **Un solo patrón de navegación principal** (pestañas) y pilas dentro de cada pestaña.
+
+### Errores comunes
+
+- Botón atrás que llama a `router.back()` sin comprobar `canGoBack()`.
+- Cabeceras propias sin área segura: el título queda debajo de la isla dinámica.
+- Usar `Pressable` + `router.push` para filas que podrían ser `Link`: en web pierdes la semántica de enlace.
+
+### Cuándo usar otra solución
+
+Para la barra de pestañas, usa `NativeTabs` (aspecto del sistema) o `Tabs` de JavaScript si necesitas un diseño muy personalizado; Expo Router también ofrece *custom tabs* sin estilos en `expo-router/ui`. Ver [Expo Router](/docs/expo/expo-router).

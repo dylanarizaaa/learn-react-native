@@ -1,0 +1,181 @@
+---
+title: Temas y variantes
+description: Variantes tipadas con class-variance-authority, variantes compuestas, valores por defecto, tailwind-merge y la primitiva Text del kit.
+difficulty: intermedio
+time: 20
+prerequisites:
+  - sistema-de-componentes/configuracion-del-proyecto
+related:
+  - estilos/temas-personalizados
+  - arquitectura/design-system
+  - sistema-de-componentes/button
+resources:
+  - title: class-variance-authority — Variantes
+    url: https://cva.style/docs/getting-started/variants
+  - title: tailwind-merge
+    url: https://github.com/dcastil/tailwind-merge
+  - title: Tailwind Variants (alternativa)
+    url: https://www.tailwind-variants.org/
+keywords: [variantes, cva, class-variance-authority, VariantProps, compoundVariants, defaultVariants, tailwind-merge, Text, tokens]
+---
+
+## Introducción conceptual
+
+Casi todos los componentes de un kit tienen **variantes** (primario, secundario, destructivo…) y **tamaños** (sm, md, lg). Gestionarlas con condicionales (`variant === 'primary' ? '…' : variant === 'secondary' ? '…'`) se vuelve ilegible enseguida.
+
+**`class-variance-authority` (`cva`)** declara las variantes como datos: un mapa de nombre de variante a clases. Y su tipo `VariantProps` genera automáticamente las props tipadas del componente.
+
+El **tema** (los tokens) define *qué valores* existen; las **variantes** definen *cómo se combinan* esos valores en cada componente.
+
+<Overview
+  purpose="Declarar las variantes visuales de cada componente de forma legible y con tipos generados automáticamente."
+  importance="Hace que añadir una variante sea una línea de código y que usar una inexistente sea un error de compilación."
+  when="En todo componente del kit con más de un aspecto o tamaño."
+  problem="Evita cadenas de ternarios para elegir clases y props string sin validación."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'Props', desc: 'variant="outline" size="sm"' },
+    { title: 'cva()', desc: 'base + variants + compound', tone: 'brand' },
+    { title: 'cn()', desc: '+ className del consumidor' },
+    { title: 'className final', desc: 'Sin conflictos de Tailwind' },
+  ]}
+/>
+
+| Pieza de `cva` | Para qué |
+| --- | --- |
+| Clases base | Lo que comparten todas las variantes |
+| `variants` | Cada dimensión: `variant`, `size`, `tone` |
+| `compoundVariants` | Clases para una **combinación** concreta |
+| `defaultVariants` | Valores cuando no se pasa la prop |
+
+## Ejemplo práctico
+
+La primitiva `Text` del kit, que usarán todos los demás componentes:
+
+```tsx title="src/components/ui/text.tsx"
+import { cva, type VariantProps } from 'class-variance-authority';
+import { Text as RNText, type TextProps as RNTextProps } from 'react-native';
+import { cn } from '@/lib/cn';
+
+export const textVariants = cva('text-foreground', {
+  variants: {
+    variant: {
+      display: 'text-4xl font-bold tracking-tight',
+      title: 'text-2xl font-bold',
+      heading: 'text-lg font-semibold',
+      body: 'text-base',
+      caption: 'text-sm text-muted-foreground',
+      label: 'text-sm font-medium',
+    },
+    tone: {
+      default: '',
+      muted: 'text-muted-foreground',
+      primary: 'text-primary',
+      danger: 'text-danger',
+      success: 'text-success',
+    },
+    align: { left: 'text-left', center: 'text-center', right: 'text-right' },
+  },
+  defaultVariants: { variant: 'body', tone: 'default', align: 'left' },
+});
+
+export type TextProps = RNTextProps & VariantProps<typeof textVariants> & { className?: string };
+
+export function Text({ variant, tone, align, className, ...props }: TextProps) {
+  const isHeading = variant === 'display' || variant === 'title' || variant === 'heading';
+  return (
+    <RNText
+      accessibilityRole={isHeading ? 'header' : undefined}
+      className={cn(textVariants({ variant, tone, align }), className)}
+      {...props}
+    />
+  );
+}
+```
+
+Variantes compuestas: un `Badge` cuyo estilo depende de la **combinación** de tono y apariencia:
+
+```tsx title="src/components/ui/badge.tsx"
+import { cva, type VariantProps } from 'class-variance-authority';
+import { View } from 'react-native';
+import { cn } from '@/lib/cn';
+import { Text } from './text';
+
+const badgeVariants = cva('flex-row items-center self-start rounded-full px-2.5 py-0.5', {
+  variants: {
+    tone: { neutral: '', primary: '', success: '', danger: '' },
+    appearance: { soft: '', solid: '', outline: 'border bg-transparent' },
+  },
+  compoundVariants: [
+    { tone: 'neutral', appearance: 'soft', className: 'bg-muted' },
+    { tone: 'primary', appearance: 'soft', className: 'bg-primary/10' },
+    { tone: 'success', appearance: 'soft', className: 'bg-success/10' },
+    { tone: 'danger', appearance: 'soft', className: 'bg-danger/10' },
+    { tone: 'primary', appearance: 'solid', className: 'bg-primary' },
+    { tone: 'danger', appearance: 'solid', className: 'bg-danger' },
+    { tone: 'primary', appearance: 'outline', className: 'border-primary' },
+    { tone: 'danger', appearance: 'outline', className: 'border-danger' },
+  ],
+  defaultVariants: { tone: 'neutral', appearance: 'soft' },
+});
+
+const labelTone = {
+  neutral: 'muted',
+  primary: 'primary',
+  success: 'success',
+  danger: 'danger',
+} as const;
+
+type BadgeProps = VariantProps<typeof badgeVariants> & { label: string; className?: string };
+
+export function Badge({ label, tone = 'neutral', appearance = 'soft', className }: BadgeProps) {
+  const solid = appearance === 'solid';
+  return (
+    <View className={cn(badgeVariants({ tone, appearance }), className)}>
+      <Text
+        variant="caption"
+        tone={solid ? undefined : labelTone[tone ?? 'neutral']}
+        className={cn('font-semibold', solid && 'text-primary-foreground')}
+      >
+        {label}
+      </Text>
+    </View>
+  );
+}
+```
+
+```tsx
+<Badge label="Nuevo" tone="primary" />
+<Badge label="Pagado" tone="success" />
+<Badge label="Vencido" tone="danger" appearance="solid" />
+<Text variant="caption" tone="danger" className="mt-1">El campo es obligatorio</Text>
+```
+
+## Explicación del código
+
+- **`cva(base, { variants, defaultVariants })`** devuelve una función: `textVariants({ variant: 'title' })` produce el string de clases.
+- **`VariantProps<typeof textVariants>`** genera `{ variant?: 'display' | 'title' | …; tone?: …; align?: … }`. Si alguien escribe `variant="subtitle"`, TypeScript lo marca como error.
+- **`compoundVariants`** aplica clases solo cuando se cumplen **varias** condiciones a la vez: el fondo de un badge depende del tono **y** de la apariencia.
+- **`bg-primary/10`** funciona gracias a que los tokens están definidos en formato `R G B` (lo hicimos en la configuración).
+- **`cn(textVariants(...), className)`** permite que el consumidor sobrescriba: si pasa `className="text-center"`, `tailwind-merge` elimina el `text-left` de la variante por defecto.
+- **Exportar `textVariants`** permite reutilizar los estilos tipográficos en otros componentes (por ejemplo, el texto de un `Button`).
+
+## Buenas prácticas
+
+- **Pocas dimensiones de variantes**: `variant` + `size` cubren la mayoría de casos. Cada dimensión nueva multiplica las combinaciones a probar.
+- **Clases completas siempre**: `cva` contiene strings literales, así Tailwind las detecta.
+- **Variantes con nombres semánticos** (`destructive`, `ghost`), no visuales (`red`, `transparent`).
+
+### Errores comunes
+
+- Construir clases con plantillas (`` `bg-${tone}` ``): Tailwind no las genera.
+- Olvidar `tailwind-merge` y tener `px-4 px-2` en el mismo elemento con resultados imprevisibles.
+- Variantes que cambian el layout de forma radical: probablemente son componentes distintos.
+
+### Cuándo usar otra solución
+
+**Tailwind Variants** (`tv()`) ofrece la misma idea con *slots* (variantes para varias partes de un componente) y resolución de conflictos integrada; es una alternativa excelente para componentes con muchas partes. Con StyleSheet puro, el equivalente es un objeto de estilos por variante ([StyleSheet](/docs/fundamentos/stylesheet)).

@@ -1,0 +1,207 @@
+---
+title: Composición de componentes
+sidebarTitle: Composición
+description: children, slots, render props, compound components con contexto y el patrón asChild (Slot). Cuándo usar cada técnica en un kit de componentes.
+difficulty: avanzado
+time: 25
+prerequisites:
+  - sistema-de-componentes/card
+  - react-typescript/context-api
+related:
+  - arquitectura/componentes-reutilizables
+  - sistema-de-componentes/logica-y-presentacion
+  - arquitectura/componentes-compartidos
+resources:
+  - title: React — Pasar JSX como children
+    url: https://react.dev/learn/passing-props-to-a-component#passing-jsx-as-children
+  - title: Patterns.dev — Compound pattern
+    url: https://www.patterns.dev/react/compound-pattern
+keywords: [composición, children, slots, render props, compound components, asChild, Slot, cloneElement, accordion, kit]
+---
+
+## Introducción conceptual
+
+La composición es la herramienta principal para mantener los componentes del kit **pequeños y flexibles**. En lugar de anticipar cada caso con props, dejamos que quien usa el componente **componga** las piezas. Hay cinco técnicas que conviene dominar:
+
+| Técnica | Idea | Ejemplo en el kit |
+| --- | --- | --- |
+| `children` | El contenido lo decide el padre | `Card.Content` |
+| Slots | Varias zonas con nombre | `ListItem` con `leading` y `trailing` |
+| Render props | El padre recibe datos para dibujar | `renderItem` de FlatList |
+| Compound components | Partes que comparten estado implícito | `Accordion`, `Tabs` |
+| `asChild` (Slot) | El componente presta su comportamiento a su hijo | `Link asChild`, `PressableScale asChild` |
+
+<Overview
+  purpose="Construir componentes flexibles combinando piezas en lugar de añadir props para cada caso."
+  importance="Es la diferencia entre un kit que se adapta a casos nuevos y uno que hay que modificar cada semana."
+  when="Cuando un componente empieza a acumular props opcionales o variantes para casos concretos."
+  problem="Evita los 'componentes Frankenstein' con decenas de props booleanas que interactúan entre sí."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="Configuración" tone="bad">
+    `<Accordion items={[...]} allowMultiple showIcons iconPosition="right" titleStyle={...} />`
+    Cada caso nuevo es una prop nueva.
+  </Column>
+  <Column title="Composición" tone="good">
+    `<Accordion><Accordion.Item><Accordion.Trigger /><Accordion.Content /></Accordion.Item></Accordion>`
+    Cada caso nuevo es una combinación distinta.
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+Un `Accordion` como **compound component**: las partes se comunican por contexto, sin props intermedias.
+
+<CodeTabs>
+
+```tsx title="src/components/ui/accordion.tsx"
+import { createContext, use, useState, type ReactNode } from 'react';
+import { Pressable, View } from 'react-native';
+import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
+import { cn } from '@/lib/cn';
+import { Text } from './text';
+
+type AccordionContextValue = { openItems: string[]; toggle: (value: string) => void };
+const AccordionContext = createContext<AccordionContextValue | null>(null);
+const ItemContext = createContext<string | null>(null);
+
+function useAccordion() {
+  const ctx = use(AccordionContext);
+  if (!ctx) throw new Error('Los componentes Accordion.* deben estar dentro de <Accordion>');
+  return ctx;
+}
+
+function AccordionRoot({ children, multiple = false, defaultOpen = [] }: { children: ReactNode; multiple?: boolean; defaultOpen?: string[] }) {
+  const [openItems, setOpenItems] = useState(defaultOpen);
+  function toggle(value: string) {
+    setOpenItems((current) =>
+      current.includes(value) ? current.filter((v) => v !== value) : multiple ? [...current, value] : [value],
+    );
+  }
+  return (
+    <AccordionContext value={{ openItems, toggle }}>
+      {/* gap-px sobre fondo bg-border dibuja una línea de 1 px entre elementos */}
+      <View className="gap-px overflow-hidden rounded-2xl border border-border bg-border">{children}</View>
+    </AccordionContext>
+  );
+}
+
+function AccordionItem({ value, children }: { value: string; children: ReactNode }) {
+  return (
+    <ItemContext value={value}>
+      <Animated.View layout={LinearTransition} className="bg-card">
+        {children}
+      </Animated.View>
+    </ItemContext>
+  );
+}
+
+function AccordionTrigger({ children }: { children: ReactNode }) {
+  const { openItems, toggle } = useAccordion();
+  const value = use(ItemContext)!;
+  const open = openItems.includes(value);
+  return (
+    <Pressable
+      onPress={() => toggle(value)}
+      accessibilityRole="button"
+      accessibilityState={{ expanded: open }}
+      className="flex-row items-center justify-between bg-card px-4 py-4 active:bg-muted"
+    >
+      <Text className="flex-1 font-medium">{children}</Text>
+      <Text tone="muted" className={cn(open && 'rotate-180')}>
+        ⌄
+      </Text>
+    </Pressable>
+  );
+}
+
+function AccordionContent({ children }: { children: ReactNode }) {
+  const { openItems } = useAccordion();
+  const value = use(ItemContext)!;
+  if (!openItems.includes(value)) return null;
+  return (
+    <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(120)} className="bg-card px-4 pb-4">
+      {children}
+    </Animated.View>
+  );
+}
+
+export const Accordion = Object.assign(AccordionRoot, {
+  Item: AccordionItem,
+  Trigger: AccordionTrigger,
+  Content: AccordionContent,
+});
+```
+
+```tsx title="src/components/ui/slot.tsx"
+import { cloneElement, isValidElement, type ReactElement, type ReactNode } from 'react';
+
+/**
+ * Pasa las props recibidas al único hijo en lugar de renderizar un elemento propio.
+ * Permite el patrón asChild: <PressableScale asChild><Link …/></PressableScale>
+ */
+export function Slot({ children, ...props }: { children: ReactNode } & Record<string, unknown>) {
+  if (!isValidElement(children)) return null;
+  const child = children as ReactElement<Record<string, unknown>>;
+  return cloneElement(child, {
+    ...props,
+    ...child.props,
+    // className se combina en lugar de sobrescribirse
+    className: [props.className, child.props.className].filter(Boolean).join(' '),
+  });
+}
+```
+
+```tsx title="Uso: preguntas frecuentes"
+import { Accordion, Text } from '@/components/ui';
+
+export function Faq() {
+  return (
+    <Accordion defaultOpen={['envios']}>
+      <Accordion.Item value="envios">
+        <Accordion.Trigger>¿Cuánto tarda el envío?</Accordion.Trigger>
+        <Accordion.Content>
+          <Text tone="muted">Entre 24 y 72 horas hábiles según tu comuna.</Text>
+        </Accordion.Content>
+      </Accordion.Item>
+      <Accordion.Item value="devoluciones">
+        <Accordion.Trigger>¿Puedo devolver un producto?</Accordion.Trigger>
+        <Accordion.Content>
+          <Text tone="muted">Sí, dentro de los 30 días posteriores a la compra.</Text>
+        </Accordion.Content>
+      </Accordion.Item>
+    </Accordion>
+  );
+}
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **Dos contextos**: `AccordionContext` comparte qué elementos están abiertos y cómo alternarlos; `ItemContext` dice a cada `Trigger` y `Content` a qué elemento pertenecen. Ninguna prop atraviesa los niveles intermedios.
+- **`multiple`** cambia la regla de apertura (uno o varios) sin que las partes lo sepan.
+- **`useAccordion`** lanza un error claro si alguien usa `Accordion.Trigger` fuera de un `Accordion`.
+- **Animaciones de layout de Reanimated**: `LinearTransition` anima el cambio de altura del elemento y `FadeIn`/`FadeOut` el contenido.
+- **`accessibilityState={{ expanded }}`** informa al lector de pantalla si la sección está desplegada.
+- **`Slot`** implementa `asChild`: en vez de renderizar su propio elemento, transfiere props y clases al hijo. Es lo que hace `Link asChild` de Expo Router con un `Pressable`.
+
+## Buenas prácticas
+
+- **Empieza con `children`**: es la composición más simple y suele bastar.
+- **Usa compound components** cuando varias partes deben compartir estado (pestañas, acordeones, menús).
+- **Exporta las partes como propiedades del componente raíz** (`Accordion.Item`) para que la relación sea obvia.
+- **Documenta la estructura esperada** con un ejemplo de uso.
+
+### Errores comunes
+
+- Compound components que dependen del orden exacto de los hijos o recorren `children` con `Children.map`: frágil. Usa contexto.
+- `asChild` con varios hijos: `Slot` necesita exactamente un elemento.
+- Contextos que cambian en cada render y re-renderizan todas las partes: memoiza el valor si el componente es grande.
+
+### Cuándo usar otra solución
+
+Para componentes muy simples, unas pocas props son más claras que una API compuesta. Para menús, popovers o comboboxes con accesibilidad compleja, apóyate en primitivas *headless* existentes y aplica tu estilo.

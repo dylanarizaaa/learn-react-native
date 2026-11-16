@@ -1,0 +1,233 @@
+---
+title: Separación entre lógica y presentación
+sidebarTitle: Lógica y presentación
+description: Refactorización práctica de una pantalla de productos en un hook headless (búsqueda, filtros, paginación) y una vista construida con el kit, ambas testeables por separado.
+difficulty: avanzado
+time: 30
+prerequisites:
+  - arquitectura/componentes-de-presentacion
+  - arquitectura/custom-hooks
+  - sistema-de-componentes/carga
+related:
+  - arquitectura/separacion-de-responsabilidades
+  - datos/paginacion
+  - calidad/testing
+resources:
+  - title: TanStack Query — Infinite queries
+    url: https://tanstack.com/query/latest/docs/framework/react/guides/infinite-queries
+  - title: React Native Testing Library — renderHook
+    url: https://oss.callstack.com/react-native-testing-library/docs/api/misc/render-hook
+keywords: [headless, lógica y presentación, hook headless, vista, refactorización, useInfiniteQuery, filtros, testing, kit]
+---
+
+## Introducción conceptual
+
+En la sección de arquitectura vimos la teoría de [componentes de presentación](/docs/arquitectura/componentes-de-presentacion) y [contenedores](/docs/arquitectura/componentes-contenedores). Aquí lo aplicamos con el kit a un caso real: una pantalla de **catálogo con búsqueda, filtro por categoría y scroll infinito**.
+
+La técnica se llama **hook headless + vista**:
+
+- **Hook headless** (`useProductCatalog`): toda la lógica y el estado, **sin JSX**. Devuelve datos ya preparados y acciones con nombre.
+- **Vista** (`ProductCatalogView`): todo el JSX, **sin lógica**. Recibe el resultado del hook por props.
+- **Pantalla**: una línea que conecta ambos.
+
+<Overview
+  purpose="Separar de forma práctica qué hace una pantalla (lógica) de cómo se ve (presentación)."
+  importance="Permite cambiar el diseño sin tocar la lógica, reutilizar la lógica en otra vista (tablet, web) y testear cada parte de forma aislada."
+  when="En pantallas con búsqueda, filtros, paginación o varios estados: las que más cambian y más errores tienen."
+  problem="Evita pantallas de 300 líneas donde estilos, estados y llamadas a la API se mezclan."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'useProductCatalog()', desc: 'Estado + TanStack Query', tone: 'brand' },
+    { title: 'Resultado', desc: 'items, status, acciones' },
+    { title: 'ProductCatalogView', desc: 'Kit: Input, Select, Skeleton…' },
+    { title: 'Tests', desc: 'Hook y vista por separado', tone: 'muted' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+<CodeTabs>
+
+```ts title="features/catalog/hooks/use-product-catalog.ts"
+import { useInfiniteQuery } from '@tanstack/react-query';
+import { useMemo, useState } from 'react';
+import { useDebouncedValue } from '@/hooks/use-debounced-value';
+import { catalogService, type Category } from '../api/catalog-service';
+
+export function useProductCatalog() {
+  const [search, setSearch] = useState('');
+  const [category, setCategory] = useState<Category | null>(null);
+  const debouncedSearch = useDebouncedValue(search, 350);
+
+  const query = useInfiniteQuery({
+    queryKey: ['catalog', { search: debouncedSearch, category }],
+    queryFn: ({ pageParam }) => catalogService.list({ search: debouncedSearch, category, page: pageParam }),
+    initialPageParam: 1,
+    getNextPageParam: (last) => (last.page < last.totalPages ? last.page + 1 : undefined),
+  });
+
+  const items = useMemo(() => query.data?.pages.flatMap((p) => p.items) ?? [], [query.data]);
+
+  const status: 'loading' | 'error' | 'empty' | 'ready' = query.isPending
+    ? 'loading'
+    : query.isError
+      ? 'error'
+      : items.length === 0
+        ? 'empty'
+        : 'ready';
+
+  return {
+    // datos listos para pintar
+    items,
+    status,
+    total: query.data?.pages[0]?.total ?? 0,
+    // filtros
+    search,
+    setSearch,
+    category,
+    setCategory,
+    hasFilters: Boolean(search || category),
+    clearFilters: () => {
+      setSearch('');
+      setCategory(null);
+    },
+    // paginación y refresco
+    loadMore: () => {
+      if (query.hasNextPage && !query.isFetchingNextPage) query.fetchNextPage();
+    },
+    isLoadingMore: query.isFetchingNextPage,
+    refresh: query.refetch,
+    isRefreshing: query.isRefetching && !query.isFetchingNextPage,
+  };
+}
+
+export type ProductCatalogState = ReturnType<typeof useProductCatalog>;
+```
+
+```tsx title="features/catalog/components/product-catalog-view.tsx"
+import { FlatList, RefreshControl, View } from 'react-native';
+import { EmptyState, ErrorState, ListSkeleton, Spinner } from '@/components/feedback';
+import { Input, Select, Text } from '@/components/ui';
+import { CATEGORY_OPTIONS } from '../constants';
+import type { ProductCatalogState } from '../hooks/use-product-catalog';
+import { ProductRow } from './product-row';
+
+type Props = ProductCatalogState & { onOpenProduct: (id: string) => void };
+
+export function ProductCatalogView(props: Props) {
+  const { items, status, total, search, setSearch, category, setCategory, hasFilters, clearFilters } = props;
+
+  const header = (
+    <View className="gap-3 pb-3">
+      <Input placeholder="Buscar productos…" value={search} onChangeText={setSearch} returnKeyType="search" />
+      <Select placeholder="Todas las categorías" options={CATEGORY_OPTIONS} value={category} onChange={setCategory} />
+      {status === 'ready' ? <Text variant="caption">{total} productos</Text> : null}
+    </View>
+  );
+
+  if (status === 'loading') return <View className="flex-1 bg-background p-4">{header}<ListSkeleton /></View>;
+  if (status === 'error') return <ErrorState onRetry={props.refresh} />;
+
+  return (
+    <FlatList
+      className="flex-1 bg-background"
+      contentContainerClassName="grow p-4"
+      data={items}
+      keyExtractor={(p) => p.id}
+      ListHeaderComponent={header}
+      renderItem={({ item }) => <ProductRow product={item} onPress={() => props.onOpenProduct(item.id)} />}
+      ItemSeparatorComponent={() => <View className="h-2" />}
+      onEndReached={props.loadMore}
+      onEndReachedThreshold={0.4}
+      ListFooterComponent={props.isLoadingMore ? <Spinner className="my-4" /> : null}
+      ListEmptyComponent={
+        <EmptyState
+          title={hasFilters ? 'Sin resultados' : 'Aún no hay productos'}
+          description={hasFilters ? 'Prueba con otra búsqueda o categoría.' : undefined}
+          action={hasFilters ? { label: 'Limpiar filtros', onPress: clearFilters } : undefined}
+        />
+      }
+      refreshControl={<RefreshControl refreshing={props.isRefreshing} onRefresh={props.refresh} />}
+      keyboardShouldPersistTaps="handled"
+    />
+  );
+}
+```
+
+```tsx title="src/app/(app)/catalogo.tsx"
+import { router } from 'expo-router';
+import { ProductCatalogView } from '@/features/catalog/components/product-catalog-view';
+import { useProductCatalog } from '@/features/catalog/hooks/use-product-catalog';
+
+export default function CatalogRoute() {
+  const catalog = useProductCatalog();
+  return <ProductCatalogView {...catalog} onOpenProduct={(id) => router.push({ pathname: '/producto/[id]', params: { id } })} />;
+}
+```
+
+```tsx title="features/catalog/components/product-catalog-view.test.tsx"
+import { render, screen, userEvent } from '@testing-library/react-native';
+import type { ProductCatalogState } from '../hooks/use-product-catalog';
+import { ProductCatalogView } from './product-catalog-view';
+
+// Un estado falso completo: la vista no sabe que no hay API
+function makeState(overrides: Partial<ProductCatalogState> = {}): ProductCatalogState {
+  return {
+    items: [],
+    status: 'ready',
+    total: 0,
+    search: '',
+    setSearch: jest.fn(),
+    category: null,
+    setCategory: jest.fn(),
+    hasFilters: false,
+    clearFilters: jest.fn(),
+    loadMore: jest.fn(),
+    isLoadingMore: false,
+    refresh: jest.fn(),
+    isRefreshing: false,
+    ...overrides,
+  } as ProductCatalogState;
+}
+
+test('ofrece limpiar filtros cuando una búsqueda no tiene resultados', async () => {
+  const user = userEvent.setup();
+  const state = makeState({ status: 'empty', search: 'xyz', hasFilters: true });
+  await render(<ProductCatalogView {...state} onOpenProduct={jest.fn()} />);
+
+  expect(screen.getByText('Sin resultados')).toBeOnTheScreen();
+  await user.press(screen.getByRole('button', { name: 'Limpiar filtros' }));
+  expect(state.clearFilters).toHaveBeenCalled();
+});
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **El hook no devuelve JSX**: expone `items` (todas las páginas aplanadas), un `status` único y acciones con nombre (`loadMore`, `clearFilters`, `refresh`). La vista no necesita conocer TanStack Query.
+- **`status` como unión de literales** convierte cuatro booleanos (`isPending`, `isError`, vacío, listo) en un único valor que la vista puede tratar con un `if` por caso.
+- **`useInfiniteQuery`** gestiona la paginación: `initialPageParam` y `getNextPageParam` (obligatorios en TanStack Query v5) deciden qué página pedir. La clave incluye los filtros, así cada combinación tiene su propia caché.
+- **`loadMore` protege contra dobles peticiones** comprobando `hasNextPage` e `isFetchingNextPage`: `onEndReached` puede dispararse varias veces.
+- **`ProductCatalogState = ReturnType<typeof useProductCatalog>`**: el tipo de las props de la vista se deriva del hook. Si el hook cambia, TypeScript señala dónde actualizar la vista.
+- **La vista se compone con el kit**: `Input`, `Select`, `ListSkeleton`, `EmptyState`, `ErrorState`, `Spinner`. No hay ni un estilo nuevo.
+- **El test de la vista** usa un estado falso: prueba la UI sin red, sin `QueryClient` y sin mocks de servicios.
+
+## Buenas prácticas
+
+- **El hook devuelve datos preparados**, no datos crudos: la vista no debería aplanar páginas ni calcular totales.
+- **Una vista, varias pantallas**: la misma lógica puede alimentar una vista para teléfono y otra para tablet.
+- **Testea el hook con `renderHook`** (lógica) y la vista con estados falsos (presentación), como vimos en [Custom Hooks](/docs/arquitectura/custom-hooks).
+
+### Errores comunes
+
+- Mover la lógica a un hook pero dejar condicionales de negocio en la vista ("si es admin y el stock es menor que…").
+- Devolver del hook el objeto completo de `useInfiniteQuery`: la vista vuelve a depender de la librería.
+
+### Cuándo usar otra solución
+
+En pantallas pequeñas (un formulario de dos campos), esta separación es excesiva. Aplícala cuando la pantalla tenga varios estados, filtros o se vaya a reutilizar.

@@ -1,0 +1,211 @@
+---
+title: Componentes de carga
+sidebarTitle: Carga
+description: Spinner con tokens, Skeleton animado con Reanimated 4, esqueletos de listas y una pantalla de carga, integrados con los estados de TanStack Query.
+difficulty: intermedio
+time: 18
+prerequisites:
+  - sistema-de-componentes/temas-y-variantes
+  - estilos/animaciones
+related:
+  - fundamentos/activityindicator
+  - datos/estados-de-carga-y-vacios
+  - sistema-de-componentes/estado-vacio
+resources:
+  - title: Reanimated — Animaciones CSS
+    url: https://docs.swmansion.com/react-native-reanimated/docs/css-animations/
+  - title: TanStack Query — Estados de las consultas
+    url: https://tanstack.com/query/latest/docs/framework/react/guides/queries
+keywords: [loading, carga, spinner, skeleton, esqueleto, shimmer, reanimated, isPending, useReducedMotion, kit]
+---
+
+## Introducción conceptual
+
+La espera es parte de la experiencia. Hay dos formas principales de comunicarla:
+
+- **Spinner**: indica "estoy trabajando" sin dar pistas del resultado. Adecuado para acciones (enviar, guardar) y cargas cortas.
+- **Skeleton**: muestra la **silueta del contenido** que va a aparecer. Reduce la sensación de espera y evita saltos de layout cuando llegan los datos. Ideal para listas, tarjetas y perfiles.
+
+<Overview
+  purpose="Comunicar cargas de forma consistente y con la menor sensación de espera posible."
+  importance="Los usuarios perciben como más rápida una pantalla con skeletons que la misma pantalla con un spinner central."
+  when="Spinner en acciones y cargas cortas; skeleton en la carga inicial de contenido estructurado."
+  problem="Evita spinners distintos en cada pantalla y saltos bruscos de layout al llegar los datos."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="Spinner">
+    - Botones con `loading`.
+    - Refrescos y paginación.
+    - Acciones bloqueantes breves.
+  </Column>
+  <Column title="Skeleton" tone="brand">
+    - Primera carga de listas y tarjetas.
+    - Perfiles y detalles.
+    - Misma forma y tamaño que el contenido real.
+  </Column>
+</Columns>
+
+<Screens>
+  <ScreenSketch
+    title="Cargando"
+    description="Skeleton de la lista"
+    blocks={[
+      { type: 'header', label: 'Productos' },
+      { type: 'image', label: ' ', height: 14 },
+      { type: 'image', label: ' ', height: 46 },
+      { type: 'image', label: ' ', height: 46 },
+      { type: 'image', label: ' ', height: 46 },
+    ]}
+  />
+  <ScreenSketch
+    title="Datos listos"
+    description="Mismo layout, sin saltos"
+    blocks={[
+      { type: 'header', label: 'Productos' },
+      { type: 'text', label: '24 productos', muted: true },
+      { type: 'list', items: ['Café de grano 1 kg', 'Prensa francesa', 'Molinillo manual'], meta: ['$18.900', '$24.500', '$32.000'] },
+    ]}
+  />
+</Screens>
+
+## Ejemplo práctico
+
+<CodeTabs>
+
+```tsx title="src/components/feedback/spinner.tsx"
+import { cva, type VariantProps } from 'class-variance-authority';
+import { ActivityIndicator, View } from 'react-native';
+import { Text } from '@/components/ui';
+import { cn } from '@/lib/cn';
+
+const spinnerVariants = cva('', {
+  variants: { tone: { primary: 'text-primary', muted: 'text-muted-foreground', inverse: 'text-primary-foreground' } },
+  defaultVariants: { tone: 'primary' },
+});
+
+type SpinnerProps = VariantProps<typeof spinnerVariants> & { size?: 'small' | 'large'; className?: string };
+
+export function Spinner({ tone, size = 'small', className }: SpinnerProps) {
+  // NativeWind traduce el color del texto a la prop color del indicador
+  return <ActivityIndicator size={size} className={cn(spinnerVariants({ tone }), className)} />;
+}
+
+export function LoadingState({ label = 'Cargando…' }: { label?: string }) {
+  return (
+    <View className="flex-1 items-center justify-center gap-3 bg-background" accessibilityRole="progressbar" accessibilityLabel={label}>
+      <Spinner size="large" />
+      <Text variant="caption">{label}</Text>
+    </View>
+  );
+}
+```
+
+```tsx title="src/components/feedback/skeleton.tsx"
+import { View, type ViewProps } from 'react-native';
+import Animated, { useReducedMotion } from 'react-native-reanimated';
+import { cn } from '@/lib/cn';
+
+const pulse = {
+  from: { opacity: 1 },
+  to: { opacity: 0.45 },
+};
+
+type SkeletonProps = ViewProps & { className?: string };
+
+/** Bloque gris que late suavemente; dale el tamaño del contenido real */
+export function Skeleton({ className, style, ...props }: SkeletonProps) {
+  const reduceMotion = useReducedMotion();
+  return (
+    <Animated.View
+      className={cn('rounded-lg bg-muted', className)}
+      style={[
+        reduceMotion
+          ? null
+          : {
+              animationName: pulse,
+              animationDuration: '900ms',
+              animationIterationCount: 'infinite',
+              animationDirection: 'alternate',
+              animationTimingFunction: 'ease-in-out',
+            },
+        style,
+      ]}
+      {...props}
+    />
+  );
+}
+
+/** Esqueleto de una lista de filas con miniatura */
+export function ListSkeleton({ rows = 6 }: { rows?: number }) {
+  return (
+    <View className="gap-3 p-4" accessibilityLabel="Cargando lista" accessibilityRole="progressbar">
+      <Skeleton className="h-4 w-28" />
+      {Array.from({ length: rows }, (_, i) => (
+        <View key={i} className="flex-row items-center gap-3">
+          <Skeleton className="h-12 w-12 rounded-xl" />
+          <View className="flex-1 gap-2">
+            <Skeleton className="h-4 w-3/4" />
+            <Skeleton className="h-3 w-1/2" />
+          </View>
+          <Skeleton className="h-4 w-14" />
+        </View>
+      ))}
+    </View>
+  );
+}
+```
+
+```tsx title="Uso con TanStack Query"
+import { FlatList, RefreshControl } from 'react-native';
+import { ErrorState } from '@/components/feedback/error-state';
+import { ListSkeleton } from '@/components/feedback/skeleton';
+import { useProducts } from '@/features/products';
+import { ProductRow } from './product-row';
+
+export function ProductsScreen() {
+  const { data, isPending, isError, refetch, isRefetching } = useProducts({});
+
+  if (isPending) return <ListSkeleton />; // primera carga: skeleton
+  if (isError) return <ErrorState onRetry={refetch} />;
+
+  return (
+    <FlatList
+      data={data}
+      keyExtractor={(p) => p.id}
+      renderItem={({ item }) => <ProductRow product={item} />}
+      // refrescos posteriores: indicador nativo, el contenido sigue visible
+      refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} />}
+    />
+  );
+}
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`Spinner`** usa variantes de tono con tokens: el color se declara como clase (`text-primary`) y NativeWind lo aplica a la prop `color` del `ActivityIndicator`.
+- **`LoadingState`** centra el indicador y expone `accessibilityRole="progressbar"` con una etiqueta para lectores de pantalla.
+- **`Skeleton`** usa una **animación CSS de Reanimated 4** (keyframes `from`/`to` con `animationIterationCount: 'infinite'`): se ejecuta en el hilo de UI sin código imperativo.
+- **`useReducedMotion()`** desactiva el latido si el usuario pidió reducir el movimiento: el bloque gris sigue comunicando la carga.
+- **`ListSkeleton`** imita las proporciones de la fila real (miniatura, dos líneas, precio). Cuanto más se parezca, menor es el salto al llegar los datos.
+- **`isPending` vs `isRefetching`**: el skeleton solo en la primera carga; en refrescos, el indicador nativo de `RefreshControl` mientras el contenido anterior sigue visible.
+
+## Buenas prácticas
+
+- **No muestres nada durante ~200 ms**: si los datos llegan antes, el usuario ni siquiera ve el skeleton (puedes retrasarlo con un temporizador o confiar en la caché de TanStack Query).
+- **Skeletons con la forma real del contenido**, no bloques genéricos.
+- **Evita bloquear toda la pantalla** para cargas parciales: carga cada sección de forma independiente.
+
+### Errores comunes
+
+- Spinners infinitos sin estado de error.
+- Skeletons de tamaño distinto al contenido final: el layout salta igual que sin skeleton.
+- Mostrar el skeleton en cada refetch y ocultar datos que ya teníamos.
+
+### Cuándo usar otra solución
+
+Si conoces el progreso real (subida de archivos), usa una barra de progreso determinada. Para estados sin datos o con error, continúa en [Estados vacíos](/docs/sistema-de-componentes/estado-vacio).

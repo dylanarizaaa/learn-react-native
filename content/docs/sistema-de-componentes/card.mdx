@@ -1,0 +1,172 @@
+---
+title: Cards
+sidebarTitle: Card
+description: Un componente Card compuesto (Header, Title, Description, Content, Footer) con variantes, versión pulsable y uso en dashboards y listados.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - sistema-de-componentes/temas-y-variantes
+related:
+  - sistema-de-componentes/composicion
+  - arquitectura/componentes-compartidos
+  - sistema-de-componentes/carga
+resources:
+  - title: shadcn/ui — Card (inspiración de la API)
+    url: https://ui.shadcn.com/docs/components/card
+  - title: Material 3 — Cards
+    url: https://m3.material.io/components/cards/overview
+keywords: [card, tarjeta, compound components, composición, variantes, pressable, dashboard, kit]
+---
+
+## Introducción conceptual
+
+Una tarjeta agrupa contenido relacionado: un resumen, un producto, una métrica. En lugar de un `Card` con props como `title`, `subtitle`, `footerButtons`, `image`, `badge`… usamos **composición**: un contenedor y subcomponentes (`Card.Header`, `Card.Title`, `Card.Content`, `Card.Footer`) que la pantalla combina como necesite.
+
+<Overview
+  purpose="Agrupar contenido relacionado con un estilo consistente y una estructura flexible."
+  importance="Las tarjetas aparecen en dashboards, listados y formularios; una API compuesta cubre todos esos casos sin crecer en props."
+  when="Para resúmenes, métricas, elementos de listas ricas, secciones de formularios y contenido destacado."
+  problem="Evita tarjetas con decenas de props opcionales o una variante distinta por cada pantalla."
+/>
+
+## Explicación visual
+
+<Layers
+  layers={[
+    { title: 'Card', desc: 'Contenedor', items: ['variant: elevated | outline | ghost'], tone: 'brand' },
+    { title: 'Card.Header', desc: 'Título y descripción', items: ['Card.Title', 'Card.Description'] },
+    { title: 'Card.Content', desc: 'Cuerpo libre', items: ['Texto', 'Gráficos', 'Campos'] },
+    { title: 'Card.Footer', desc: 'Acciones', items: ['Button', 'Link'], tone: 'muted' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+<CodeTabs>
+
+```tsx title="src/components/ui/card.tsx"
+import { cva, type VariantProps } from 'class-variance-authority';
+import { Pressable, View, type PressableProps, type ViewProps } from 'react-native';
+import { cn } from '@/lib/cn';
+import { Text, type TextProps } from './text';
+
+const cardVariants = cva('rounded-2xl', {
+  variants: {
+    variant: {
+      elevated: 'border border-border bg-card shadow-sm',
+      outline: 'border border-border bg-transparent',
+      ghost: 'bg-muted',
+    },
+  },
+  defaultVariants: { variant: 'elevated' },
+});
+
+type CardProps = ViewProps & VariantProps<typeof cardVariants> & { className?: string };
+
+function CardRoot({ variant, className, ...props }: CardProps) {
+  return <View className={cn(cardVariants({ variant }), className)} {...props} />;
+}
+
+/** Variante pulsable: toda la tarjeta es un botón */
+type PressableCardProps = Omit<PressableProps, 'style'> & VariantProps<typeof cardVariants> & { className?: string };
+
+function CardPressable({ variant, className, ...props }: PressableCardProps) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      className={cn(cardVariants({ variant }), 'active:opacity-80', className)}
+      {...props}
+    />
+  );
+}
+
+function CardHeader({ className, ...props }: ViewProps & { className?: string }) {
+  return <View className={cn('gap-1 p-5 pb-3', className)} {...props} />;
+}
+
+function CardTitle(props: TextProps) {
+  return <Text variant="heading" {...props} />;
+}
+
+function CardDescription(props: TextProps) {
+  return <Text variant="caption" {...props} />;
+}
+
+function CardContent({ className, ...props }: ViewProps & { className?: string }) {
+  return <View className={cn('px-5 pb-5', className)} {...props} />;
+}
+
+function CardFooter({ className, ...props }: ViewProps & { className?: string }) {
+  return <View className={cn('flex-row items-center border-t border-border px-5 py-3', className)} {...props} />;
+}
+
+export const Card = Object.assign(CardRoot, {
+  Pressable: CardPressable,
+  Header: CardHeader,
+  Title: CardTitle,
+  Description: CardDescription,
+  Content: CardContent,
+  Footer: CardFooter,
+});
+```
+
+```tsx title="Uso: dashboard de ventas"
+import { View } from 'react-native';
+import { Badge, Button, Card, Text } from '@/components/ui';
+
+export function SalesSummary({ total, growth, onSeeReport }: { total: string; growth: number; onSeeReport: () => void }) {
+  return (
+    <Card>
+      <Card.Header>
+        <Card.Title>Ventas de hoy</Card.Title>
+        <Card.Description>Actualizado hace 2 minutos</Card.Description>
+      </Card.Header>
+      <Card.Content className="gap-2">
+        <Text variant="display">{total}</Text>
+        <Badge label={`${growth > 0 ? '+' : ''}${growth}% vs. ayer`} tone={growth >= 0 ? 'success' : 'danger'} />
+      </Card.Content>
+      <Card.Footer className="justify-end">
+        <Button variant="ghost" size="sm" onPress={onSeeReport}>
+          Ver informe
+        </Button>
+      </Card.Footer>
+    </Card>
+  );
+}
+
+export function ProductRow({ name, stock, onPress }: { name: string; stock: number; onPress: () => void }) {
+  return (
+    <Card.Pressable variant="outline" onPress={onPress} accessibilityLabel={`${name}, ${stock} unidades`}>
+      <View className="flex-row items-center justify-between p-4">
+        <Text className="font-medium">{name}</Text>
+        <Text tone={stock < 5 ? 'danger' : 'muted'}>{stock} uds.</Text>
+      </View>
+    </Card.Pressable>
+  );
+}
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`Object.assign(CardRoot, {...})`** crea un componente con subcomponentes estáticos (`Card.Header`, `Card.Title`…). Se importa una sola cosa (`Card`) y la relación entre las partes es evidente al leer el JSX.
+- **Cada subcomponente acepta `className`** y lo combina con `cn`, así se ajusta el espaciado sin crear variantes nuevas (`<Card.Content className="gap-2">`).
+- **`Card.Title` y `Card.Description` reutilizan `Text`** con sus variantes tipográficas: la jerarquía visual es la del design system.
+- **`Card.Pressable`** comparte las variantes visuales pero usa `Pressable`, con rol de botón y feedback `active:`.
+- **`shadow-sm`** genera una sombra con `boxShadow` en la Nueva Arquitectura; en modo oscuro el borde aporta la separación.
+
+## Buenas prácticas
+
+- **No anides tarjetas dentro de tarjetas**: usa separadores o secciones.
+- **Una acción principal por tarjeta** y, si toda la tarjeta es pulsable, evita botones internos que compitan con el toque.
+- **Etiqueta las tarjetas pulsables** con un `accessibilityLabel` que resuma su contenido.
+
+### Errores comunes
+
+- Usar `Card` para todo contenedor: los fondos y bordes de más añaden ruido visual.
+- Tarjetas pulsables sin feedback ni rol de botón.
+
+### Cuándo usar otra solución
+
+Para filas simples de listas, `ListItem` ([Componentes compartidos](/docs/arquitectura/componentes-compartidos)) es más ligero que una tarjeta. Para contenido con estado propio (pestañas, acordeones), usa compound components con contexto ([Composición](/docs/sistema-de-componentes/composicion)).

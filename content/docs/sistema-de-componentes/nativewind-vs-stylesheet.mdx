@@ -1,0 +1,151 @@
+---
+title: Limitaciones de NativeWind frente a StyleSheet
+sidebarTitle: NativeWind vs StyleSheet
+description: Comparativa honesta. Qué hace mejor cada enfoque, las limitaciones reales de NativeWind, y cómo combinar ambos en el mismo proyecto.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - estilos/nativewind
+  - estilos/stylesheet-avanzado
+related:
+  - sistema-de-componentes/temas-y-variantes
+  - estilos/reanimated
+  - calidad/rendimiento
+resources:
+  - title: NativeWind — Documentación
+    url: https://www.nativewind.dev/
+  - title: NativeWind — cssInterop y remapProps
+    url: https://www.nativewind.dev/docs/api/css-interop
+  - title: React Native — StyleSheet
+    url: https://reactnative.dev/docs/stylesheet
+keywords: [nativewind vs stylesheet, limitaciones, comparativa, rendimiento, estilos dinámicos, cssInterop, enfoque híbrido]
+---
+
+## Introducción conceptual
+
+NativeWind y `StyleSheet` no compiten: **NativeWind genera estilos de React Native**, igual que `StyleSheet`. La diferencia está en la experiencia de desarrollo, el sistema de diseño y algunos casos límite. Elegir bien (o combinarlos) depende del equipo y del tipo de interfaz.
+
+<Overview
+  purpose="Conocer las fortalezas y límites de cada enfoque para elegir con criterio en cada componente."
+  importance="Forzar NativeWind donde no encaja (o StyleSheet donde NativeWind ahorra mucho) genera código innecesariamente complejo."
+  when="Al iniciar un proyecto, al definir las convenciones del equipo o al toparte con un caso que NativeWind no resuelve bien."
+  problem="Evita decisiones dogmáticas y soluciones forzadas ante casos límite."
+/>
+
+## Explicación visual
+
+| Aspecto | NativeWind | StyleSheet |
+| --- | --- | --- |
+| Velocidad de escritura | Muy alta (clases) | Media (objetos con nombre) |
+| Sistema de diseño | Integrado (escala de Tailwind, tokens) | Hay que construirlo |
+| Modo oscuro, estados, breakpoints | `dark:`, `active:`, `md:` | Lógica manual |
+| Valores dinámicos en tiempo de ejecución | Limitado (clases fijas) | Natural |
+| Animaciones por frame | No (usa Reanimated) | No (usa Reanimated) |
+| Componentes de terceros | Requieren `className` o `cssInterop` | Siempre funcionan con `style` |
+| Configuración | Babel + Metro + Tailwind | Ninguna |
+| Depuración | Clases → estilos en build | Directa |
+| Conocimiento previo | Tailwind CSS | Solo React Native |
+
+### Limitaciones reales de NativeWind
+
+<Columns>
+  <Column title="Limitaciones" tone="bad">
+    - **No se pueden construir clases dinámicamente** (`` `w-[${w}px]` ``): Tailwind solo genera clases escritas literalmente.
+    - **Solo lo que React Native soporta**: no hay `grid`, ni la mayoría de selectores CSS (hermanos, `:nth-child`).
+    - **Componentes de terceros** que no reenvían `style` necesitan `cssInterop`/`remapProps`.
+    - **Más configuración** y caché de Metro que limpiar ante cambios.
+    - **Migraciones de versión mayor** (v4 → v5 cambia a Tailwind v4).
+  </Column>
+  <Column title="Fortalezas" tone="good">
+    - Escala de espaciados y colores coherente.
+    - Variantes con `cva` muy legibles.
+    - Modo oscuro y estados sin código extra.
+    - Vocabulario compartido con proyectos web en Tailwind.
+    - Menos nombres inventados (`container2`, `wrapperInner`).
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+El enfoque híbrido que recomendamos: **NativeWind para el layout y los tokens**, `style` para valores calculados y **Reanimated** para animaciones.
+
+```tsx title="src/components/progress-ring-card.tsx"
+import { cssInterop } from 'nativewind';
+import { Pressable, View } from 'react-native';
+import Animated from 'react-native-reanimated';
+import { Circle, Svg } from 'react-native-svg';
+import { Text } from '@/components/ui';
+
+// Habilita className en un componente de terceros (react-native-svg):
+// las clases stroke-* se traducen a la prop stroke
+cssInterop(Circle, { className: { target: 'style', nativeStyleToProp: { stroke: true } } });
+
+type Props = { label: string; progress: number; color: string; onPress: () => void };
+
+export function GoalCard({ label, progress, color, onPress }: Props) {
+  const radius = 28;
+  const circumference = 2 * Math.PI * radius;
+  const clamped = Math.min(Math.max(progress, 0), 1);
+
+  return (
+    // Layout, tokens, estados y modo oscuro → NativeWind
+    <Pressable onPress={onPress} className="flex-row items-center gap-4 rounded-2xl border border-border bg-card p-4 active:opacity-80">
+      <Svg width={64} height={64} viewBox="0 0 64 64">
+        <Circle cx={32} cy={32} r={radius} strokeWidth={6} fill="none" className="stroke-muted" />
+        <Circle
+          cx={32}
+          cy={32}
+          r={radius}
+          strokeWidth={6}
+          fill="none"
+          // Color recibido en tiempo de ejecución (elegido por el usuario) → prop directa
+          stroke={color}
+          strokeDasharray={circumference}
+          strokeDashoffset={circumference * (1 - clamped)}
+          strokeLinecap="round"
+          transform="rotate(-90 32 32)"
+        />
+      </Svg>
+      <View className="flex-1 gap-2">
+        <Text className="font-semibold">{label}</Text>
+        <View className="h-2 overflow-hidden rounded-full bg-muted">
+          {/* Color dinámico → style; cambio de ancho animado → transición CSS de Reanimated */}
+          <Animated.View
+            className="h-full rounded-full"
+            style={{
+              backgroundColor: color,
+              width: `${clamped * 100}%`,
+              transitionProperty: 'width',
+              transitionDuration: 400,
+            }}
+          />
+        </View>
+        <Text variant="caption">{Math.round(clamped * 100)} % completado</Text>
+      </View>
+    </Pressable>
+  );
+}
+```
+
+## Explicación del código
+
+- **`className` y `style` conviven** en el mismo elemento: NativeWind aplica las clases y luego el `style` explícito, que tiene prioridad.
+- **Valores que vienen de datos** (un color elegido por el usuario, un porcentaje) van en `style` o en props: no se pueden expresar con clases fijas.
+- **Animaciones** con Reanimated: ni NativeWind ni `StyleSheet` animan por sí solos. Aquí basta una transición CSS de Reanimated 4 sobre `width`; sus componentes aceptan tanto `className` como `style`.
+- **`cssInterop`** registra un componente de terceros (aquí `Circle` de `react-native-svg`) para que acepte `className`, y traduce el valor de las clases `stroke-*` a la prop `stroke`.
+
+## Buenas prácticas
+
+- **Convención de equipo clara**: por ejemplo, "NativeWind por defecto; `style` solo para valores dinámicos; Reanimated para animaciones".
+- **No mezcles ambos sistemas para lo mismo**: si los colores vienen de tokens en NativeWind, no definas otra paleta en `StyleSheet`.
+- **Usa `useThemeColor`** (o equivalente) cuando una API necesite un valor de color del tema.
+
+### Errores comunes
+
+- Intentar interpolar clases con variables y concluir que "NativeWind no funciona".
+- Reescribir con `StyleSheet` todo un componente porque una sola propiedad era dinámica.
+- Olvidar que `style` sobrescribe a `className`.
+
+### Cuándo usar otra solución
+
+Elige **solo StyleSheet** en librerías que publicarás para terceros (sin obligar a configurar NativeWind), en componentes con muchos valores calculados (gráficos, canvas) o en equipos sin experiencia en Tailwind. Elige **NativeWind** en apps de producto con design system y equipos que valoran la velocidad. Alternativas como **Unistyles** (StyleSheet con temas y breakpoints) o **Uniwind** ocupan un punto intermedio.

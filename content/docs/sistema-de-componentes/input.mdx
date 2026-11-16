@@ -1,0 +1,221 @@
+---
+title: Input reutilizable
+sidebarTitle: Input
+description: Un campo de texto con etiqueta, ayuda, error, iconos, foco visible, contraseña con botón de mostrar y ref, accesible y coherente con el tema.
+difficulty: intermedio
+time: 25
+prerequisites:
+  - sistema-de-componentes/button
+  - fundamentos/textinput
+related:
+  - sistema-de-componentes/formularios
+  - calidad/accesibilidad
+  - react-typescript/useref
+resources:
+  - title: React Native — TextInput
+    url: https://reactnative.dev/docs/textinput
+  - title: React Native — Accesibilidad
+    url: https://reactnative.dev/docs/accessibility
+keywords: [input, textinput, label, error, helper text, password, iconos, foco, accesibilidad, kit]
+---
+
+## Introducción conceptual
+
+Un `TextInput` del núcleo es solo la caja de texto. En una app real cada campo necesita además: **etiqueta**, **texto de ayuda**, **mensaje de error**, **borde que indique el foco o el error**, a veces **iconos** y, en contraseñas, un botón para **mostrar u ocultar**. Nuestro `Input` agrupa todo eso con una API simple y accesible.
+
+<Overview
+  purpose="Proporcionar un campo de formulario completo y consistente en toda la app."
+  importance="Los formularios concentran gran parte de la interacción; etiquetas y errores claros reducen abandonos y errores."
+  when="En cualquier entrada de texto: login, registro, búsqueda, formularios de alta y edición."
+  problem="Evita repetir en cada pantalla la etiqueta, el borde de foco, el mensaje de error y la conexión accesible entre ellos."
+/>
+
+## Explicación visual
+
+<Layers
+  layers={[
+    { title: 'Etiqueta', desc: 'Text variant="label"', items: ['nativeID para vincularla'] },
+    { title: 'Contenedor', desc: 'Borde según estado', items: ['border-input', 'border-ring (foco)', 'border-danger (error)'], tone: 'brand' },
+    { title: 'Contenido', desc: 'Iconos + TextInput', items: ['leftIcon', 'TextInput', 'rightElement'] },
+    { title: 'Mensaje', desc: 'Ayuda o error', items: ['helperText', 'error (anunciado)'], tone: 'muted' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+Primero, un pequeño hook para obtener colores del tema donde una API necesita un valor (no una clase), como `placeholderTextColor`:
+
+```ts title="src/theme/use-theme-color.ts"
+import { useColorScheme } from 'nativewind';
+import { palette } from './tokens';
+
+type TokenName = keyof typeof palette.light extends `--${infer Name}` ? Name : never;
+
+export function useThemeColor(token: TokenName) {
+  const { colorScheme } = useColorScheme();
+  const rgb = palette[colorScheme === 'dark' ? 'dark' : 'light'][`--${token}`];
+  return `rgb(${rgb.split(' ').join(', ')})`;
+}
+```
+
+<CodeTabs>
+
+```tsx title="src/components/ui/input.tsx"
+import { useId, useState, type ReactNode, type Ref } from 'react';
+import { Pressable, TextInput, View, type TextInputProps } from 'react-native';
+import { cn } from '@/lib/cn';
+import { useThemeColor } from '@/theme/use-theme-color';
+import { Text } from './text';
+
+export type InputProps = TextInputProps & {
+  label?: string;
+  helperText?: string;
+  error?: string;
+  leftIcon?: ReactNode;
+  rightElement?: ReactNode;
+  containerClassName?: string;
+  className?: string;
+  ref?: Ref<TextInput>;
+};
+
+export function Input({
+  label,
+  helperText,
+  error,
+  leftIcon,
+  rightElement,
+  containerClassName,
+  className,
+  editable = true,
+  secureTextEntry,
+  onFocus,
+  onBlur,
+  ref,
+  ...props
+}: InputProps) {
+  const id = useId();
+  const [focused, setFocused] = useState(false);
+  const [revealed, setRevealed] = useState(false);
+  const placeholderColor = useThemeColor('muted-foreground');
+  const isPassword = Boolean(secureTextEntry);
+
+  return (
+    <View className={cn('gap-1.5', containerClassName)}>
+      {label ? (
+        <Text variant="label" nativeID={`${id}-label`}>
+          {label}
+        </Text>
+      ) : null}
+
+      <View
+        className={cn(
+          'h-12 flex-row items-center gap-2 rounded-xl border bg-background px-3',
+          error ? 'border-danger' : focused ? 'border-ring' : 'border-input',
+          !editable && 'bg-muted opacity-60',
+        )}
+      >
+        {leftIcon}
+        <TextInput
+          ref={ref}
+          editable={editable}
+          secureTextEntry={isPassword && !revealed}
+          placeholderTextColor={placeholderColor}
+          accessibilityLabel={label ?? props.placeholder}
+          accessibilityLabelledBy={label ? `${id}-label` : undefined}
+          accessibilityHint={error ?? helperText}
+          onFocus={(e) => {
+            setFocused(true);
+            onFocus?.(e);
+          }}
+          onBlur={(e) => {
+            setFocused(false);
+            onBlur?.(e);
+          }}
+          className={cn('h-full flex-1 text-base text-foreground', className)}
+          {...props}
+        />
+        {isPassword ? (
+          <Pressable
+            onPress={() => setRevealed((v) => !v)}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel={revealed ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+          >
+            <Text variant="caption" tone="primary" className="font-semibold">
+              {revealed ? 'Ocultar' : 'Mostrar'}
+            </Text>
+          </Pressable>
+        ) : (
+          rightElement
+        )}
+      </View>
+
+      {error ? (
+        <Text variant="caption" tone="danger" accessibilityLiveRegion="polite">
+          {error}
+        </Text>
+      ) : helperText ? (
+        <Text variant="caption">{helperText}</Text>
+      ) : null}
+    </View>
+  );
+}
+```
+
+```tsx title="Uso"
+import { Ionicons } from '@expo/vector-icons';
+import { useRef } from 'react';
+import { TextInput } from 'react-native';
+import { Input } from '@/components/ui';
+
+const passwordRef = useRef<TextInput>(null);
+
+<Input
+  label="Email"
+  placeholder="tu@email.com"
+  inputMode="email"
+  autoCapitalize="none"
+  autoComplete="email"
+  enterKeyHint="next"
+  onSubmitEditing={() => passwordRef.current?.focus()}
+  leftIcon={<Ionicons name="mail-outline" size={18} color="#71717a" />}
+/>
+
+<Input
+  ref={passwordRef}
+  label="Contraseña"
+  secureTextEntry
+  autoComplete="new-password"
+  helperText="Mínimo 8 caracteres, una mayúscula y un número."
+/>
+
+<Input label="Código de descuento" error="El código ha caducado" defaultValue="VERANO24" />
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`useThemeColor`** traduce un token a un color `rgb(...)` para APIs que aceptan valores, no clases. El tipo `TokenName` se deriva de las claves de la paleta (`'--muted-foreground'` → `'muted-foreground'`), así que solo admite tokens existentes.
+- **El borde refleja el estado** con prioridad clara: error > foco > reposo. El foco se guarda en estado local porque el contenedor (no el `TextInput`) es quien pinta el borde.
+- **`onFocus`/`onBlur` encadenados**: actualizamos nuestro estado y llamamos al handler del consumidor si existe, sin romper su comportamiento.
+- **Contraseñas**: si llega `secureTextEntry`, el componente añade el botón de mostrar/ocultar y gestiona la visibilidad internamente.
+- **`ref` como prop** (React 19): el padre puede enfocar el campo para encadenar formularios.
+- **Accesibilidad**: la etiqueta se vincula con `nativeID` + `accessibilityLabelledBy` (Android) y `accessibilityLabel` (iOS); el error o la ayuda se leen como `accessibilityHint`, y `accessibilityLiveRegion="polite"` anuncia el error en Android cuando aparece.
+- **`useId`** genera un identificador único por instancia para vincular etiqueta y campo aunque haya varios inputs en la misma pantalla.
+
+## Buenas prácticas
+
+- **Etiqueta siempre visible**; el placeholder es un ejemplo, no una etiqueta.
+- **Mensajes de error accionables**: "Introduce un email válido", no "Campo inválido".
+- **Mantén el componente sin lógica de validación**: la validación vive en el formulario ([Formularios](/docs/sistema-de-componentes/formularios)).
+
+### Errores comunes
+
+- Mostrar el error antes de que el usuario termine de escribir: valida al salir del campo o al enviar.
+- Reemplazar el `TextInput` al cambiar de estado (por ejemplo, al mostrar la contraseña): se pierde el foco. Cambiamos props, no el componente.
+- Usar colores literales en `placeholderTextColor`: no cambian con el tema.
+
+### Cuándo usar otra solución
+
+Para entradas especiales (importes con formato, fechas, códigos OTP de varias casillas) crea componentes específicos que reutilicen el mismo contenedor y estilos. Para selección entre opciones, usa [Select](/docs/sistema-de-componentes/select).

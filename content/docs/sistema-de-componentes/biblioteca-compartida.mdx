@@ -1,0 +1,239 @@
+---
+title: Biblioteca de componentes compartida entre proyectos
+sidebarTitle: Biblioteca compartida
+description: Convierte el kit en un paquete de un monorepo con npm workspaces, comparte el preset de Tailwind y los tokens, y consúmelo desde varias apps Expo.
+difficulty: avanzado
+time: 35
+prerequisites:
+  - arquitectura/biblioteca-interna
+  - sistema-de-componentes/organizacion-de-componentes
+related:
+  - calidad/dependencias
+  - sistema-de-componentes/configuracion-del-proyecto
+  - arquitectura/design-system
+resources:
+  - title: Expo — Trabajar con monorepos
+    url: https://docs.expo.dev/guides/monorepos/
+  - title: npm — Workspaces
+    url: https://docs.npmjs.com/cli/using-npm/workspaces
+  - title: NativeWind — Monorepos y content
+    url: https://www.nativewind.dev/docs/getting-started/installation
+keywords: [monorepo, workspaces, paquete, biblioteca compartida, tailwind preset, packages/ui, metro, expo, kit]
+---
+
+## Introducción conceptual
+
+Cuando el kit se usa en más de una app (por ejemplo, la app de clientes y la de repartidores), lo movemos a un **monorepo**: un repositorio con varias apps y paquetes compartidos. Con **npm workspaces**, las apps importan `@acme/ui` como si fuera un paquete de npm, pero apunta al código fuente local: los cambios se ven al instante en todas las apps.
+
+Desde SDK 52, Expo **configura Metro automáticamente para monorepos** (detecta la raíz del workspace), así que el trabajo se reduce a tres cosas: estructurar los paquetes, compartir la configuración de Tailwind y declarar bien las dependencias.
+
+<Overview
+  purpose="Compartir el kit de componentes, tokens y utilidades entre varias apps Expo desde un único código fuente."
+  importance="Un arreglo de accesibilidad o un cambio de marca se aplica a todas las apps a la vez."
+  when="Con dos o más apps de la misma organización, o una app y una web que comparten design system."
+  problem="Evita copias divergentes del kit en cada repositorio y configuraciones de estilos duplicadas."
+/>
+
+## Explicación visual
+
+```tree title="acme/ (raíz del monorepo)"
+acme/
+  package.json # workspaces: apps/*, packages/*
+  apps/
+    clientes/ # App Expo
+      app.json
+      babel.config.js
+      metro.config.js
+      tailwind.config.js # usa el preset de @acme/ui
+      global.css
+      src/app/
+    repartidores/ # Otra app Expo
+      ...
+  packages/
+    ui/ # @acme/ui
+      package.json
+      tailwind-preset.js *
+      src/
+        index.ts *
+        components/
+          button.tsx
+          input.tsx
+          card.tsx
+        theme/
+          tokens.ts
+          theme-provider.tsx
+        lib/
+          cn.ts
+```
+
+<Flow
+  steps={[
+    { title: 'packages/ui', desc: 'Componentes + preset + tokens', tone: 'brand' },
+    { title: 'npm workspaces', desc: 'Enlaza @acme/ui' },
+    { title: 'apps/clientes', desc: 'import { Button } from "@acme/ui"' },
+    { title: 'Tailwind', desc: 'content incluye packages/ui' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+<Steps>
+<Step title="Raíz del monorepo">
+
+```json title="package.json"
+{
+  "name": "acme",
+  "private": true,
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "clientes": "npm run start --workspace apps/clientes",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  }
+}
+```
+
+</Step>
+<Step title="El paquete de UI">
+
+```json title="packages/ui/package.json"
+{
+  "name": "@acme/ui",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./tailwind-preset": "./tailwind-preset.js"
+  },
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "*",
+    "nativewind": "^4.2.0",
+    "react-native-reanimated": "*",
+    "react-native-safe-area-context": "*"
+  },
+  "dependencies": {
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^3.7.0"
+  }
+}
+```
+
+```js title="packages/ui/tailwind-preset.js"
+const token = (name) => `rgb(var(--${name}) / <alpha-value>)`;
+
+/** Tokens compartidos por todas las apps */
+module.exports = {
+  darkMode: 'class',
+  theme: {
+    extend: {
+      colors: {
+        background: token('background'),
+        foreground: token('foreground'),
+        card: token('card'),
+        border: token('border'),
+        input: token('input'),
+        ring: token('ring'),
+        muted: { DEFAULT: token('muted'), foreground: token('muted-foreground') },
+        primary: { DEFAULT: token('primary'), foreground: token('primary-foreground') },
+        secondary: { DEFAULT: token('secondary'), foreground: token('secondary-foreground') },
+        danger: { DEFAULT: token('danger'), foreground: token('danger-foreground') },
+        success: token('success'),
+        warning: token('warning'),
+      },
+    },
+  },
+};
+```
+
+```ts title="packages/ui/src/index.ts"
+export { Button, type ButtonProps } from './components/button';
+export { Card } from './components/card';
+export { Input, type InputProps } from './components/input';
+export { Text } from './components/text';
+export { ThemeProvider } from './theme/theme-provider';
+export { palette } from './theme/tokens';
+export { cn } from './lib/cn';
+```
+
+</Step>
+<Step title="La app consume el paquete">
+
+```json title="apps/clientes/package.json (fragmento)"
+{
+  "dependencies": {
+    "@acme/ui": "*",
+    "expo": "~58.0.25",
+    "nativewind": "^4.2.7"
+  }
+}
+```
+
+```js title="apps/clientes/tailwind.config.js"
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: [
+    './src/**/*.{js,jsx,ts,tsx}',
+    // Imprescindible: Tailwind debe ver las clases usadas dentro del paquete
+    '../../packages/ui/src/**/*.{js,jsx,ts,tsx}',
+  ],
+  presets: [require('nativewind/preset'), require('@acme/ui/tailwind-preset')],
+};
+```
+
+```tsx title="apps/clientes/src/app/_layout.tsx"
+import '../../global.css';
+import { Stack } from 'expo-router';
+import { ThemeProvider } from '@acme/ui';
+
+export default function RootLayout() {
+  return (
+    <ThemeProvider>
+      <Stack />
+    </ThemeProvider>
+  );
+}
+```
+
+```bash
+# Desde la raíz: instala y enlaza todos los workspaces
+npm install
+
+# Arranca una app
+npm run clientes
+
+# Comprueba que no haya versiones duplicadas de react o react-native
+npm ls react-native
+npx expo-doctor --workspace apps/clientes
+```
+
+</Step>
+</Steps>
+
+## Explicación del código
+
+- **`workspaces`** hace que npm enlace `packages/ui` dentro de `node_modules/@acme/ui` de la raíz. Las apps importan `@acme/ui` sin publicar nada.
+- **El paquete exporta TypeScript directamente** (`main: ./src/index.ts`): Metro lo transpila junto con la app, sin paso de build propio. Es lo más simple para paquetes internos.
+- **`peerDependencies`** evita que el paquete traiga su propia copia de `react` o `react-native`: siempre se usa la de la app. Dos copias de React Native provocan errores en tiempo de ejecución difíciles de diagnosticar.
+- **El preset de Tailwind** contiene los tokens: cada app lo añade a `presets` y obtiene los mismos colores semánticos. Los valores concretos (`vars()`) viajan en el `ThemeProvider` del paquete.
+- **`content` debe incluir el paquete**: Tailwind solo genera las clases que encuentra. Si olvidas esta ruta, los componentes del paquete se renderizan sin estilos (el error más habitual).
+- **Metro**: desde SDK 52 Expo detecta el monorepo y configura `watchFolders` y la resolución de módulos; el `metro.config.js` de la app solo necesita `withNativeWind`.
+
+## Buenas prácticas
+
+- **Un solo gestor de paquetes y un solo lockfile** en la raíz.
+- **Alinea las versiones del SDK** en todas las apps del monorepo; actualízalas juntas.
+- **Tests y catálogo dentro del paquete**, para validar componentes sin abrir una app concreta.
+- **Versiona con Changesets** si otras organizaciones o repositorios consumen el paquete ([Biblioteca interna](/docs/arquitectura/biblioteca-interna)).
+
+### Errores comunes
+
+- Componentes sin estilos: falta la ruta del paquete en `content`.
+- *Invalid hook call* o errores nativos extraños: hay dos copias de `react` o `react-native` (`npm ls react` lo revela).
+- Mezclar npm, yarn y pnpm en el mismo monorepo.
+
+### Cuándo usar otra solución
+
+Si las apps viven en repositorios distintos, publica `@acme/ui` en un registro privado (GitHub Packages o npm privado) con un paso de build. Para monorepos grandes con muchas tareas, herramientas como Turborepo o Nx añaden caché de builds y orquestación sobre los workspaces.

@@ -1,0 +1,247 @@
+---
+title: Configuración del proyecto
+description: Inicializa el proyecto Expo con TypeScript y NativeWind, instala las utilidades del kit (cva, clsx, tailwind-merge), define los tokens y el proveedor de tema.
+difficulty: intermedio
+time: 25
+prerequisites:
+  - sistema-de-componentes/vision-general
+  - estilos/configuracion-de-nativewind
+related:
+  - expo/configuracion-inicial
+  - estilos/temas-personalizados
+  - sistema-de-componentes/temas-y-variantes
+resources:
+  - title: Expo — Crear un proyecto
+    url: https://docs.expo.dev/get-started/create-a-project/
+  - title: NativeWind — Instalación
+    url: https://www.nativewind.dev/docs/getting-started/installation
+  - title: tailwind-merge
+    url: https://github.com/dcastil/tailwind-merge
+keywords: [configuración, create-expo-app, nativewind, cva, clsx, tailwind-merge, cn, tokens, ThemeProvider, kit]
+---
+
+## Introducción conceptual
+
+Antes de escribir el primer componente, necesitamos una base sólida: el proyecto Expo, NativeWind funcionando, una utilidad para combinar clases y los **tokens de diseño** con soporte de modo oscuro. Este tema reúne todos esos pasos en el orden correcto; los detalles de cada archivo de NativeWind están explicados en [Configuración de NativeWind](/docs/estilos/configuracion-de-nativewind).
+
+<Overview
+  purpose="Preparar un proyecto Expo listo para construir el kit de componentes con NativeWind y tokens."
+  importance="Los tokens y la utilidad cn() son la base de todos los componentes; cambiarlos después obliga a tocar cada archivo."
+  when="Al iniciar el kit o un proyecto nuevo que lo vaya a usar."
+  problem="Reúne en una guía la configuración que normalmente está dispersa en varias documentaciones."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'Proyecto Expo', desc: 'default@sdk-58' },
+    { title: 'NativeWind v4', desc: 'Tailwind 3 + Babel + Metro' },
+    { title: 'Utilidades', desc: 'cva, clsx, tailwind-merge' },
+    { title: 'Tokens', desc: 'tailwind.config + vars()', tone: 'brand' },
+    { title: 'ThemeProvider', desc: 'Claro / oscuro' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+<Steps>
+<Step title="Crea el proyecto e instala dependencias">
+
+```bash
+npx create-expo-app@latest mi-kit --template default@sdk-58
+cd mi-kit
+npm run reset-project
+
+# NativeWind y sus dependencias
+npx expo install nativewind react-native-reanimated react-native-safe-area-context
+npx expo install tailwindcss@^3.4.17 prettier-plugin-tailwindcss --dev
+
+# Utilidades del kit
+npm install class-variance-authority clsx tailwind-merge
+```
+
+</Step>
+<Step title="Configura NativeWind (Babel, Metro, CSS y tipos)">
+
+```js title="babel.config.js"
+module.exports = function (api) {
+  api.cache(true);
+  return {
+    presets: [['babel-preset-expo', { jsxImportSource: 'nativewind' }], 'nativewind/babel'],
+  };
+};
+```
+
+```js title="metro.config.js"
+const { getDefaultConfig } = require('expo/metro-config');
+const { withNativeWind } = require('nativewind/metro');
+
+module.exports = withNativeWind(getDefaultConfig(__dirname), { input: './global.css' });
+```
+
+```css title="global.css"
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+```
+
+```ts title="nativewind-env.d.ts"
+/// <reference types="nativewind/types" />
+```
+
+</Step>
+<Step title="Define los tokens en Tailwind">
+
+```js title="tailwind.config.js"
+const token = (name) => `rgb(var(--${name}) / <alpha-value>)`;
+
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: ['./src/**/*.{js,jsx,ts,tsx}'],
+  presets: [require('nativewind/preset')],
+  darkMode: 'class',
+  theme: {
+    extend: {
+      colors: {
+        background: token('background'),
+        foreground: token('foreground'),
+        card: token('card'),
+        border: token('border'),
+        input: token('input'),
+        ring: token('ring'),
+        muted: { DEFAULT: token('muted'), foreground: token('muted-foreground') },
+        primary: { DEFAULT: token('primary'), foreground: token('primary-foreground') },
+        secondary: { DEFAULT: token('secondary'), foreground: token('secondary-foreground') },
+        danger: { DEFAULT: token('danger'), foreground: token('danger-foreground') },
+        success: token('success'),
+        warning: token('warning'),
+      },
+      borderRadius: { xl: '14px', '2xl': '18px' },
+    },
+  },
+  plugins: [],
+};
+```
+
+</Step>
+<Step title="Valores de los tokens y proveedor de tema">
+
+```ts title="src/theme/tokens.ts"
+import { vars } from 'nativewind';
+
+const light = {
+  '--background': '255 255 255',
+  '--foreground': '9 9 11',
+  '--card': '255 255 255',
+  '--border': '228 228 231',
+  '--input': '212 212 216',
+  '--ring': '14 165 233',
+  '--muted': '244 244 245',
+  '--muted-foreground': '113 113 122',
+  '--primary': '2 132 199',
+  '--primary-foreground': '255 255 255',
+  '--secondary': '244 244 245',
+  '--secondary-foreground': '24 24 27',
+  '--danger': '220 38 38',
+  '--danger-foreground': '255 255 255',
+  '--success': '22 163 74',
+  '--warning': '217 119 6',
+};
+
+const dark: typeof light = {
+  '--background': '9 9 11',
+  '--foreground': '250 250 250',
+  '--card': '24 24 27',
+  '--border': '39 39 42',
+  '--input': '63 63 70',
+  '--ring': '56 189 248',
+  '--muted': '39 39 42',
+  '--muted-foreground': '161 161 170',
+  '--primary': '56 189 248',
+  '--primary-foreground': '8 47 73',
+  '--secondary': '39 39 42',
+  '--secondary-foreground': '250 250 250',
+  '--danger': '248 113 113',
+  '--danger-foreground': '69 10 10',
+  '--success': '74 222 128',
+  '--warning': '251 191 36',
+};
+
+/** Valores crudos (para APIs que necesitan un color, no una clase) */
+export const palette = { light, dark };
+export const themeVars = { light: vars(light), dark: vars(dark) };
+```
+
+```tsx title="src/theme/theme-provider.tsx"
+import type { ReactNode } from 'react';
+import { View } from 'react-native';
+import { useColorScheme } from 'nativewind';
+import { themeVars } from './tokens';
+
+export function ThemeProvider({ children }: { children: ReactNode }) {
+  const { colorScheme } = useColorScheme();
+  return (
+    <View style={themeVars[colorScheme === 'dark' ? 'dark' : 'light']} className="flex-1 bg-background">
+      {children}
+    </View>
+  );
+}
+```
+
+</Step>
+<Step title="Crea la utilidad cn() y conecta todo en el layout raíz">
+
+```ts title="src/lib/cn.ts"
+import { clsx, type ClassValue } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+```
+
+```tsx title="src/app/_layout.tsx"
+import '../../global.css';
+import { Stack } from 'expo-router';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { ThemeProvider } from '@/theme/theme-provider';
+
+export default function RootLayout() {
+  return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ThemeProvider>
+        <Stack screenOptions={{ headerShown: false }} />
+      </ThemeProvider>
+    </GestureHandlerRootView>
+  );
+}
+```
+
+</Step>
+</Steps>
+
+## Explicación del código
+
+- **`token(name)`** genera colores que leen variables CSS. Los componentes solo usan nombres semánticos (`bg-primary`, `text-muted-foreground`); los valores reales viven en `tokens.ts`.
+- **`const dark: typeof light`** obliga a que el tema oscuro defina exactamente las mismas variables: si añades un token a `light` y lo olvidas en `dark`, TypeScript lo detecta.
+- **`ThemeProvider`** aplica las variables del esquema actual a un `View` raíz; todos los descendientes heredan los valores.
+- **`darkMode: 'class'`** permite cambiar el esquema desde la app (con `setColorScheme` de NativeWind), como vimos en [Dark Mode](/docs/estilos/dark-mode).
+- **`cn()`** es la utilidad que usarán todos los componentes: combina clases condicionales y resuelve conflictos (`px-4` del componente frente a `px-2` del consumidor).
+- **`GestureHandlerRootView`** queda preparado para el Sheet con gestos y otros componentes interactivos.
+
+## Buenas prácticas
+
+- **Commitea la configuración completa** y documenta en el README el comando `npx expo start --clear` tras cambios en Babel o Metro.
+- **Mantén pocos tokens** al principio; añade nuevos solo cuando un componente lo necesite de verdad.
+- **Prueba ambos modos** desde el primer componente.
+
+### Errores comunes
+
+- Instalar `tailwindcss` v4 con NativeWind v4: usa `tailwindcss@^3.4`.
+- Valores de tokens en hexadecimal: con el formato `R G B` funcionan los modificadores de opacidad (`bg-primary/10`).
+- Olvidar envolver la app con `ThemeProvider`: los colores semánticos no tendrán valor.
+
+### Cuándo usar otra solución
+
+Si tu proyecto ya existe con StyleSheet, puedes adoptar NativeWind de forma gradual: ambos conviven sin problemas. Revisa los criterios en [NativeWind vs StyleSheet](/docs/sistema-de-componentes/nativewind-vs-stylesheet).

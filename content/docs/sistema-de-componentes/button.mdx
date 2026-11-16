@@ -1,0 +1,231 @@
+---
+title: Botón reutilizable
+sidebarTitle: Button
+description: Un Button de producción con variantes, tamaños, estado de carga, iconos, ancho completo, accesibilidad y tests, construido sobre Pressable y cva.
+difficulty: intermedio
+time: 25
+prerequisites:
+  - sistema-de-componentes/temas-y-variantes
+  - fundamentos/pressable-y-touchableopacity
+related:
+  - arquitectura/componentes-reutilizables
+  - calidad/accesibilidad
+  - calidad/testing
+resources:
+  - title: React Native — Pressable
+    url: https://reactnative.dev/docs/pressable
+  - title: Apple HIG — Botones
+    url: https://developer.apple.com/design/human-interface-guidelines/buttons
+  - title: Material 3 — Botones
+    url: https://m3.material.io/components/buttons/overview
+keywords: [button, botón, variantes, loading, iconos, cva, Pressable, accesibilidad, kit, nativewind]
+---
+
+## Introducción conceptual
+
+El botón es el componente más usado de cualquier app y el mejor ejemplo de lo que aporta un kit: **una sola implementación** con todos los estados resueltos (pulsado, deshabilitado, cargando), variantes visuales coherentes con el tema y accesibilidad correcta. Cada pantalla solo escribe `<Button onPress={…}>Guardar</Button>`.
+
+<Overview
+  purpose="Ofrecer un botón consistente para todas las acciones de la app, con variantes, tamaños y estados."
+  importance="Las acciones principales de cada pantalla dependen de él; inconsistencias o estados mal resueltos se notan enseguida."
+  when="En cualquier acción del usuario: enviar, guardar, navegar, eliminar, abrir un modal."
+  problem="Evita botones con alturas, colores y feedback distintos en cada pantalla, y dobles envíos por falta de estado de carga."
+/>
+
+## Explicación visual
+
+| Variante | Uso | Ejemplo |
+| --- | --- | --- |
+| `primary` | Acción principal de la pantalla (una por pantalla) | Guardar, Pagar |
+| `secondary` | Acciones alternativas | Ver detalles |
+| `outline` | Acción secundaria con más presencia | Exportar |
+| `ghost` | Acciones terciarias o en barras | Cancelar, Omitir |
+| `destructive` | Acciones irreversibles | Eliminar cuenta |
+
+<Flow
+  steps={[
+    { title: 'Reposo', desc: 'variant + size' },
+    { title: 'Pulsado', desc: 'active:opacity-80', tone: 'brand' },
+    { title: 'Cargando', desc: 'Spinner, sin toques, busy' },
+    { title: 'Deshabilitado', desc: 'opacity-50, disabled' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+<CodeTabs>
+
+```tsx title="src/components/ui/button.tsx"
+import { cva, type VariantProps } from 'class-variance-authority';
+import type { ReactNode } from 'react';
+import { ActivityIndicator, Pressable, View, type PressableProps } from 'react-native';
+import { cn } from '@/lib/cn';
+import { Text } from './text';
+
+const buttonVariants = cva('flex-row items-center justify-center rounded-xl active:opacity-80 disabled:opacity-50', {
+  variants: {
+    variant: {
+      primary: 'bg-primary',
+      secondary: 'bg-secondary',
+      outline: 'border border-border bg-transparent active:bg-muted',
+      ghost: 'bg-transparent active:bg-muted',
+      destructive: 'bg-danger',
+    },
+    size: {
+      sm: 'h-9 gap-1.5 px-3',
+      md: 'h-11 gap-2 px-4',
+      lg: 'h-14 gap-2 px-6',
+      icon: 'h-11 w-11',
+    },
+    fullWidth: { true: 'self-stretch', false: 'self-start' },
+  },
+  defaultVariants: { variant: 'primary', size: 'md', fullWidth: false },
+});
+
+const labelVariants = cva('font-semibold', {
+  variants: {
+    variant: {
+      primary: 'text-primary-foreground',
+      secondary: 'text-secondary-foreground',
+      outline: 'text-foreground',
+      ghost: 'text-foreground',
+      destructive: 'text-danger-foreground',
+    },
+    size: { sm: 'text-sm', md: 'text-base', lg: 'text-lg', icon: 'text-base' },
+  },
+});
+
+export type ButtonProps = Omit<PressableProps, 'children' | 'style'> &
+  VariantProps<typeof buttonVariants> & {
+    children?: ReactNode;
+    loading?: boolean;
+    leftIcon?: ReactNode;
+    rightIcon?: ReactNode;
+    className?: string;
+  };
+
+export function Button({
+  children,
+  variant = 'primary',
+  size = 'md',
+  fullWidth = false,
+  loading = false,
+  disabled,
+  leftIcon,
+  rightIcon,
+  className,
+  accessibilityLabel,
+  ...props
+}: ButtonProps) {
+  const isDisabled = disabled || loading;
+  const label = typeof children === 'string' ? children : undefined;
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel ?? label}
+      accessibilityState={{ disabled: isDisabled, busy: loading }}
+      disabled={isDisabled}
+      hitSlop={size === 'sm' ? 6 : undefined}
+      className={cn(buttonVariants({ variant, size, fullWidth }), className)}
+      {...props}
+    >
+      {/* Mantenemos el contenido para conservar el ancho; lo ocultamos al cargar */}
+      <View className={cn('flex-row items-center gap-2', loading && 'opacity-0')}>
+        {leftIcon}
+        {typeof children === 'string' ? (
+          <Text className={labelVariants({ variant, size })}>{children}</Text>
+        ) : (
+          children
+        )}
+        {rightIcon}
+      </View>
+      {loading && (
+        <View className="absolute inset-0 items-center justify-center">
+          <ActivityIndicator className={labelVariants({ variant })} />
+        </View>
+      )}
+    </Pressable>
+  );
+}
+```
+
+```tsx title="src/components/ui/button.test.tsx"
+import { render, screen, userEvent } from '@testing-library/react-native';
+import { Button } from './button';
+
+test('ejecuta onPress al pulsar', async () => {
+  const user = userEvent.setup();
+  const onPress = jest.fn();
+  await render(<Button onPress={onPress}>Guardar</Button>);
+
+  await user.press(screen.getByRole('button', { name: 'Guardar' }));
+  expect(onPress).toHaveBeenCalledTimes(1);
+});
+
+test('no ejecuta onPress mientras carga y lo anuncia como ocupado', async () => {
+  const user = userEvent.setup();
+  const onPress = jest.fn();
+  await render(
+    <Button onPress={onPress} loading>
+      Guardar
+    </Button>,
+  );
+
+  const button = screen.getByRole('button', { name: 'Guardar' });
+  expect(button).toBeBusy();
+  await user.press(button);
+  expect(onPress).not.toHaveBeenCalled();
+});
+```
+
+```tsx title="Uso"
+// Iconos: npx expo install @expo/vector-icons
+import { Ionicons } from '@expo/vector-icons';
+import { Button } from '@/components/ui';
+
+<Button onPress={save} loading={isSaving} fullWidth>
+  Guardar cambios
+</Button>
+
+<Button variant="outline" leftIcon={<Ionicons name="download-outline" size={18} />} onPress={exportCsv}>
+  Exportar
+</Button>
+
+<Button variant="destructive" size="sm" onPress={confirmDelete}>
+  Eliminar
+</Button>
+
+<Button variant="ghost" size="icon" accessibilityLabel="Cerrar" onPress={close}>
+  <Ionicons name="close" size={22} />
+</Button>
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **Dos `cva`**: uno para el contenedor (`buttonVariants`) y otro para el texto (`labelVariants`). Así el color del texto acompaña siempre a la variante (por ejemplo, `text-primary-foreground` sobre `bg-primary`).
+- **`active:` y `disabled:`** son variantes de NativeWind que leen el estado de pulsación y la prop `disabled` del `Pressable`, sin estado adicional.
+- **`fullWidth`** como variante booleana: `cva` admite claves `true`/`false`.
+- **Estado de carga**: el contenido se oculta con opacidad (no se desmonta) para que el botón conserve su ancho; el `ActivityIndicator` se superpone con `absolute inset-0`. Su color se define con una clase: NativeWind traduce el `color` del texto a la prop `color` del indicador.
+- **Accesibilidad**: `accessibilityRole="button"`, una etiqueta derivada del texto, y `accessibilityState` con `disabled` y `busy`. Si el botón solo contiene un icono, se exige `accessibilityLabel` (así lo hacemos en el uso con `size="icon"`).
+- **`Omit<PressableProps, 'children' | 'style'>`**: el botón acepta cualquier prop de `Pressable` (`onLongPress`, `testID`, `hitSlop`) excepto `style`, porque el estilo se gestiona con `className`.
+- **Tests**: se busca el botón por su rol y nombre, como lo haría un usuario con lector de pantalla. `toBeBusy` comprueba el estado de carga.
+
+## Buenas prácticas
+
+- **Un botón primario por pantalla**: la jerarquía visual guía al usuario.
+- **Textos con verbo** ("Guardar cambios", no "OK").
+- **Usa `loading` en acciones asíncronas** para evitar dobles envíos; combínalo con el `isPending` de la mutación.
+- **Altura mínima de 44 pt** en los tamaños `md` y `lg`; para `sm`, compensa con `hitSlop`.
+
+### Errores comunes
+
+- Pasar `style` en lugar de `className` (lo excluimos del tipo para evitar estilos inconsistentes).
+- Botones solo con icono sin `accessibilityLabel`: el lector de pantalla diría solo "botón".
+- Construir variantes con clases dinámicas: `cva` las necesita como strings literales.
+
+### Cuándo usar otra solución
+
+Para acciones dentro de un texto usa un enlace (`Link` de Expo Router). Para controles de selección (activar/desactivar) usa `Switch` o un `SegmentedControl`, no un botón con estado. Para gestos complejos, [Gesture Handler](/docs/estilos/gesture-handler).

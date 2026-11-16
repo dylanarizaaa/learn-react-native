@@ -1,0 +1,287 @@
+---
+title: Formularios con React Hook Form y Zod
+sidebarTitle: Formularios
+description: Formularios tipados con React Hook Form, validación con esquemas de Zod 4, campos conectados del kit (FormInput, FormSelect), errores del servidor y envío con estado de carga.
+difficulty: avanzado
+time: 35
+prerequisites:
+  - sistema-de-componentes/input
+  - sistema-de-componentes/select
+  - react-typescript/interfaces-y-tipos
+related:
+  - proyectos/autenticacion-con-api
+  - datos/manejo-de-errores
+  - sistema-de-componentes/logica-y-presentacion
+resources:
+  - title: React Hook Form — Primeros pasos (React Native)
+    url: https://react-hook-form.com/get-started#ReactNative
+  - title: React Hook Form — Controller
+    url: https://react-hook-form.com/docs/usecontroller/controller
+  - title: Zod 4 — Documentación
+    url: https://zod.dev
+  - title: "@hookform/resolvers"
+    url: https://github.com/react-hook-form/resolvers
+keywords: [react hook form, zod, formularios, validación, zodResolver, Controller, useForm, setError, FormInput, FormSelect]
+---
+
+## Introducción conceptual
+
+Un formulario real necesita mucho más que un `useState` por campo: validación por campo y entre campos, mensajes de error, saber si el usuario ya tocó un campo, deshabilitar el envío mientras se procesa y mostrar errores que vienen del servidor ("este email ya existe").
+
+- **React Hook Form (RHF)** gestiona el estado del formulario con muy pocos renders.
+- **Zod** describe las reglas como un <Term slug="schema">esquema</Term>: valida en tiempo de ejecución y genera los tipos de TypeScript.
+- **`@hookform/resolvers`** conecta ambos con `zodResolver`.
+
+Como `TextInput` es un componente nativo controlado, en React Native usamos el componente **`Controller`** de RHF. Para no repetirlo en cada campo, creamos `FormInput` y `FormSelect` sobre los componentes del kit.
+
+<Overview
+  purpose="Construir formularios validados, tipados y accesibles con poco código por pantalla."
+  importance="Las reglas en un esquema se reutilizan (cliente, tests, incluso servidor) y los tipos se derivan automáticamente."
+  when="En formularios con más de un par de campos, reglas de validación o errores del servidor."
+  problem="Evita un useState por campo, validaciones duplicadas y tipos desincronizados con las reglas."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'Esquema Zod', desc: 'Reglas + tipos', tone: 'brand' },
+    { title: 'useForm', desc: 'zodResolver(schema)' },
+    { title: 'FormInput', desc: 'Controller + Input' },
+    { title: 'handleSubmit', desc: 'Valida y llama a onValid' },
+    { title: 'Servidor', desc: 'setError si responde con error', tone: 'muted' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+```bash
+npm install react-hook-form zod @hookform/resolvers
+```
+
+<CodeTabs>
+
+```tsx title="src/components/form/form-input.tsx"
+import { Controller, type Control, type FieldPath, type FieldValues } from 'react-hook-form';
+import { Input, type InputProps } from '@/components/ui';
+
+type FormInputProps<T extends FieldValues> = Omit<InputProps, 'value' | 'onChangeText' | 'onBlur' | 'error'> & {
+  control: Control<T>;
+  name: FieldPath<T>;
+};
+
+export function FormInput<T extends FieldValues>({ control, name, ...inputProps }: FormInputProps<T>) {
+  return (
+    <Controller
+      control={control}
+      name={name}
+      render={({ field: { value, onChange, onBlur, ref }, fieldState: { error } }) => (
+        <Input
+          ref={ref}
+          value={value ?? ''}
+          onChangeText={onChange}
+          onBlur={onBlur}
+          error={error?.message}
+          {...inputProps}
+        />
+      )}
+    />
+  );
+}
+```
+
+```tsx title="src/components/form/form-select.tsx"
+import { Controller, type Control, type FieldPath, type FieldValues } from 'react-hook-form';
+import { Select, type SelectOption } from '@/components/ui';
+
+type FormSelectProps<T extends FieldValues, V extends string | number> = {
+  control: Control<T>;
+  name: FieldPath<T>;
+  label: string;
+  options: readonly SelectOption<V>[];
+  placeholder?: string;
+};
+
+export function FormSelect<T extends FieldValues, V extends string | number>({
+  control,
+  name,
+  ...selectProps
+}: FormSelectProps<T, V>) {
+  return (
+    <Controller
+      control={control}
+      name={name}
+      render={({ field: { value, onChange }, fieldState: { error } }) => (
+        <Select value={value ?? null} onChange={onChange} error={error?.message} {...selectProps} />
+      )}
+    />
+  );
+}
+```
+
+```ts title="src/features/auth/schemas.ts"
+import { z } from 'zod';
+
+export const signUpSchema = z
+  .object({
+    name: z.string().trim().min(2, 'Escribe tu nombre'),
+    email: z.email('Introduce un email válido'),
+    password: z
+      .string()
+      .min(8, 'Mínimo 8 caracteres')
+      .regex(/[A-Z]/, 'Incluye al menos una mayúscula')
+      .regex(/\d/, 'Incluye al menos un número'),
+    confirmPassword: z.string(),
+    accountType: z.enum(['personal', 'business'], { error: 'Elige un tipo de cuenta' }),
+    acceptTerms: z.boolean().refine((v) => v, { error: 'Debes aceptar los términos' }),
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    error: 'Las contraseñas no coinciden',
+    path: ['confirmPassword'],
+  });
+
+export type SignUpValues = z.infer<typeof signUpSchema>;
+```
+
+```tsx title="src/features/auth/screens/sign-up-screen.tsx"
+import { zodResolver } from '@hookform/resolvers/zod';
+import { Controller, useForm } from 'react-hook-form';
+import { KeyboardAvoidingView, Platform, ScrollView, Switch, View } from 'react-native';
+import { FormInput, FormSelect } from '@/components/form';
+import { Button, Text } from '@/components/ui';
+import { ApiError } from '@/lib/http-client';
+import { signUpSchema } from '../schemas';
+import { authService } from '../api/auth-service';
+
+const ACCOUNT_TYPES = [
+  { value: 'personal', label: 'Personal' },
+  { value: 'business', label: 'Empresa', description: 'Facturación con datos fiscales' },
+] as const;
+
+export function SignUpScreen({ onSuccess }: { onSuccess: () => void }) {
+  const {
+    control,
+    handleSubmit,
+    setError,
+    formState: { isSubmitting, errors },
+  } = useForm({
+    resolver: zodResolver(signUpSchema),
+    mode: 'onTouched', // valida al salir de cada campo y después en cada cambio
+    defaultValues: { name: '', email: '', password: '', confirmPassword: '', acceptTerms: false },
+  });
+
+  const onSubmit = handleSubmit(async (values) => {
+    try {
+      await authService.signUp(values); // values está tipado y validado
+      onSuccess();
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        setError('email', { message: 'Este email ya está registrado' }, { shouldFocus: true });
+      } else {
+        setError('root', { message: 'No pudimos crear tu cuenta. Inténtalo de nuevo.' });
+      }
+    }
+  });
+
+  return (
+    <KeyboardAvoidingView className="flex-1 bg-background" behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <ScrollView contentContainerClassName="gap-4 p-6" keyboardShouldPersistTaps="handled">
+        <Text variant="title">Crea tu cuenta</Text>
+
+        <FormInput control={control} name="name" label="Nombre" autoComplete="name" />
+        <FormInput control={control} name="email" label="Email" inputMode="email" autoCapitalize="none" autoComplete="email" />
+        <FormInput control={control} name="password" label="Contraseña" secureTextEntry autoComplete="new-password" />
+        <FormInput control={control} name="confirmPassword" label="Repite la contraseña" secureTextEntry />
+        <FormSelect control={control} name="accountType" label="Tipo de cuenta" options={ACCOUNT_TYPES} />
+
+        <Controller
+          control={control}
+          name="acceptTerms"
+          render={({ field: { value, onChange }, fieldState: { error } }) => (
+            <View className="gap-1">
+              <View className="flex-row items-center justify-between">
+                <Text className="flex-1">Acepto los términos y la política de privacidad</Text>
+                <Switch value={value} onValueChange={onChange} accessibilityLabel="Aceptar términos" />
+              </View>
+              {error ? <Text variant="caption" tone="danger">{error.message}</Text> : null}
+            </View>
+          )}
+        />
+
+        {errors.root ? (
+          <Text tone="danger" accessibilityLiveRegion="assertive">
+            {errors.root.message}
+          </Text>
+        ) : null}
+
+        <Button onPress={onSubmit} loading={isSubmitting} fullWidth size="lg">
+          Crear cuenta
+        </Button>
+      </ScrollView>
+    </KeyboardAvoidingView>
+  );
+}
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **El esquema** concentra todas las reglas. Usamos las APIs de **Zod 4**: `z.email()` de nivel superior y la opción `error` para mensajes personalizados. El `.refine` final valida una regla **entre campos** y asigna el error a `confirmPassword` con `path`.
+- **`useForm({ resolver: zodResolver(signUpSchema) })`** infiere los tipos del formulario desde el esquema (no pasamos un genérico: la guía de `@hookform/resolvers` recomienda dejar que se infieran para evitar conflictos entre tipos de entrada y salida).
+- **`mode: 'onTouched'`** valida un campo cuando el usuario sale de él, y a partir de ahí en cada cambio: errores tempranos pero no molestos.
+- **`FormInput<T>`** es genérico: `name` solo acepta claves del formulario (`FieldPath<T>`), así `name="emial"` es un error de compilación. Pasa `ref` para que RHF pueda enfocar el primer campo con error.
+- **`handleSubmit`** valida todo el formulario y solo llama a la función si es válido; `values` llega tipado.
+- **`setError`** muestra errores del servidor en el campo correspondiente (`email`) o en `root` para errores generales.
+- **`isSubmitting`** es `true` mientras la promesa del envío está pendiente: el botón muestra su estado de carga y evita dobles envíos.
+- **El interruptor de términos** usa `Controller` directamente: no todo campo necesita un componente del kit.
+
+### El hook de la visión general
+
+La pantalla de login de la [visión general](/docs/sistema-de-componentes/vision-general) encapsula todo esto en un hook:
+
+```ts title="src/features/auth/hooks/use-login-form.ts"
+import { zodResolver } from '@hookform/resolvers/zod';
+import { useForm } from 'react-hook-form';
+import { z } from 'zod';
+import { useSession } from '@/providers/session-provider';
+import { authService } from '../api/auth-service';
+
+const loginSchema = z.object({
+  email: z.email('Introduce un email válido'),
+  password: z.string().min(1, 'Escribe tu contraseña'),
+});
+
+export function useLoginForm() {
+  const { signIn } = useSession();
+  const form = useForm({ resolver: zodResolver(loginSchema), defaultValues: { email: '', password: '' } });
+
+  const submit = form.handleSubmit(async (values) => {
+    try {
+      const { user, token } = await authService.login(values);
+      await signIn(user, token);
+    } catch {
+      form.setError('root', { message: 'Email o contraseña incorrectos' });
+    }
+  });
+
+  return { control: form.control, submit, isSubmitting: form.formState.isSubmitting, rootError: form.formState.errors.root?.message };
+}
+```
+
+## Buenas prácticas
+
+- **Reutiliza los esquemas**: el mismo `signUpSchema` puede validar en tests o en un backend en TypeScript.
+- **Mensajes en el esquema**, no en los componentes: los textos de error quedan junto a la regla.
+- **Errores del servidor con `setError`**, nunca con un `useState` paralelo.
+- **Formularios largos**: divídelos en pasos y valida cada paso con `trigger(['campo1', 'campo2'])`.
+
+### Errores comunes
+
+- Pasar `value` y `onChangeText` a mano además del `Controller`: duplica el estado.
+- Olvidar `defaultValues`: los campos empiezan como `undefined` y el `TextInput` pasa de no controlado a controlado.
+- Pasar un único genérico a `useForm<Tipo>` con esquemas que usan `.default()` o transformaciones: los tipos de entrada y salida difieren; deja que se infieran del resolver.
+
+### Cuándo usar otra solución
+
+Para un buscador o un único campo, `useState` es suficiente. Si tu equipo prefiere otra librería de validación (Valibot, ArkType), `@hookform/resolvers` también la soporta. Para formularios generados dinámicamente desde el servidor, RHF admite registrar campos de forma dinámica con `useFieldArray`.

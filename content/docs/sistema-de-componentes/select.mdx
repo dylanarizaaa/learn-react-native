@@ -1,0 +1,237 @@
+---
+title: Selectores
+sidebarTitle: Select
+description: Un Select genérico y tipado que abre una hoja con las opciones, con búsqueda opcional, estado deshabilitado, error y accesibilidad de selección.
+difficulty: avanzado
+time: 25
+prerequisites:
+  - sistema-de-componentes/modal
+  - sistema-de-componentes/input
+related:
+  - sistema-de-componentes/formularios
+  - react-typescript/tipado-de-componentes
+  - arquitectura/componentes-reutilizables
+resources:
+  - title: TypeScript — Genéricos
+    url: https://www.typescriptlang.org/docs/handbook/2/generics.html
+  - title: React Native — FlatList
+    url: https://reactnative.dev/docs/flatlist
+keywords: [select, selector, picker, dropdown, genéricos, opciones, búsqueda, sheet, accesibilidad, kit]
+---
+
+## Introducción conceptual
+
+En móvil, un selector no es un menú desplegable de escritorio: lo natural es un **campo que abre una hoja** con las opciones, a veces con un buscador si la lista es larga (países, categorías, clientes). Nuestro `Select` reutiliza el `Sheet` del tema anterior y tiene el mismo aspecto que el `Input` (etiqueta, borde, error), así los formularios se ven homogéneos.
+
+Lo hacemos **genérico** (`Select<T>`): el tipo del valor se infiere de las opciones, y `onChange` recibe exactamente ese tipo.
+
+<Overview
+  purpose="Elegir un valor entre varias opciones con una interfaz táctil cómoda y consistente con el resto de campos."
+  importance="Los selectores aparecen en casi todos los formularios; tiparlos evita errores al guardar valores incorrectos."
+  when="Listas de opciones cerradas: categorías, estados, países, métodos de pago, unidades."
+  problem="Evita los pickers nativos con aspecto distinto en cada plataforma y difíciles de estilizar o buscar."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'Campo', desc: 'Etiqueta + valor actual' },
+    { title: 'Toque', desc: 'Abre el Sheet', tone: 'brand' },
+    { title: 'Búsqueda', desc: 'Filtra (opcional)' },
+    { title: 'Selección', desc: 'onChange(value) + cerrar' },
+  ]}
+/>
+
+<Screens>
+  <ScreenSketch
+    title="Campo"
+    blocks={[
+      { type: 'header', label: 'Nuevo gasto', back: true },
+      { type: 'input', label: 'Descripción' },
+      { type: 'input', label: 'Categoría  ▾' },
+      { type: 'input', label: 'Importe' },
+      { type: 'button', label: 'Guardar' },
+    ]}
+  />
+  <ScreenSketch
+    title="Hoja de opciones"
+    blocks={[
+      { type: 'text', label: ' ' },
+      { type: 'text', label: ' ' },
+      { type: 'header', label: 'Categoría' },
+      { type: 'search', label: 'Buscar categoría…' },
+      { type: 'list', items: ['Alimentación', 'Transporte ✓', 'Hogar', 'Ocio', 'Salud'] },
+    ]}
+  />
+</Screens>
+
+## Ejemplo práctico
+
+<CodeTabs>
+
+```tsx title="src/components/ui/select.tsx"
+import { useMemo, useState } from 'react';
+import { FlatList, Pressable, TextInput, View } from 'react-native';
+import { cn } from '@/lib/cn';
+import { useThemeColor } from '@/theme/use-theme-color';
+import { Sheet, useDisclosure } from './sheet';
+import { Text } from './text';
+
+export type SelectOption<T extends string | number> = { value: T; label: string; description?: string; disabled?: boolean };
+
+type SelectProps<T extends string | number> = {
+  label?: string;
+  placeholder?: string;
+  options: readonly SelectOption<T>[];
+  value: T | null;
+  onChange: (value: T) => void;
+  error?: string;
+  disabled?: boolean;
+  searchable?: boolean;
+  className?: string;
+};
+
+export function Select<T extends string | number>({
+  label,
+  placeholder = 'Selecciona una opción',
+  options,
+  value,
+  onChange,
+  error,
+  disabled,
+  searchable = options.length > 8,
+  className,
+}: SelectProps<T>) {
+  const sheet = useDisclosure();
+  const [query, setQuery] = useState('');
+  const placeholderColor = useThemeColor('muted-foreground');
+  const selected = options.find((o) => o.value === value);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return q ? options.filter((o) => o.label.toLowerCase().includes(q)) : options;
+  }, [options, query]);
+
+  function choose(option: SelectOption<T>) {
+    onChange(option.value);
+    sheet.close();
+    setQuery('');
+  }
+
+  return (
+    <View className={cn('gap-1.5', className)}>
+      {label ? <Text variant="label">{label}</Text> : null}
+
+      <Pressable
+        onPress={sheet.open}
+        disabled={disabled}
+        accessibilityRole="combobox"
+        accessibilityLabel={label}
+        accessibilityValue={{ text: selected?.label ?? 'Sin seleccionar' }}
+        accessibilityState={{ disabled, expanded: sheet.isOpen }}
+        accessibilityHint={error}
+        className={cn(
+          'h-12 flex-row items-center justify-between rounded-xl border bg-background px-3 disabled:opacity-50',
+          error ? 'border-danger' : 'border-input',
+        )}
+      >
+        <Text tone={selected ? 'default' : 'muted'} numberOfLines={1} className="flex-1">
+          {selected?.label ?? placeholder}
+        </Text>
+        <Text tone="muted">▾</Text>
+      </Pressable>
+
+      {error ? (
+        <Text variant="caption" tone="danger" accessibilityLiveRegion="polite">
+          {error}
+        </Text>
+      ) : null}
+
+      <Sheet open={sheet.isOpen} onClose={sheet.close} title={label}>
+        {searchable ? (
+          <TextInput
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Buscar…"
+            placeholderTextColor={placeholderColor}
+            autoCorrect={false}
+            className="mb-3 h-11 rounded-xl bg-muted px-3 text-base text-foreground"
+          />
+        ) : null}
+        <FlatList
+          data={filtered}
+          keyExtractor={(o) => String(o.value)}
+          keyboardShouldPersistTaps="handled"
+          ListEmptyComponent={<Text tone="muted" className="py-6 text-center">Sin coincidencias</Text>}
+          renderItem={({ item }) => {
+            const isSelected = item.value === value;
+            return (
+              <Pressable
+                onPress={() => choose(item)}
+                disabled={item.disabled}
+                accessibilityRole="radio"
+                accessibilityState={{ checked: isSelected, disabled: item.disabled }}
+                className={cn('flex-row items-center rounded-xl px-3 py-3 active:bg-muted disabled:opacity-40', isSelected && 'bg-primary/10')}
+              >
+                <View className="flex-1">
+                  <Text className={cn(isSelected && 'font-semibold text-primary')}>{item.label}</Text>
+                  {item.description ? <Text variant="caption">{item.description}</Text> : null}
+                </View>
+                {isSelected ? <Text tone="primary">✓</Text> : null}
+              </Pressable>
+            );
+          }}
+        />
+      </Sheet>
+    </View>
+  );
+}
+```
+
+```tsx title="Uso"
+import { useState } from 'react';
+import { Select, type SelectOption } from '@/components/ui';
+
+type Category = 'food' | 'transport' | 'home' | 'leisure' | 'health';
+
+const CATEGORIES: SelectOption<Category>[] = [
+  { value: 'food', label: 'Alimentación' },
+  { value: 'transport', label: 'Transporte', description: 'Combustible, transporte público, taxis' },
+  { value: 'home', label: 'Hogar' },
+  { value: 'leisure', label: 'Ocio' },
+  { value: 'health', label: 'Salud' },
+];
+
+export function CategoryField() {
+  const [category, setCategory] = useState<Category | null>(null);
+  // onChange recibe Category: setCategory encaja sin conversiones
+  return <Select label="Categoría" options={CATEGORIES} value={category} onChange={setCategory} />;
+}
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`Select<T extends string | number>`**: el tipo del valor se infiere de `options`. Con `SelectOption<Category>[]`, pasar `onChange={setCategory}` compila, y pasar un valor que no es una categoría no.
+- **`searchable` con valor por defecto calculado**: el buscador aparece automáticamente si hay más de 8 opciones, sin que el consumidor tenga que decidirlo.
+- **`useMemo`** filtra solo cuando cambian las opciones o la búsqueda.
+- **Accesibilidad**: el campo tiene rol `combobox`, anuncia el valor actual con `accessibilityValue` y si la lista está desplegada con `expanded`. Cada opción es un `radio` con estado `checked`.
+- **`keyboardShouldPersistTaps="handled"`**: con el teclado del buscador abierto, el primer toque selecciona la opción en lugar de solo cerrar el teclado.
+- **Mismo aspecto que `Input`**: altura, borde, radio y mensaje de error coinciden, así los formularios se ven uniformes.
+
+## Buenas prácticas
+
+- **Pocas opciones (2–4)**: considera un `SegmentedControl` o botones de opción visibles en lugar de esconderlas en una hoja.
+- **Muchas opciones (cientos)**: carga bajo demanda y busca en el servidor.
+- **Mantén el componente controlado** (`value` + `onChange`) para integrarlo con React Hook Form.
+
+### Errores comunes
+
+- Usar el índice como valor: si el orden cambia, el valor guardado apunta a otra opción.
+- Selectores sin etiqueta: el valor elegido no tiene contexto para el lector de pantalla.
+
+### Cuándo usar otra solución
+
+Para selección múltiple, crea una variante `MultiSelect` con casillas y botón "Aplicar". Para fechas y horas, usa el selector nativo del sistema. Para integrar el `Select` en formularios con validación, continúa en [Formularios](/docs/sistema-de-componentes/formularios).
