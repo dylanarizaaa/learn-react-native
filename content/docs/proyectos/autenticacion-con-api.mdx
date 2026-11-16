@@ -1,0 +1,500 @@
+---
+title: Aplicación de autenticación con API
+sidebarTitle: Autenticación con API
+description: Un flujo de sesión completo contra una API real: login con validación, tokens en SecureStore, refresco automático, rutas protegidas, perfil y cierre de sesión.
+difficulty: intermedio
+time: 240
+prerequisites:
+  - datos/autenticacion
+  - datos/jwt
+  - sistema-de-componentes/formularios
+related:
+  - expo/navegacion-por-archivos
+  - expo/expo-secure-store
+  - calidad/seguridad
+resources:
+  - title: DummyJSON — Auth (API de prueba)
+    url: https://dummyjson.com/docs/auth
+  - title: Expo Router — Rutas protegidas
+    url: https://docs.expo.dev/router/advanced/protected/
+  - title: Expo — SecureStore
+    url: https://docs.expo.dev/versions/latest/sdk/securestore/
+goal: Implementar de extremo a extremo una sesión segura y robusta, integrando formularios, almacenamiento seguro, interceptores HTTP y navegación protegida.
+technologies: [Expo SDK 58, Expo Router, Axios, expo-secure-store, TanStack Query, React Hook Form, Zod, NativeWind]
+features:
+  - Login con validación y mensajes de error del servidor
+  - Sesión que se restaura al abrir la app sin parpadeos
+  - Refresco automático del access token
+  - Rutas públicas y privadas con Stack.Protected
+  - Pantalla de perfil con datos del usuario autenticado
+  - Cierre de sesión que limpia tokens y caché
+---
+
+## Descripción del proyecto
+
+Casi todas las apps de producto necesitan login. Este proyecto implementa el flujo completo con todas las piezas que un equipo profesional espera: **validación**, **tokens en SecureStore**, **refresco transparente**, **rutas protegidas** y **limpieza al cerrar sesión**.
+
+Usamos la API pública de pruebas **DummyJSON**, que ofrece endpoints de login, perfil (`/auth/me`) y refresco con tokens reales, así el proyecto funciona sin construir un backend. Usuario de prueba de su documentación: `emilys` / `emilyspass`.
+
+<Callout type="warning" title="Solo para aprender">
+DummyJSON es una API de demostración: no envíes datos reales. En tu app, sustituye la URL base por tu backend; el resto del código no cambia.
+</Callout>
+
+## Arquitectura propuesta
+
+<Layers
+  layers={[
+    { title: 'Rutas', desc: 'Stack.Protected', items: ['(auth)/login', '(app)/index', '(app)/perfil'], tone: 'brand' },
+    { title: 'Sesión', desc: 'SessionProvider', items: ['status', 'signIn', 'signOut', 'restaurar al abrir'] },
+    { title: 'Cliente HTTP', desc: 'Axios + interceptores', items: ['Bearer token', 'refresco único', 'reintento tras 401'] },
+    { title: 'Almacenamiento', desc: 'SecureStore', items: ['accessToken', 'refreshToken'], tone: 'muted' },
+  ]}
+/>
+
+<Flow
+  steps={[
+    { title: 'Abrir app', desc: 'Splash visible' },
+    { title: '¿Tokens?', desc: 'GET /auth/me', tone: 'brand' },
+    { title: 'Sí', desc: '(app)' },
+    { title: 'No o 401', desc: 'Refresco → login', tone: 'muted' },
+  ]}
+/>
+
+## Estructura de carpetas
+
+```tree
+auth-app/
+  src/
+    app/
+      _layout.tsx * # Proveedores + Stack.Protected
+      (auth)/
+        _layout.tsx
+        login.tsx
+      (app)/
+        _layout.tsx
+        index.tsx
+        perfil.tsx
+    features/
+      auth/
+        api/
+          auth-api.ts
+        session-provider.tsx *
+        schemas.ts
+    lib/
+      api-client.ts * # Axios + refresco
+      secure-session.ts
+      session-events.ts
+```
+
+## Diseño de las pantallas
+
+<Screens>
+  <ScreenSketch
+    title="Login"
+    blocks={[
+      { type: 'text', label: ' ' },
+      { type: 'header', label: 'Bienvenido' },
+      { type: 'text', label: 'Inicia sesión para continuar', muted: true },
+      { type: 'input', label: 'Usuario' },
+      { type: 'input', label: 'Contraseña' },
+      { type: 'button', label: 'Entrar' },
+      { type: 'text', label: 'Usuario de prueba: emilys / emilyspass', muted: true },
+    ]}
+  />
+  <ScreenSketch
+    title="Inicio"
+    blocks={[
+      { type: 'header', label: 'Hola, Emily', action: 'Perfil' },
+      { type: 'card', label: 'Sesión activa', value: 'Token renovado' },
+      { type: 'text', label: 'Contenido privado de la app…' },
+      { type: 'tabs', items: ['Inicio', 'Perfil'], active: 0 },
+    ]}
+  />
+  <ScreenSketch
+    title="Perfil"
+    blocks={[
+      { type: 'header', label: 'Perfil' },
+      { type: 'image', label: 'Avatar', height: 64 },
+      { type: 'list', items: ['Emily Johnson', 'emily.johnson@x.dummyjson.com', 'emilys'] },
+      { type: 'button', label: 'Cerrar sesión', variant: 'danger' },
+      { type: 'tabs', items: ['Inicio', 'Perfil'], active: 1 },
+    ]}
+  />
+</Screens>
+
+## Implementación paso a paso
+
+<Steps>
+<Step title="Dependencias y configuración">
+
+```bash
+npx expo install expo-secure-store expo-splash-screen
+npm install axios @tanstack/react-query react-hook-form zod @hookform/resolvers
+```
+
+```dotenv title=".env"
+EXPO_PUBLIC_API_URL=https://dummyjson.com
+```
+
+</Step>
+<Step title="Almacenamiento seguro y eventos de sesión">
+
+<CodeTabs>
+
+```ts title="src/lib/secure-session.ts"
+import * as SecureStore from 'expo-secure-store';
+
+const ACCESS = 'auth.accessToken';
+const REFRESH = 'auth.refreshToken';
+const options = { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY };
+
+export type Tokens = { accessToken: string; refreshToken: string };
+
+export async function saveTokens(t: Tokens) {
+  await SecureStore.setItemAsync(ACCESS, t.accessToken, options);
+  await SecureStore.setItemAsync(REFRESH, t.refreshToken, options);
+}
+
+export async function getTokens(): Promise<Tokens | null> {
+  const [accessToken, refreshToken] = await Promise.all([SecureStore.getItemAsync(ACCESS, options), SecureStore.getItemAsync(REFRESH, options)]);
+  return accessToken && refreshToken ? { accessToken, refreshToken } : null;
+}
+
+export async function clearTokens() {
+  await Promise.all([SecureStore.deleteItemAsync(ACCESS, options), SecureStore.deleteItemAsync(REFRESH, options)]);
+}
+```
+
+```ts title="src/lib/session-events.ts"
+const listeners = new Set<() => void>();
+
+export const sessionEvents = {
+  emitExpired: () => listeners.forEach((l) => l()),
+  onExpired: (listener: () => void) => {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  },
+};
+```
+
+</CodeTabs>
+
+</Step>
+<Step title="Cliente HTTP con refresco automático">
+
+Aplicamos el patrón de [JWT](/docs/datos/jwt): una única promesa de refresco compartida y un reintento por petición.
+
+```ts title="src/lib/api-client.ts"
+import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
+import { clearTokens, getTokens, saveTokens } from './secure-session';
+import { sessionEvents } from './session-events';
+
+const baseURL = process.env.EXPO_PUBLIC_API_URL;
+export const api = axios.create({ baseURL, timeout: 15_000 });
+const bare = axios.create({ baseURL, timeout: 15_000 }); // sin interceptores
+
+let refreshing: Promise<string> | null = null;
+
+function refreshAccessToken() {
+  refreshing ??= (async () => {
+    try {
+      const tokens = await getTokens();
+      if (!tokens) throw new Error('Sin sesión');
+      const { data } = await bare.post<{ accessToken: string; refreshToken: string }>('/auth/refresh', {
+        refreshToken: tokens.refreshToken,
+        expiresInMins: 30,
+      });
+      await saveTokens(data);
+      return data.accessToken;
+    } catch (error) {
+      await clearTokens();
+      sessionEvents.emitExpired();
+      throw error;
+    } finally {
+      refreshing = null;
+    }
+  })();
+  return refreshing;
+}
+
+api.interceptors.request.use(async (config) => {
+  const tokens = await getTokens();
+  if (tokens) config.headers.Authorization = `Bearer ${tokens.accessToken}`;
+  return config;
+});
+
+api.interceptors.response.use(undefined, async (error: AxiosError) => {
+  const original = error.config as (InternalAxiosRequestConfig & { _retried?: boolean }) | undefined;
+  if (error.response?.status !== 401 || !original || original._retried) throw error;
+  original._retried = true;
+  original.headers.Authorization = `Bearer ${await refreshAccessToken()}`;
+  return api(original);
+});
+```
+
+</Step>
+<Step title="Servicio de autenticación y esquema">
+
+<CodeTabs>
+
+```ts title="src/features/auth/api/auth-api.ts"
+import { api } from '@/lib/api-client';
+import type { Tokens } from '@/lib/secure-session';
+
+export type User = { id: number; username: string; email: string; firstName: string; lastName: string; image: string };
+
+export const authApi = {
+  async login(username: string, password: string): Promise<{ user: User; tokens: Tokens }> {
+    const { data } = await api.post<User & Tokens>('/auth/login', { username, password, expiresInMins: 30 });
+    const { accessToken, refreshToken, ...user } = data;
+    return { user, tokens: { accessToken, refreshToken } };
+  },
+  async me(): Promise<User> {
+    const { data } = await api.get<User>('/auth/me');
+    return data;
+  },
+};
+```
+
+```ts title="src/features/auth/schemas.ts"
+import { z } from 'zod';
+
+export const loginSchema = z.object({
+  username: z.string().trim().min(3, 'Escribe tu usuario'),
+  password: z.string().min(6, 'La contraseña tiene al menos 6 caracteres'),
+});
+```
+
+</CodeTabs>
+
+</Step>
+<Step title="Proveedor de sesión">
+
+```tsx title="src/features/auth/session-provider.tsx"
+import { useQueryClient } from '@tanstack/react-query';
+import * as SplashScreen from 'expo-splash-screen';
+import { createContext, use, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { clearTokens, getTokens, saveTokens } from '@/lib/secure-session';
+import { sessionEvents } from '@/lib/session-events';
+import { authApi, type User } from './api/auth-api';
+
+type Session = { status: 'loading' } | { status: 'signed-out' } | { status: 'signed-in'; user: User };
+type Ctx = { session: Session; signIn: (u: string, p: string) => Promise<void>; signOut: () => Promise<void> };
+
+const SessionContext = createContext<Ctx | null>(null);
+SplashScreen.preventAutoHideAsync();
+
+export function SessionProvider({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient();
+  const [session, setSession] = useState<Session>({ status: 'loading' });
+
+  useEffect(() => {
+    (async () => {
+      try {
+        if (!(await getTokens())) return setSession({ status: 'signed-out' });
+        setSession({ status: 'signed-in', user: await authApi.me() }); // el interceptor refresca si hace falta
+      } catch {
+        setSession({ status: 'signed-out' });
+      } finally {
+        SplashScreen.hideAsync();
+      }
+    })();
+
+    // Si un refresco falla en cualquier pantalla, cerramos sesión
+    return sessionEvents.onExpired(() => {
+      queryClient.clear();
+      setSession({ status: 'signed-out' });
+    });
+  }, [queryClient]);
+
+  const value = useMemo<Ctx>(
+    () => ({
+      session,
+      async signIn(username, password) {
+        const { user, tokens } = await authApi.login(username, password);
+        await saveTokens(tokens);
+        setSession({ status: 'signed-in', user });
+      },
+      async signOut() {
+        await clearTokens();
+        queryClient.clear();
+        setSession({ status: 'signed-out' });
+      },
+    }),
+    [session, queryClient],
+  );
+
+  return <SessionContext value={value}>{children}</SessionContext>;
+}
+
+export function useSession() {
+  const ctx = use(SessionContext);
+  if (!ctx) throw new Error('useSession fuera de SessionProvider');
+  return ctx;
+}
+```
+
+</Step>
+<Step title="Rutas protegidas en el layout raíz">
+
+```tsx title="src/app/_layout.tsx"
+import '../../global.css';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Stack } from 'expo-router';
+import { useState } from 'react';
+import { SessionProvider, useSession } from '@/features/auth/session-provider';
+import { ThemeProvider } from '@/theme/theme-provider';
+
+function Navigator() {
+  const { session } = useSession();
+  if (session.status === 'loading') return null;
+  const signedIn = session.status === 'signed-in';
+
+  return (
+    <Stack screenOptions={{ headerShown: false }}>
+      <Stack.Protected guard={!signedIn}>
+        <Stack.Screen name="(auth)" />
+      </Stack.Protected>
+      <Stack.Protected guard={signedIn} redirectTo="/login">
+        <Stack.Screen name="(app)" />
+      </Stack.Protected>
+    </Stack>
+  );
+}
+
+export default function RootLayout() {
+  const [queryClient] = useState(() => new QueryClient());
+  return (
+    <QueryClientProvider client={queryClient}>
+      <SessionProvider>
+        <ThemeProvider>
+          <Navigator />
+        </ThemeProvider>
+      </SessionProvider>
+    </QueryClientProvider>
+  );
+}
+```
+
+</Step>
+<Step title="Pantalla de login y perfil">
+
+<CodeTabs>
+
+```tsx title="src/app/(auth)/login.tsx"
+import { zodResolver } from '@hookform/resolvers/zod';
+import { isAxiosError } from 'axios';
+import { useForm } from 'react-hook-form';
+import { KeyboardAvoidingView, Platform, View } from 'react-native';
+import { FormInput } from '@/components/form';
+import { Button, Card, Text } from '@/components/ui';
+import { loginSchema } from '@/features/auth/schemas';
+import { useSession } from '@/features/auth/session-provider';
+
+export default function LoginScreen() {
+  const { signIn } = useSession();
+  const { control, handleSubmit, setError, formState } = useForm({
+    resolver: zodResolver(loginSchema),
+    defaultValues: { username: '', password: '' },
+  });
+
+  const onSubmit = handleSubmit(async ({ username, password }) => {
+    try {
+      await signIn(username, password); // Stack.Protected navega solo al cambiar la sesión
+    } catch (error) {
+      const message =
+        isAxiosError(error) && error.response?.status === 400 ? 'Usuario o contraseña incorrectos' : 'No pudimos conectar. Inténtalo de nuevo.';
+      setError('root', { message });
+    }
+  });
+
+  return (
+    <KeyboardAvoidingView className="flex-1 justify-center bg-background p-6" behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <Card>
+        <Card.Header>
+          <Card.Title>Bienvenido</Card.Title>
+          <Card.Description>Inicia sesión para continuar</Card.Description>
+        </Card.Header>
+        <Card.Content className="gap-4">
+          <FormInput control={control} name="username" label="Usuario" autoCapitalize="none" autoComplete="username" />
+          <FormInput control={control} name="password" label="Contraseña" secureTextEntry autoComplete="current-password" />
+          {formState.errors.root ? <Text tone="danger">{formState.errors.root.message}</Text> : null}
+          <Button onPress={onSubmit} loading={formState.isSubmitting} fullWidth>
+            Entrar
+          </Button>
+          <View className="items-center">
+            <Text variant="caption">Prueba: emilys / emilyspass</Text>
+          </View>
+        </Card.Content>
+      </Card>
+    </KeyboardAvoidingView>
+  );
+}
+```
+
+```tsx title="src/app/(app)/perfil.tsx"
+import { Image } from 'expo-image';
+import { Alert, View } from 'react-native';
+import { Button, Card, Text } from '@/components/ui';
+import { useSession } from '@/features/auth/session-provider';
+
+export default function ProfileScreen() {
+  const { session, signOut } = useSession();
+  if (session.status !== 'signed-in') return null;
+  const { user } = session;
+
+  return (
+    <View className="flex-1 gap-4 bg-background p-6">
+      <Card className="items-center gap-2 p-6">
+        <Image source={{ uri: user.image }} style={{ width: 88, height: 88, borderRadius: 44 }} accessibilityLabel="Foto de perfil" />
+        <Text variant="heading">
+          {user.firstName} {user.lastName}
+        </Text>
+        <Text variant="caption">{user.email}</Text>
+      </Card>
+      <Button
+        variant="destructive"
+        fullWidth
+        onPress={() =>
+          Alert.alert('Cerrar sesión', '¿Seguro que quieres salir?', [
+            { text: 'Cancelar', style: 'cancel' },
+            { text: 'Salir', style: 'destructive', onPress: signOut },
+          ])
+        }
+      >
+        Cerrar sesión
+      </Button>
+    </View>
+  );
+}
+```
+
+</CodeTabs>
+
+</Step>
+</Steps>
+
+## Qué has aprendido
+
+- **Ciclo de vida de una sesión**: restaurar, usar, refrescar y cerrar.
+- **Interceptores de Axios** para añadir tokens y refrescarlos con una única petición compartida.
+- **`Stack.Protected`** para que la navegación dependa del estado de la sesión, también con deep links.
+- **Errores del servidor en formularios** con `setError('root')`.
+- **Higiene de seguridad**: SecureStore, limpieza de caché y tokens al salir.
+
+## Mejoras y funcionalidades adicionales
+
+<Checklist
+  items={[
+    'Registro y recuperación de contraseña',
+    'Login con Apple y Google (expo-auth-session / expo-apple-authentication)',
+    'Desbloqueo con biometría (expo-local-authentication)',
+    'Refresco proactivo leyendo la expiración del JWT',
+    'Pantalla de sesiones activas y cierre en otros dispositivos',
+    'Tests de integración del flujo con renderRouter',
+    'Eliminación de cuenta desde la app (requisito de las tiendas)',
+    'Migrar a tu propio backend o a Supabase Auth',
+  ]}
+/>

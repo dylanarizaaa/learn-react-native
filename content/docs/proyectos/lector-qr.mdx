@@ -1,0 +1,397 @@
+---
+title: Aplicación de lectura de códigos QR
+sidebarTitle: Lector QR
+description: Un lector de QR y códigos de barras con expo-camera que interpreta el contenido (URL, Wi-Fi, teléfono, texto), guarda un historial en SQLite y ofrece acciones según el tipo.
+difficulty: intermedio
+time: 180
+prerequisites:
+  - expo/expo-camera
+  - expo/expo-linking
+related:
+  - proyectos/inventario
+  - expo/expo-sqlite
+  - calidad/seguridad
+resources:
+  - title: Expo — Camera (escaneo de códigos)
+    url: https://docs.expo.dev/versions/latest/sdk/camera/
+  - title: Expo — Clipboard
+    url: https://docs.expo.dev/versions/latest/sdk/clipboard/
+  - title: Expo — WebBrowser
+    url: https://docs.expo.dev/versions/latest/sdk/webbrowser/
+goal: Integrar la cámara en un flujo útil y seguro, interpretar datos externos con funciones puras testeadas y ofrecer acciones contextuales con las APIs del sistema.
+technologies: [Expo SDK 58, expo-camera, expo-sqlite, expo-clipboard, expo-web-browser, expo-haptics, Expo Router, NativeWind]
+features:
+  - Escaneo de QR y códigos de barras con marco guía
+  - Linterna y control para evitar lecturas repetidas
+  - Detección del tipo de contenido (URL, Wi-Fi, teléfono, email, texto)
+  - Acciones según el tipo: abrir, copiar, llamar, compartir
+  - Aviso de seguridad antes de abrir enlaces
+  - Historial de escaneos guardado en SQLite
+---
+
+## Descripción del proyecto
+
+Un lector de códigos que va más allá de mostrar texto: **entiende** lo que escanea y propone la acción adecuada. Un QR de Wi-Fi muestra la red y copia la contraseña; una URL se abre tras mostrar el dominio; un teléfono ofrece llamar.
+
+Los códigos QR son **datos externos no confiables**: pueden llevar a sitios de phishing. Por eso mostramos el dominio real antes de abrir cualquier enlace.
+
+## Arquitectura propuesta
+
+<Flow
+  steps={[
+    { title: 'CameraView', desc: 'onBarcodeScanned' },
+    { title: 'parseCode()', desc: 'Función pura y testeada', tone: 'brand' },
+    { title: 'Historial', desc: 'SQLite' },
+    { title: 'Resultado', desc: 'Acciones según el tipo' },
+  ]}
+/>
+
+## Estructura de carpetas
+
+```tree
+lector-qr/
+  src/
+    app/
+      _layout.tsx
+      index.tsx # Escáner
+      resultado/
+        [id].tsx # Resultado y acciones
+      historial.tsx
+    features/
+      scanner/
+        parse-code.ts * # Interpretación del contenido
+        parse-code.test.ts
+        scans-repository.ts
+        components/
+          scan-frame.tsx
+          result-actions.tsx
+```
+
+## Diseño de las pantallas
+
+<Screens>
+  <ScreenSketch
+    title="Escáner"
+    blocks={[
+      { type: 'header', label: 'Escanear', action: 'Historial' },
+      { type: 'camera', label: 'Centra el código en el marco' },
+      { type: 'segmented', items: ['Linterna: no', 'Linterna: sí'], active: 0 },
+    ]}
+  />
+  <ScreenSketch
+    title="Resultado: enlace"
+    blocks={[
+      { type: 'header', label: 'Enlace', back: true },
+      { type: 'card', label: 'Dominio', value: 'tienda.ejemplo.com' },
+      { type: 'text', label: 'https://tienda.ejemplo.com/promo?id=42', muted: true },
+      { type: 'button', label: 'Abrir enlace' },
+      { type: 'button', label: 'Copiar', variant: 'secondary' },
+      { type: 'button', label: 'Compartir', variant: 'secondary' },
+    ]}
+  />
+  <ScreenSketch
+    title="Historial"
+    blocks={[
+      { type: 'header', label: 'Historial', back: true, action: 'Borrar' },
+      { type: 'list', items: ['🔗 tienda.ejemplo.com', '📶 Wi-Fi Oficina', '📞 +56 9 1234 5678', '🔤 EAN 7801234567890'], meta: ['hoy', 'hoy', 'ayer', 'lun'] },
+    ]}
+  />
+</Screens>
+
+## Implementación paso a paso
+
+<Steps>
+<Step title="Dependencias y permisos">
+
+```bash
+npx expo install expo-camera expo-sqlite expo-clipboard expo-web-browser expo-haptics
+```
+
+```json title="app.json (plugins)"
+{
+  "expo": {
+    "plugins": [["expo-camera", { "cameraPermission": "La cámara se usa para leer códigos QR y de barras.", "barcodeScannerEnabled": true, "microphonePermission": false }]]
+  }
+}
+```
+
+</Step>
+<Step title="Interpreta el contenido con una función pura">
+
+<CodeTabs>
+
+```ts title="features/scanner/parse-code.ts"
+export type ParsedCode =
+  | { kind: 'url'; url: string; domain: string }
+  | { kind: 'wifi'; ssid: string; password: string | null; security: string }
+  | { kind: 'phone'; phone: string }
+  | { kind: 'email'; email: string }
+  | { kind: 'product'; code: string }
+  | { kind: 'text'; text: string };
+
+/** Formato estándar de QR Wi-Fi: WIFI:T:WPA;S:MiRed;P:clave;; */
+function parseWifi(data: string): ParsedCode | null {
+  const get = (key: string) => new RegExp(`${key}:((?:\\\\.|[^;])*)`).exec(data)?.[1]?.replace(/\\(.)/g, '$1') ?? null;
+  const ssid = get('S');
+  return ssid ? { kind: 'wifi', ssid, password: get('P'), security: get('T') ?? 'nopass' } : null;
+}
+
+export function parseCode(data: string, type: string): ParsedCode {
+  const value = data.trim();
+
+  if (/^https?:\/\//i.test(value)) {
+    try {
+      const url = new URL(value);
+      return { kind: 'url', url: url.toString(), domain: url.hostname };
+    } catch {
+      // URL mal formada: la tratamos como texto
+    }
+  }
+  if (/^WIFI:/i.test(value)) return parseWifi(value) ?? { kind: 'text', text: value };
+  if (/^tel:/i.test(value)) return { kind: 'phone', phone: value.slice(4) };
+  if (/^mailto:/i.test(value)) return { kind: 'email', email: value.slice(7).split('?')[0] };
+  if (type !== 'qr' && /^\d{8,14}$/.test(value)) return { kind: 'product', code: value };
+  return { kind: 'text', text: value };
+}
+```
+
+```ts title="features/scanner/parse-code.test.ts"
+import { parseCode } from './parse-code';
+
+test('reconoce URLs y extrae el dominio', () => {
+  expect(parseCode('https://tienda.ejemplo.com/promo?id=1', 'qr')).toEqual({
+    kind: 'url',
+    url: 'https://tienda.ejemplo.com/promo?id=1',
+    domain: 'tienda.ejemplo.com',
+  });
+});
+
+test('interpreta redes Wi-Fi con caracteres escapados', () => {
+  expect(parseCode('WIFI:T:WPA;S:Oficina\\;2;P:clave123;;', 'qr')).toEqual({
+    kind: 'wifi',
+    ssid: 'Oficina;2',
+    password: 'clave123',
+    security: 'WPA',
+  });
+});
+
+test('códigos de barras numéricos son productos', () => {
+  expect(parseCode('7801234567890', 'ean13')).toEqual({ kind: 'product', code: '7801234567890' });
+});
+```
+
+</CodeTabs>
+
+</Step>
+<Step title="Historial en SQLite">
+
+```ts title="features/scanner/scans-repository.ts"
+import type { SQLiteDatabase } from 'expo-sqlite';
+
+export type Scan = { id: number; data: string; type: string; createdAt: number };
+
+export async function migrate(db: SQLiteDatabase) {
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS scans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      data TEXT NOT NULL,
+      type TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+  `);
+}
+
+export const scansRepository = {
+  async add(db: SQLiteDatabase, data: string, type: string) {
+    const r = await db.runAsync('INSERT INTO scans (data, type, created_at) VALUES (?, ?, ?)', data, type, Date.now());
+    return r.lastInsertRowId;
+  },
+  get: (db: SQLiteDatabase, id: number) =>
+    db.getFirstAsync<Scan>('SELECT id, data, type, created_at AS createdAt FROM scans WHERE id = ?', id),
+  list: (db: SQLiteDatabase) =>
+    db.getAllAsync<Scan>('SELECT id, data, type, created_at AS createdAt FROM scans ORDER BY created_at DESC LIMIT 200'),
+  clear: (db: SQLiteDatabase) => db.runAsync('DELETE FROM scans'),
+};
+```
+
+</Step>
+<Step title="La pantalla de escaneo">
+
+```tsx title="src/app/index.tsx"
+import { useCallback, useRef, useState } from 'react';
+import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
+import { Link, router, useFocusEffect } from 'expo-router';
+import { useSQLiteContext } from 'expo-sqlite';
+import * as Haptics from 'expo-haptics';
+import { Linking, View } from 'react-native';
+import { Button, Text } from '@/components/ui';
+import { scansRepository } from '@/features/scanner/scans-repository';
+
+export default function ScannerScreen() {
+  const db = useSQLiteContext();
+  const [permission, requestPermission] = useCameraPermissions();
+  const [torch, setTorch] = useState(false);
+  const [active, setActive] = useState(true);
+  const locked = useRef(false);
+
+  // Reactiva el escáner al volver a esta pantalla
+  useFocusEffect(
+    useCallback(() => {
+      locked.current = false;
+      setActive(true);
+      return () => setActive(false); // desmonta la cámara al salir (ahorra batería)
+    }, []),
+  );
+
+  const onScanned = useCallback(
+    async ({ data, type }: BarcodeScanningResult) => {
+      if (locked.current) return;
+      locked.current = true;
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      const id = await scansRepository.add(db, data, type);
+      router.push({ pathname: '/resultado/[id]', params: { id: String(id) } });
+    },
+    [db],
+  );
+
+  if (!permission) return null;
+  if (!permission.granted) {
+    return (
+      <View className="flex-1 items-center justify-center gap-4 bg-background p-6">
+        <Text align="center">Para leer códigos necesitamos acceso a la cámara.</Text>
+        {permission.canAskAgain ? (
+          <Button onPress={requestPermission}>Permitir cámara</Button>
+        ) : (
+          <Button onPress={() => Linking.openSettings()}>Abrir ajustes</Button>
+        )}
+      </View>
+    );
+  }
+
+  return (
+    <View className="flex-1 bg-black">
+      {active ? (
+        <CameraView
+          style={{ flex: 1 }}
+          facing="back"
+          enableTorch={torch}
+          barcodeScannerSettings={{ barcodeTypes: ['qr', 'ean13', 'ean8', 'upc_a', 'code128'] }}
+          onBarcodeScanned={onScanned}
+        />
+      ) : null}
+      {/* Marco guía */}
+      <View pointerEvents="none" className="absolute inset-0 items-center justify-center">
+        <View className="h-64 w-64 rounded-3xl border-4 border-white/90" />
+        <Text className="mt-4 text-white">Centra el código en el marco</Text>
+      </View>
+      <View className="absolute inset-x-6 bottom-12 flex-row gap-3">
+        <Button variant="secondary" className="flex-1" onPress={() => setTorch((t) => !t)}>
+          {torch ? 'Apagar linterna' : 'Linterna'}
+        </Button>
+        <Link href="/historial" asChild>
+          <Button variant="secondary" className="flex-1">
+            Historial
+          </Button>
+        </Link>
+      </View>
+    </View>
+  );
+}
+```
+
+</Step>
+<Step title="Acciones según el tipo de contenido">
+
+```tsx title="features/scanner/components/result-actions.tsx"
+import * as Clipboard from 'expo-clipboard';
+import * as WebBrowser from 'expo-web-browser';
+import { Alert, Linking, Share, View } from 'react-native';
+import { Button, Card, Text } from '@/components/ui';
+import type { ParsedCode } from '../parse-code';
+
+export function ResultActions({ code, raw }: { code: ParsedCode; raw: string }) {
+  async function copy(value: string, label = 'Copiado') {
+    await Clipboard.setStringAsync(value);
+    Alert.alert(label);
+  }
+
+  function openUrl(url: string, domain: string) {
+    // Los QR pueden llevar a sitios maliciosos: mostramos el dominio real antes de abrir
+    Alert.alert('Abrir enlace', `Vas a abrir ${domain}. ¿Confías en este sitio?`, [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: 'Abrir', onPress: () => WebBrowser.openBrowserAsync(url) },
+    ]);
+  }
+
+  return (
+    <View className="gap-3">
+      {code.kind === 'url' ? (
+        <>
+          <Card className="p-4">
+            <Text variant="caption">Dominio</Text>
+            <Text variant="heading">{code.domain}</Text>
+          </Card>
+          <Button fullWidth onPress={() => openUrl(code.url, code.domain)}>
+            Abrir enlace
+          </Button>
+        </>
+      ) : null}
+      {code.kind === 'wifi' ? (
+        <>
+          <Card className="gap-1 p-4">
+            <Text variant="heading">{code.ssid}</Text>
+            <Text variant="caption">Seguridad: {code.security}</Text>
+          </Card>
+          {code.password ? (
+            <Button fullWidth onPress={() => copy(code.password!, 'Contraseña copiada')}>
+              Copiar contraseña
+            </Button>
+          ) : null}
+        </>
+      ) : null}
+      {code.kind === 'phone' ? (
+        <Button fullWidth onPress={() => Linking.openURL(`tel:${code.phone}`)}>
+          Llamar a {code.phone}
+        </Button>
+      ) : null}
+      {code.kind === 'email' ? (
+        <Button fullWidth onPress={() => Linking.openURL(`mailto:${code.email}`)}>
+          Escribir a {code.email}
+        </Button>
+      ) : null}
+      <Button variant="secondary" fullWidth onPress={() => copy(raw)}>
+        Copiar contenido
+      </Button>
+      <Button variant="secondary" fullWidth onPress={() => Share.share({ message: raw })}>
+        Compartir
+      </Button>
+    </View>
+  );
+}
+```
+
+</Step>
+</Steps>
+
+## Qué has aprendido
+
+- **Escaneo con `CameraView`** y control de lecturas repetidas con una referencia de bloqueo.
+- **Ciclo de vida de la cámara** con `useFocusEffect`: activa solo cuando la pantalla está visible.
+- **Interpretar datos externos** con una función pura, una unión discriminada y tests.
+- **Seguridad**: confirmar antes de abrir enlaces y mostrar el dominio real.
+- **Acciones del sistema**: portapapeles, navegador integrado, teléfono, correo y compartir.
+
+## Mejoras y funcionalidades adicionales
+
+<Checklist
+  items={[
+    'Generar códigos QR propios (por ejemplo, para compartir tu Wi-Fi)',
+    'Leer códigos desde una imagen de la galería',
+    'Búsqueda de productos por código de barras en una API pública',
+    'Escaneo por lotes para inventarios',
+    'Favoritos y notas en el historial',
+    'Vibración y sonido configurables',
+    'Detección de vCard (contactos) y añadirlos a la agenda',
+    'Lista de dominios bloqueados por seguridad',
+  ]}
+/>

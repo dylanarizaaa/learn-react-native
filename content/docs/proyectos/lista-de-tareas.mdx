@@ -1,0 +1,429 @@
+---
+title: Aplicación de tareas
+sidebarTitle: Lista de tareas
+description: Una app de tareas con alta, edición, completado, filtros, borrado deslizando y persistencia local, usando useReducer, FlatList y AsyncStorage.
+difficulty: principiante
+time: 120
+prerequisites:
+  - proyectos/contador
+  - fundamentos/scrollview-y-flatlist
+  - fundamentos/textinput
+related:
+  - react-typescript/state
+  - estilos/gesture-handler
+  - datos/almacenamiento-seguro
+resources:
+  - title: React — useReducer
+    url: https://react.dev/reference/react/useReducer
+  - title: React Native — FlatList
+    url: https://reactnative.dev/docs/flatlist
+  - title: AsyncStorage — Documentación
+    url: https://react-native-async-storage.github.io/async-storage/
+goal: Gestionar una colección con useReducer, renderizarla eficientemente con FlatList, capturar texto con TextInput y persistir el estado en el dispositivo.
+technologies: [Expo SDK 58, TypeScript, useReducer, FlatList, TextInput, AsyncStorage, Reanimated]
+features:
+  - Añadir tareas desde un campo de texto
+  - Marcar como completadas y editar el título
+  - Filtros Todas, Pendientes y Hechas con contador
+  - Eliminar con confirmación y vaciar completadas
+  - Persistencia automática en el dispositivo
+  - Animaciones de entrada y salida de elementos
+---
+
+## Descripción del proyecto
+
+La clásica lista de tareas es el mejor ejercicio para aprender a **gestionar colecciones**: añadir, modificar y eliminar elementos de forma inmutable, derivar datos (filtros, contadores) y mostrarlos en una lista virtualizada. Además, la guardaremos en el dispositivo para que no se pierda al cerrar la app.
+
+Usaremos **`useReducer`** en lugar de varios `useState`: todas las formas de modificar las tareas quedan descritas como **acciones** en un único lugar, fácil de leer y de testear.
+
+## Arquitectura propuesta
+
+<Layers
+  layers={[
+    { title: 'Pantalla', desc: 'src/app/index.tsx', items: ['Entrada', 'Filtros', 'FlatList'], tone: 'brand' },
+    { title: 'Hook', desc: 'useTasks()', items: ['useReducer', 'Persistencia', 'Estado derivado'] },
+    { title: 'Reducer', desc: 'Función pura', items: ['add', 'toggle', 'rename', 'remove', 'clearDone'] },
+    { title: 'Almacenamiento', desc: 'AsyncStorage', items: ['tasks.v1'], tone: 'muted' },
+  ]}
+/>
+
+## Estructura de carpetas
+
+```tree
+tareas/
+  src/
+    app/
+      _layout.tsx
+      index.tsx # Pantalla principal
+    features/
+      tasks/
+        tasks-reducer.ts * # Lógica pura
+        tasks-reducer.test.ts
+        use-tasks.ts * # Estado + persistencia
+        components/
+          task-input.tsx
+          task-item.tsx
+          filter-bar.tsx
+```
+
+## Diseño de las pantallas
+
+<Screens>
+  <ScreenSketch
+    title="Lista"
+    description="Entrada, filtros y tareas"
+    blocks={[
+      { type: 'header', label: 'Mis tareas', action: '2 pendientes' },
+      { type: 'input', label: '¿Qué tienes que hacer?' },
+      { type: 'segmented', items: ['Todas', 'Pendientes', 'Hechas'], active: 0 },
+      { type: 'list', items: ['Comprar pan', 'Llamar al dentista', 'Pagar la luz', 'Revisar correo'], check: true, done: [2, 3] },
+      { type: 'text', label: 'Vaciar completadas', muted: true },
+    ]}
+  />
+  <ScreenSketch
+    title="Sin tareas"
+    description="Estado vacío útil"
+    blocks={[
+      { type: 'header', label: 'Mis tareas' },
+      { type: 'input', label: '¿Qué tienes que hacer?' },
+      { type: 'segmented', items: ['Todas', 'Pendientes', 'Hechas'], active: 1 },
+      { type: 'empty', label: '¡Todo hecho! No tienes tareas pendientes.' },
+    ]}
+  />
+</Screens>
+
+## Implementación paso a paso
+
+<Steps>
+<Step title="Prepara el proyecto">
+
+```bash
+npx create-expo-app@latest tareas --template default@sdk-58
+cd tareas
+npm run reset-project
+npx expo install @react-native-async-storage/async-storage
+```
+
+</Step>
+<Step title="Define el modelo y el reducer">
+
+El reducer es una **función pura**: recibe el estado y una acción y devuelve un estado nuevo, sin efectos secundarios.
+
+```ts title="src/features/tasks/tasks-reducer.ts"
+export type Task = { id: string; title: string; done: boolean; createdAt: number };
+export type Filter = 'all' | 'pending' | 'done';
+
+export type TasksAction =
+  | { type: 'hydrate'; tasks: Task[] }
+  | { type: 'add'; title: string }
+  | { type: 'toggle'; id: string }
+  | { type: 'rename'; id: string; title: string }
+  | { type: 'remove'; id: string }
+  | { type: 'clearDone' };
+
+export function tasksReducer(tasks: Task[], action: TasksAction): Task[] {
+  switch (action.type) {
+    case 'hydrate':
+      return action.tasks;
+    case 'add': {
+      const title = action.title.trim();
+      if (!title) return tasks;
+      const task: Task = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, title, done: false, createdAt: Date.now() };
+      return [task, ...tasks];
+    }
+    case 'toggle':
+      return tasks.map((t) => (t.id === action.id ? { ...t, done: !t.done } : t));
+    case 'rename':
+      return tasks.map((t) => (t.id === action.id ? { ...t, title: action.title.trim() || t.title } : t));
+    case 'remove':
+      return tasks.filter((t) => t.id !== action.id);
+    case 'clearDone':
+      return tasks.filter((t) => !t.done);
+  }
+}
+
+export function filterTasks(tasks: Task[], filter: Filter) {
+  if (filter === 'pending') return tasks.filter((t) => !t.done);
+  if (filter === 'done') return tasks.filter((t) => t.done);
+  return tasks;
+}
+```
+
+```ts title="src/features/tasks/tasks-reducer.test.ts"
+import { tasksReducer } from './tasks-reducer';
+
+test('añade, completa y limpia tareas', () => {
+  let state = tasksReducer([], { type: 'add', title: '  Comprar pan  ' });
+  expect(state[0].title).toBe('Comprar pan');
+
+  state = tasksReducer(state, { type: 'toggle', id: state[0].id });
+  expect(state[0].done).toBe(true);
+
+  state = tasksReducer(state, { type: 'clearDone' });
+  expect(state).toHaveLength(0);
+});
+```
+
+</Step>
+<Step title="Conecta el reducer con la persistencia">
+
+```ts title="src/features/tasks/use-tasks.ts"
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useEffect, useReducer, useState } from 'react';
+import { filterTasks, tasksReducer, type Filter, type Task } from './tasks-reducer';
+
+const STORAGE_KEY = 'tasks.v1';
+
+export function useTasks() {
+  const [tasks, dispatch] = useReducer(tasksReducer, []);
+  const [filter, setFilter] = useState<Filter>('all');
+  const [loaded, setLoaded] = useState(false);
+
+  // 1. Cargar al abrir
+  useEffect(() => {
+    AsyncStorage.getItem(STORAGE_KEY)
+      .then((raw) => {
+        if (raw) dispatch({ type: 'hydrate', tasks: JSON.parse(raw) as Task[] });
+      })
+      .catch(() => {}) // datos corruptos: empezamos de cero
+      .finally(() => setLoaded(true));
+  }, []);
+
+  // 2. Guardar cada vez que cambian (solo después de cargar)
+  useEffect(() => {
+    if (loaded) AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(tasks)).catch(() => {});
+  }, [tasks, loaded]);
+
+  return {
+    loaded,
+    tasks: filterTasks(tasks, filter),
+    filter,
+    setFilter,
+    pendingCount: tasks.filter((t) => !t.done).length,
+    doneCount: tasks.filter((t) => t.done).length,
+    add: (title: string) => dispatch({ type: 'add', title }),
+    toggle: (id: string) => dispatch({ type: 'toggle', id }),
+    rename: (id: string, title: string) => dispatch({ type: 'rename', id, title }),
+    remove: (id: string) => dispatch({ type: 'remove', id }),
+    clearDone: () => dispatch({ type: 'clearDone' }),
+  };
+}
+```
+
+</Step>
+<Step title="Crea los componentes de la lista">
+
+<CodeTabs>
+
+```tsx title="src/features/tasks/components/task-input.tsx"
+import { useState } from 'react';
+import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+
+export function TaskInput({ onAdd }: { onAdd: (title: string) => void }) {
+  const [text, setText] = useState('');
+
+  function submit() {
+    if (!text.trim()) return;
+    onAdd(text);
+    setText('');
+  }
+
+  return (
+    <View style={styles.row}>
+      <TextInput
+        value={text}
+        onChangeText={setText}
+        onSubmitEditing={submit}
+        submitBehavior="submit" // mantiene el teclado abierto para añadir varias
+        enterKeyHint="done"
+        placeholder="¿Qué tienes que hacer?"
+        accessibilityLabel="Nueva tarea"
+        style={styles.input}
+      />
+      <Pressable onPress={submit} disabled={!text.trim()} accessibilityRole="button" accessibilityLabel="Añadir tarea" style={[styles.add, !text.trim() && { opacity: 0.4 }]}>
+        <Text style={styles.addText}>+</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  row: { flexDirection: 'row', gap: 8 },
+  input: { flex: 1, borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 12, paddingHorizontal: 14, height: 48, fontSize: 16 },
+  add: { width: 48, height: 48, borderRadius: 12, backgroundColor: '#0f172a', alignItems: 'center', justifyContent: 'center' },
+  addText: { color: '#fff', fontSize: 24, fontWeight: '600' },
+});
+```
+
+```tsx title="src/features/tasks/components/task-item.tsx"
+import { memo } from 'react';
+import { Alert, Platform, Pressable, StyleSheet, Text } from 'react-native';
+import Animated, { FadeInDown, FadeOut, LinearTransition } from 'react-native-reanimated';
+import type { Task } from '../tasks-reducer';
+
+type Props = { task: Task; onToggle: (id: string) => void; onRemove: (id: string) => void; onRename: (id: string, title: string) => void };
+
+export const TaskItem = memo(function TaskItem({ task, onToggle, onRemove, onRename }: Props) {
+  function confirmRemove() {
+    Alert.alert('Eliminar tarea', `¿Eliminar "${task.title}"?`, [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: 'Eliminar', style: 'destructive', onPress: () => onRemove(task.id) },
+    ]);
+  }
+
+  function edit() {
+    // Alert.prompt solo existe en iOS; en Android usarías un modal propio
+    if (Platform.OS === 'ios') Alert.prompt('Editar tarea', undefined, (title) => onRename(task.id, title), 'plain-text', task.title);
+  }
+
+  return (
+    <Animated.View entering={FadeInDown} exiting={FadeOut} layout={LinearTransition} style={styles.row}>
+      <Pressable
+        onPress={() => onToggle(task.id)}
+        hitSlop={8}
+        accessibilityRole="checkbox"
+        accessibilityState={{ checked: task.done }}
+        accessibilityLabel={task.title}
+        style={[styles.check, task.done && styles.checkDone]}
+      >
+        {task.done ? <Text style={styles.tick}>✓</Text> : null}
+      </Pressable>
+      <Pressable onPress={edit} onLongPress={confirmRemove} style={{ flex: 1 }} accessibilityHint="Mantén pulsado para eliminar">
+        <Text style={[styles.title, task.done && styles.titleDone]}>{task.title}</Text>
+      </Pressable>
+    </Animated.View>
+  );
+});
+
+const styles = StyleSheet.create({
+  row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: '#e2e8f0' },
+  check: { width: 26, height: 26, borderRadius: 13, borderWidth: 2, borderColor: '#cbd5e1', alignItems: 'center', justifyContent: 'center' },
+  checkDone: { backgroundColor: '#16a34a', borderColor: '#16a34a' },
+  tick: { color: '#fff', fontWeight: '800' },
+  title: { fontSize: 16, color: '#0f172a' },
+  titleDone: { color: '#94a3b8', textDecorationLine: 'line-through' },
+});
+```
+
+```tsx title="src/features/tasks/components/filter-bar.tsx"
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import type { Filter } from '../tasks-reducer';
+
+const FILTERS: { value: Filter; label: string }[] = [
+  { value: 'all', label: 'Todas' },
+  { value: 'pending', label: 'Pendientes' },
+  { value: 'done', label: 'Hechas' },
+];
+
+export function FilterBar({ value, onChange }: { value: Filter; onChange: (f: Filter) => void }) {
+  return (
+    <View style={styles.bar} accessibilityRole="tablist">
+      {FILTERS.map((f) => (
+        <Pressable
+          key={f.value}
+          onPress={() => onChange(f.value)}
+          accessibilityRole="tab"
+          accessibilityState={{ selected: f.value === value }}
+          style={[styles.tab, f.value === value && styles.active]}
+        >
+          <Text style={[styles.label, f.value === value && styles.activeLabel]}>{f.label}</Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  bar: { flexDirection: 'row', backgroundColor: '#f1f5f9', borderRadius: 12, padding: 4 },
+  tab: { flex: 1, paddingVertical: 8, borderRadius: 9, alignItems: 'center' },
+  active: { backgroundColor: '#fff' },
+  label: { color: '#64748b', fontWeight: '500' },
+  activeLabel: { color: '#0f172a', fontWeight: '700' },
+});
+```
+
+</CodeTabs>
+
+</Step>
+<Step title="Monta la pantalla">
+
+```tsx title="src/app/index.tsx"
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { FilterBar } from '@/features/tasks/components/filter-bar';
+import { TaskInput } from '@/features/tasks/components/task-input';
+import { TaskItem } from '@/features/tasks/components/task-item';
+import { useTasks } from '@/features/tasks/use-tasks';
+
+const EMPTY_MESSAGES = {
+  all: 'Añade tu primera tarea arriba.',
+  pending: '¡Todo hecho! No tienes tareas pendientes.',
+  done: 'Aún no has completado ninguna tarea.',
+};
+
+export default function TasksScreen() {
+  const t = useTasks();
+
+  if (!t.loaded) return <ActivityIndicator style={{ flex: 1 }} />;
+
+  return (
+    <SafeAreaView style={styles.screen} edges={['top', 'left', 'right']}>
+      <View style={styles.header}>
+        <Text style={styles.title}>Mis tareas</Text>
+        <Text style={styles.counter}>{t.pendingCount} pendientes</Text>
+      </View>
+      <TaskInput onAdd={t.add} />
+      <FilterBar value={t.filter} onChange={t.setFilter} />
+      <FlatList
+        data={t.tasks}
+        keyExtractor={(task) => task.id}
+        renderItem={({ item }) => <TaskItem task={item} onToggle={t.toggle} onRemove={t.remove} onRename={t.rename} />}
+        ListEmptyComponent={<Text style={styles.empty}>{EMPTY_MESSAGES[t.filter]}</Text>}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={{ flexGrow: 1, paddingBottom: 32 }}
+      />
+      {t.doneCount > 0 ? (
+        <Pressable onPress={t.clearDone} accessibilityRole="button" style={styles.clear}>
+          <Text style={styles.clearText}>Vaciar completadas ({t.doneCount})</Text>
+        </Pressable>
+      ) : null}
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#fff', paddingHorizontal: 20, gap: 14 },
+  header: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginTop: 12 },
+  title: { fontSize: 30, fontWeight: '800' },
+  counter: { color: '#64748b' },
+  empty: { textAlign: 'center', color: '#94a3b8', marginTop: 48 },
+  clear: { alignItems: 'center', paddingVertical: 14 },
+  clearText: { color: '#dc2626', fontWeight: '600' },
+});
+```
+
+</Step>
+</Steps>
+
+## Qué has aprendido
+
+- **`useReducer`** para centralizar todas las transiciones de estado en una función pura y testeable.
+- **Inmutabilidad** al modificar colecciones (`map`, `filter`, spread).
+- **Estado derivado**: la lista filtrada y los contadores se calculan, no se guardan.
+- **Persistencia** con AsyncStorage cargando antes de guardar para no sobrescribir los datos.
+- **Listas** con `FlatList`, `keyExtractor` estable, filas memoizadas y animaciones de layout.
+
+## Mejoras y funcionalidades adicionales
+
+<Checklist
+  items={[
+    'Deslizar para eliminar con Gesture Handler',
+    'Modal de edición propio para Android (Alert.prompt es solo iOS)',
+    'Fechas de vencimiento y recordatorios con notificaciones locales',
+    'Listas múltiples con Expo Router (/listas/[id])',
+    'Prioridades con colores y ordenación',
+    'Migrar el estado a Zustand con persist',
+    'Sincronizar con una API usando TanStack Query y actualizaciones optimistas',
+    'Reordenar tareas arrastrando',
+  ]}
+/>

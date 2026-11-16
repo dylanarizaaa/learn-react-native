@@ -1,0 +1,526 @@
+---
+title: Aplicación de ventas
+sidebarTitle: Ventas
+description: Un punto de venta móvil con catálogo desde una API, carrito con Zustand, cobro con cálculo de cambio, resumen del día y exportación a CSV.
+difficulty: intermedio
+time: 300
+prerequisites:
+  - arquitectura/estado-global-zustand
+  - datos/tanstack-query
+  - sistema-de-componentes/select
+related:
+  - expo/expo-sharing
+  - proyectos/inventario
+  - proyectos/ecommerce
+resources:
+  - title: Zustand — Documentación
+    url: https://zustand.docs.pmnd.rs/
+  - title: TanStack Query — Mutaciones
+    url: https://tanstack.com/query/latest/docs/framework/react/guides/mutations
+  - title: json-server
+    url: https://github.com/typicode/json-server
+goal: Combinar estado del servidor (catálogo y ventas con TanStack Query) con estado del cliente (carrito con Zustand), y construir un flujo de cobro completo y robusto.
+technologies: [Expo SDK 58, Expo Router, TanStack Query, Zustand, NativeWind, expo-sharing, expo-file-system, json-server]
+features:
+  - Catálogo en cuadrícula con búsqueda y categorías
+  - Carrito con cantidades y total en tiempo real
+  - Cobro en efectivo o tarjeta con cálculo del cambio
+  - Registro de la venta en el servidor sin duplicados
+  - Resumen del día con total, ticket medio y productos más vendidos
+  - Exportación de las ventas del día a CSV
+---
+
+## Descripción del proyecto
+
+Un **punto de venta (POS)** para ferias, cafeterías o comercios pequeños: el vendedor toca productos, ajusta cantidades, cobra y la venta queda registrada. Al final del día consulta el resumen y exporta las ventas.
+
+La lección central es **separar los dos tipos de estado**:
+
+- **Estado del servidor** (catálogo, ventas registradas) → **TanStack Query**.
+- **Estado del cliente** (el carrito en curso) → **Zustand**, persistido para no perderlo si la app se cierra.
+
+Usaremos **json-server** como API de desarrollo para que el proyecto funcione de extremo a extremo sin escribir un backend.
+
+## Arquitectura propuesta
+
+<Layers
+  layers={[
+    { title: 'Rutas', desc: 'Expo Router (tabs)', items: ['Vender', 'Resumen'], tone: 'brand' },
+    { title: 'Estado del cliente', desc: 'Zustand + persist', items: ['cart-store', 'addItem', 'setQuantity', 'clear'] },
+    { title: 'Estado del servidor', desc: 'TanStack Query', items: ['useProducts', 'useCreateSale', 'useTodaySales'] },
+    { title: 'API', desc: 'json-server en desarrollo', items: ['GET /products', 'POST /sales', 'GET /sales?date=…'], tone: 'muted' },
+  ]}
+/>
+
+## Estructura de carpetas
+
+```tree
+ventas/
+  db.json # Datos de json-server
+  src/
+    app/
+      _layout.tsx
+      (tabs)/
+        _layout.tsx
+        index.tsx # Vender
+        resumen.tsx # Resumen del día
+      cobrar.tsx # Modal de cobro
+    features/
+      sales/
+        api/
+          sales-api.ts
+        store/
+          cart-store.ts *
+        hooks/
+          use-sales.ts
+        domain/
+          summary.ts * # Cálculos puros
+          csv.ts
+        components/
+          product-tile.tsx
+          cart-bar.tsx
+```
+
+## Diseño de las pantallas
+
+<Screens>
+  <ScreenSketch
+    title="Vender"
+    blocks={[
+      { type: 'header', label: 'Vender' },
+      { type: 'chips', items: ['Todo', 'Café', 'Pastelería', 'Bebidas'], active: 0 },
+      { type: 'grid', items: [{ label: 'Espresso', value: '$1.800' }, { label: 'Latte', value: '$2.600' }, { label: 'Croissant', value: '$1.900' }, { label: 'Jugo', value: '$2.200' }] },
+      { type: 'button', label: '3 productos · Cobrar $6.300' },
+      { type: 'tabs', items: ['Vender', 'Resumen'], active: 0 },
+    ]}
+  />
+  <ScreenSketch
+    title="Cobrar"
+    blocks={[
+      { type: 'header', label: 'Cobrar', action: 'Cerrar' },
+      { type: 'list', items: ['2 × Latte', '1 × Croissant'], meta: ['$5.200', '$1.900'] },
+      { type: 'total', label: 'Total', value: '$7.100' },
+      { type: 'segmented', items: ['Efectivo', 'Tarjeta'], active: 0 },
+      { type: 'input', label: 'Recibido' },
+      { type: 'total', label: 'Cambio', value: '$2.900' },
+      { type: 'button', label: 'Confirmar venta' },
+    ]}
+  />
+  <ScreenSketch
+    title="Resumen"
+    blocks={[
+      { type: 'header', label: 'Hoy', action: 'Exportar' },
+      { type: 'stats', items: [{ label: 'Ventas', value: '$184.600' }, { label: 'Tickets', value: '42' }, { label: 'Ticket medio', value: '$4.395' }, { label: 'Tarjeta', value: '61 %' }] },
+      { type: 'list', items: ['Latte', 'Espresso', 'Croissant'], meta: ['38', '27', '19'] },
+      { type: 'tabs', items: ['Vender', 'Resumen'], active: 1 },
+    ]}
+  />
+</Screens>
+
+## Implementación paso a paso
+
+<Steps>
+<Step title="Levanta la API de desarrollo">
+
+```json title="db.json"
+{
+  "products": [
+    { "id": "p1", "name": "Espresso", "category": "Café", "price": 1800 },
+    { "id": "p2", "name": "Latte", "category": "Café", "price": 2600 },
+    { "id": "p3", "name": "Croissant", "category": "Pastelería", "price": 1900 },
+    { "id": "p4", "name": "Jugo natural", "category": "Bebidas", "price": 2200 }
+  ],
+  "sales": []
+}
+```
+
+```bash
+# En otra terminal (usa la IP de tu ordenador si pruebas en un teléfono)
+npx json-server db.json --port 3000
+```
+
+```dotenv title=".env"
+EXPO_PUBLIC_API_URL=http://192.168.1.50:3000
+```
+
+</Step>
+<Step title="El carrito: estado del cliente con Zustand">
+
+```ts title="features/sales/store/cart-store.ts"
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { create } from 'zustand';
+import { createJSONStorage, persist } from 'zustand/middleware';
+
+export type Product = { id: string; name: string; category: string; price: number };
+export type CartLine = { product: Product; quantity: number };
+
+type CartState = {
+  lines: CartLine[];
+  add: (product: Product) => void;
+  setQuantity: (productId: string, quantity: number) => void;
+  clear: () => void;
+};
+
+export const useCartStore = create<CartState>()(
+  persist(
+    (set) => ({
+      lines: [],
+      add: (product) =>
+        set((s) => {
+          const exists = s.lines.some((l) => l.product.id === product.id);
+          return {
+            lines: exists
+              ? s.lines.map((l) => (l.product.id === product.id ? { ...l, quantity: l.quantity + 1 } : l))
+              : [...s.lines, { product, quantity: 1 }],
+          };
+        }),
+      setQuantity: (productId, quantity) =>
+        set((s) => ({
+          lines: quantity <= 0 ? s.lines.filter((l) => l.product.id !== productId) : s.lines.map((l) => (l.product.id === productId ? { ...l, quantity } : l)),
+        })),
+      clear: () => set({ lines: [] }),
+    }),
+    { name: 'pos-cart', storage: createJSONStorage(() => AsyncStorage) },
+  ),
+);
+
+export const selectTotal = (s: CartState) => s.lines.reduce((sum, l) => sum + l.product.price * l.quantity, 0);
+export const selectCount = (s: CartState) => s.lines.reduce((n, l) => n + l.quantity, 0);
+```
+
+</Step>
+<Step title="API y hooks: estado del servidor">
+
+<CodeTabs>
+
+```ts title="features/sales/api/sales-api.ts"
+import { httpClient } from '@/lib/http-client';
+import type { CartLine, Product } from '../store/cart-store';
+
+export type PaymentMethod = 'cash' | 'card';
+export type Sale = {
+  id: string; // generado en el cliente: idempotencia
+  date: string; // YYYY-MM-DD
+  createdAt: string;
+  method: PaymentMethod;
+  total: number;
+  lines: { productId: string; name: string; price: number; quantity: number }[];
+};
+
+export const salesApi = {
+  products: (signal?: AbortSignal) => httpClient.get<Product[]>('/products', signal),
+  salesOf: (date: string, signal?: AbortSignal) => httpClient.get<Sale[]>(`/sales?date=${date}`, signal),
+  create: (sale: Sale) => httpClient.post<Sale>('/sales', sale),
+};
+
+export function buildSale(lines: CartLine[], method: PaymentMethod): Sale {
+  const now = new Date();
+  return {
+    id: `${now.getTime()}-${Math.random().toString(36).slice(2, 8)}`,
+    date: now.toISOString().slice(0, 10),
+    createdAt: now.toISOString(),
+    method,
+    total: lines.reduce((s, l) => s + l.product.price * l.quantity, 0),
+    lines: lines.map((l) => ({ productId: l.product.id, name: l.product.name, price: l.product.price, quantity: l.quantity })),
+  };
+}
+```
+
+```ts title="features/sales/hooks/use-sales.ts"
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { salesApi, type Sale } from '../api/sales-api';
+
+const today = () => new Date().toISOString().slice(0, 10);
+
+export function useProducts() {
+  return useQuery({ queryKey: ['products'], queryFn: ({ signal }) => salesApi.products(signal), staleTime: 5 * 60_000 });
+}
+
+export function useTodaySales() {
+  const date = today();
+  return useQuery({ queryKey: ['sales', date], queryFn: ({ signal }) => salesApi.salesOf(date, signal) });
+}
+
+export function useCreateSale() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (sale: Sale) => salesApi.create(sale),
+    // El id se genera en el cliente: si se reintenta, el servidor puede detectar el duplicado
+    retry: 2,
+    onSuccess: (sale) => queryClient.invalidateQueries({ queryKey: ['sales', sale.date] }),
+  });
+}
+```
+
+</CodeTabs>
+
+</Step>
+<Step title="Pantalla de venta">
+
+```tsx title="src/app/(tabs)/index.tsx"
+import { useMemo, useState } from 'react';
+import { router } from 'expo-router';
+import { FlatList, Pressable, View } from 'react-native';
+import { ErrorState, ListSkeleton } from '@/components/feedback';
+import { Button, Text } from '@/components/ui';
+import { cn } from '@/lib/cn';
+import { useProducts } from '@/features/sales/hooks/use-sales';
+import { selectCount, selectTotal, useCartStore } from '@/features/sales/store/cart-store';
+
+const money = new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' });
+
+export default function SellScreen() {
+  const { data: products, isPending, isError, refetch } = useProducts();
+  const [category, setCategory] = useState('Todo');
+  const add = useCartStore((s) => s.add);
+  const count = useCartStore(selectCount);
+  const total = useCartStore(selectTotal);
+
+  const categories = useMemo(() => ['Todo', ...new Set(products?.map((p) => p.category))], [products]);
+  const visible = category === 'Todo' ? products : products?.filter((p) => p.category === category);
+
+  if (isPending) return <ListSkeleton />;
+  if (isError) return <ErrorState onRetry={refetch} />;
+
+  return (
+    <View className="flex-1 bg-background">
+      <FlatList
+        horizontal
+        data={categories}
+        keyExtractor={(c) => c}
+        className="max-h-14 grow-0"
+        contentContainerClassName="gap-2 px-4 py-3"
+        showsHorizontalScrollIndicator={false}
+        renderItem={({ item }) => (
+          <Pressable
+            onPress={() => setCategory(item)}
+            className={cn('rounded-full border px-4 py-1.5', item === category ? 'border-foreground bg-foreground' : 'border-border')}
+          >
+            <Text className={cn('text-sm', item === category ? 'text-background' : 'text-foreground')}>{item}</Text>
+          </Pressable>
+        )}
+      />
+      <FlatList
+        data={visible}
+        numColumns={2}
+        keyExtractor={(p) => p.id}
+        columnWrapperClassName="gap-3"
+        contentContainerClassName="gap-3 p-4 pb-28"
+        renderItem={({ item }) => (
+          <Pressable onPress={() => add(item)} className="flex-1 gap-1 rounded-2xl border border-border bg-card p-4 active:scale-95">
+            <Text className="font-semibold">{item.name}</Text>
+            <Text tone="muted">{money.format(item.price)}</Text>
+          </Pressable>
+        )}
+      />
+      {count > 0 ? (
+        <View className="absolute inset-x-4 bottom-4">
+          <Button size="lg" fullWidth onPress={() => router.push('/cobrar')}>
+            {`${count} productos · Cobrar ${money.format(total)}`}
+          </Button>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+```
+
+</Step>
+<Step title="Modal de cobro">
+
+```tsx title="src/app/cobrar.tsx"
+import { useState } from 'react';
+import { router } from 'expo-router';
+import { Alert, ScrollView, View } from 'react-native';
+import { Button, Input, SegmentedControl, Text } from '@/components/ui';
+import { buildSale, type PaymentMethod } from '@/features/sales/api/sales-api';
+import { useCreateSale } from '@/features/sales/hooks/use-sales';
+import { selectTotal, useCartStore } from '@/features/sales/store/cart-store';
+
+const money = new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' });
+
+export default function CheckoutScreen() {
+  const lines = useCartStore((s) => s.lines);
+  const setQuantity = useCartStore((s) => s.setQuantity);
+  const clear = useCartStore((s) => s.clear);
+  const total = useCartStore(selectTotal);
+  const [method, setMethod] = useState<PaymentMethod>('cash');
+  const [received, setReceived] = useState('');
+  const createSale = useCreateSale();
+
+  const receivedAmount = Number(received.replace(/\D/g, '')) || 0;
+  const change = receivedAmount - total;
+  const canConfirm = lines.length > 0 && (method === 'card' || change >= 0);
+
+  function confirm() {
+    createSale.mutate(buildSale(lines, method), {
+      onSuccess: () => {
+        clear();
+        router.back();
+      },
+      onError: () => Alert.alert('No se registró la venta', 'Comprueba la conexión. El carrito se conserva.'),
+    });
+  }
+
+  return (
+    <ScrollView className="flex-1 bg-background" contentContainerClassName="gap-4 p-5">
+      {lines.map((l) => (
+        <View key={l.product.id} className="flex-row items-center gap-3">
+          <Text className="flex-1">{l.product.name}</Text>
+          <Button variant="outline" size="sm" onPress={() => setQuantity(l.product.id, l.quantity - 1)} accessibilityLabel={`Quitar un ${l.product.name}`}>
+            −
+          </Button>
+          <Text className="w-6 text-center font-semibold">{l.quantity}</Text>
+          <Button variant="outline" size="sm" onPress={() => setQuantity(l.product.id, l.quantity + 1)} accessibilityLabel={`Añadir un ${l.product.name}`}>
+            +
+          </Button>
+        </View>
+      ))}
+      <View className="flex-row justify-between border-t border-border pt-4">
+        <Text variant="heading">Total</Text>
+        <Text variant="heading">{money.format(total)}</Text>
+      </View>
+      <SegmentedControl
+        accessibilityLabel="Método de pago"
+        options={[
+          { value: 'cash', label: 'Efectivo' },
+          { value: 'card', label: 'Tarjeta' },
+        ]}
+        value={method}
+        onChange={setMethod}
+      />
+      {method === 'cash' ? (
+        <>
+          <Input label="Recibido" value={received} onChangeText={setReceived} inputMode="numeric" placeholder="0" />
+          <Text tone={change < 0 ? 'danger' : 'success'} className="text-right text-lg font-semibold">
+            {change < 0 ? `Faltan ${money.format(-change)}` : `Cambio: ${money.format(change)}`}
+          </Text>
+        </>
+      ) : null}
+      <Button size="lg" fullWidth disabled={!canConfirm} loading={createSale.isPending} onPress={confirm}>
+        Confirmar venta
+      </Button>
+    </ScrollView>
+  );
+}
+```
+
+</Step>
+<Step title="Resumen del día y exportación">
+
+<CodeTabs>
+
+```ts title="features/sales/domain/summary.ts"
+import type { Sale } from '../api/sales-api';
+
+export function summarize(sales: Sale[]) {
+  const total = sales.reduce((s, sale) => s + sale.total, 0);
+  const card = sales.filter((s) => s.method === 'card').reduce((s, sale) => s + sale.total, 0);
+  const units = new Map<string, number>();
+  for (const sale of sales) for (const line of sale.lines) units.set(line.name, (units.get(line.name) ?? 0) + line.quantity);
+
+  return {
+    total,
+    tickets: sales.length,
+    average: sales.length ? Math.round(total / sales.length) : 0,
+    cardShare: total ? Math.round((card / total) * 100) : 0,
+    topProducts: [...units.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5),
+  };
+}
+```
+
+```ts title="features/sales/domain/csv.ts"
+import { File, Paths } from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+import type { Sale } from '../api/sales-api';
+
+const cell = (v: string | number) => (/[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
+
+export async function exportSalesCsv(date: string, sales: Sale[]) {
+  const header = 'hora,producto,cantidad,precio,metodo';
+  const rows = sales.flatMap((s) =>
+    s.lines.map((l) => [s.createdAt.slice(11, 16), l.name, l.quantity, l.price, s.method === 'card' ? 'tarjeta' : 'efectivo'].map(cell).join(',')),
+  );
+  const file = new File(Paths.cache, `ventas-${date}.csv`);
+  if (file.exists) file.delete();
+  file.create();
+  await file.write('﻿' + [header, ...rows].join('\n'));
+  await Sharing.shareAsync(file.uri, { mimeType: 'text/csv', dialogTitle: `Ventas del ${date}` });
+}
+```
+
+```tsx title="src/app/(tabs)/resumen.tsx"
+import { ScrollView, View } from 'react-native';
+import { ErrorState, LoadingState } from '@/components/feedback';
+import { Button, Card, Text } from '@/components/ui';
+import { exportSalesCsv } from '@/features/sales/domain/csv';
+import { summarize } from '@/features/sales/domain/summary';
+import { useTodaySales } from '@/features/sales/hooks/use-sales';
+
+const money = new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' });
+
+export default function SummaryScreen() {
+  const { data: sales, isPending, isError, refetch } = useTodaySales();
+  if (isPending) return <LoadingState />;
+  if (isError) return <ErrorState onRetry={refetch} />;
+
+  const s = summarize(sales);
+  const stats = [
+    { label: 'Ventas', value: money.format(s.total) },
+    { label: 'Tickets', value: String(s.tickets) },
+    { label: 'Ticket medio', value: money.format(s.average) },
+    { label: 'Con tarjeta', value: `${s.cardShare} %` },
+  ];
+
+  return (
+    <ScrollView className="flex-1 bg-background" contentContainerClassName="gap-4 p-4">
+      <View className="flex-row flex-wrap gap-3">
+        {stats.map((stat) => (
+          <Card key={stat.label} className="min-w-[46%] flex-1 p-4">
+            <Text variant="caption">{stat.label}</Text>
+            <Text variant="title">{stat.value}</Text>
+          </Card>
+        ))}
+      </View>
+      <Text variant="heading">Más vendidos</Text>
+      {s.topProducts.map(([name, units]) => (
+        <View key={name} className="flex-row justify-between border-b border-border py-2">
+          <Text>{name}</Text>
+          <Text className="font-semibold">{units}</Text>
+        </View>
+      ))}
+      <Button variant="outline" disabled={sales.length === 0} onPress={() => exportSalesCsv(new Date().toISOString().slice(0, 10), sales)}>
+        Exportar CSV
+      </Button>
+    </ScrollView>
+  );
+}
+```
+
+</CodeTabs>
+
+</Step>
+</Steps>
+
+## Qué has aprendido
+
+- **Estado del cliente vs. del servidor** con la herramienta adecuada para cada uno.
+- **Idempotencia**: generar el id de la venta en el cliente permite reintentar sin crear ventas duplicadas (si el backend comprueba el id).
+- **Lógica de negocio pura** (resumen, CSV) separada de las pantallas.
+- **Flujos con modal** en Expo Router y carrito persistente que sobrevive a cierres.
+- **Exportación** de datos con `expo-file-system` y `expo-sharing`.
+
+## Mejoras y funcionalidades adicionales
+
+<Checklist
+  items={[
+    'Modo offline: cola de ventas pendientes en SQLite',
+    'Descontar stock conectándolo con el proyecto de inventario',
+    'Ticket en PDF con expo-print',
+    'Descuentos y propinas',
+    'Escanear productos con la cámara',
+    'Varios vendedores con login y turnos de caja',
+    'Gráfico de ventas por hora',
+    'Integración con un terminal de pago real',
+  ]}
+/>

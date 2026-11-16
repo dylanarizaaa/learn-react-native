@@ -1,0 +1,466 @@
+---
+title: Aplicación de notas
+sidebarTitle: Notas
+description: Una app de notas con Expo Router (lista, detalle y modal), base de datos SQLite con migraciones, búsqueda, notas fijadas y guardado automático.
+difficulty: principiante
+time: 150
+prerequisites:
+  - proyectos/lista-de-tareas
+  - expo/expo-router
+  - expo/expo-sqlite
+related:
+  - expo/navegacion-por-archivos
+  - react-typescript/hooks-personalizados
+  - proyectos/offline-first
+resources:
+  - title: Expo — SQLite
+    url: https://docs.expo.dev/versions/latest/sdk/sqlite/
+  - title: Expo Router — Modales
+    url: https://docs.expo.dev/router/advanced/modals/
+  - title: Expo Router — useFocusEffect
+    url: https://docs.expo.dev/versions/latest/sdk/router/#usefocuseffect
+goal: Construir tu primera app con varias pantallas y base de datos local, navegando con Expo Router y pasando parámetros entre rutas.
+technologies: [Expo SDK 58, Expo Router, expo-sqlite, TypeScript, useFocusEffect, Hooks personalizados]
+features:
+  - Lista de notas ordenada, con notas fijadas arriba
+  - Búsqueda por título y contenido
+  - Crear notas en un modal y editarlas en su propia pantalla
+  - Guardado automático mientras escribes
+  - Eliminar con confirmación
+  - Funciona sin conexión: todo se guarda en SQLite
+---
+
+## Descripción del proyecto
+
+Una app de notas es el paso natural después de la lista de tareas: añade **varias pantallas**, **parámetros en la URL** y una **base de datos real**. Las notas se guardan en SQLite, así que la app funciona sin conexión y puede manejar miles de notas con búsqueda instantánea.
+
+## Arquitectura propuesta
+
+<Layers
+  layers={[
+    { title: 'Rutas', desc: 'Expo Router', items: ['index (lista)', 'nota/[id] (editor)', 'nueva (modal)'], tone: 'brand' },
+    { title: 'Hooks', desc: 'Pantallas sin SQL', items: ['useNotes(search)', 'useNote(id)', 'useAutosave'] },
+    { title: 'Repositorio', desc: 'notes-repository.ts', items: ['list', 'get', 'create', 'update', 'remove', 'togglePin'] },
+    { title: 'SQLite', desc: 'SQLiteProvider', items: ['notes.db', 'migraciones con user_version'], tone: 'muted' },
+  ]}
+/>
+
+## Estructura de carpetas
+
+```tree
+notas/
+  src/
+    app/
+      _layout.tsx * # Stack + SQLiteProvider
+      index.tsx # Lista y búsqueda
+      nueva.tsx # Modal de creación
+      nota/
+        [id].tsx # Editor
+    db/
+      migrations.ts
+      notes-repository.ts
+    hooks/
+      use-notes.ts
+      use-debounced-callback.ts
+```
+
+## Diseño de las pantallas
+
+<Screens>
+  <ScreenSketch
+    title="Lista"
+    blocks={[
+      { type: 'header', label: 'Notas', action: '+ Nueva' },
+      { type: 'search', label: 'Buscar notas…' },
+      { type: 'list', items: ['📌 Ideas del proyecto', 'Lista de la compra', 'Resumen de la reunión', 'Libros para leer'], meta: ['hoy', 'ayer', 'lun', '12 nov'] },
+    ]}
+  />
+  <ScreenSketch
+    title="Editor"
+    blocks={[
+      { type: 'header', label: 'Ideas del proyecto', action: 'Fijar', back: true },
+      { type: 'text', label: 'Guardado hace un momento', muted: true },
+      { type: 'text', label: 'Usar SQLite para el modo offline y sincronizar después con la API…' },
+      { type: 'text', label: ' ' },
+      { type: 'button', label: 'Eliminar nota', variant: 'danger' },
+    ]}
+  />
+  <ScreenSketch
+    title="Nueva nota (modal)"
+    blocks={[
+      { type: 'header', label: 'Nueva nota', action: 'Guardar' },
+      { type: 'input', label: 'Título' },
+      { type: 'image', label: 'Contenido', height: 140 },
+    ]}
+  />
+</Screens>
+
+## Implementación paso a paso
+
+<Steps>
+<Step title="Crea el proyecto e instala SQLite">
+
+```bash
+npx create-expo-app@latest notas --template default@sdk-58
+cd notas
+npm run reset-project
+npx expo install expo-sqlite
+```
+
+</Step>
+<Step title="Base de datos: migraciones y repositorio">
+
+<CodeTabs>
+
+```ts title="src/db/migrations.ts"
+import type { SQLiteDatabase } from 'expo-sqlite';
+
+const VERSION = 1;
+
+export async function migrate(db: SQLiteDatabase) {
+  const row = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
+  const current = row?.user_version ?? 0;
+  if (current >= VERSION) return;
+
+  if (current < 1) {
+    await db.execAsync(`
+      PRAGMA journal_mode = WAL;
+      CREATE TABLE notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL DEFAULT '',
+        body TEXT NOT NULL DEFAULT '',
+        pinned INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX idx_notes_updated ON notes (pinned DESC, updated_at DESC);
+    `);
+  }
+  await db.execAsync(`PRAGMA user_version = ${VERSION}`);
+}
+```
+
+```ts title="src/db/notes-repository.ts"
+import type { SQLiteDatabase } from 'expo-sqlite';
+
+export type Note = { id: number; title: string; body: string; pinned: boolean; updatedAt: number };
+type Row = { id: number; title: string; body: string; pinned: number; updated_at: number };
+
+const toNote = (r: Row): Note => ({ id: r.id, title: r.title, body: r.body, pinned: r.pinned === 1, updatedAt: r.updated_at });
+
+export const notesRepository = {
+  async list(db: SQLiteDatabase, search: string) {
+    const rows = await db.getAllAsync<Row>(
+      `SELECT * FROM notes
+       WHERE title LIKE $q OR body LIKE $q
+       ORDER BY pinned DESC, updated_at DESC`,
+      { $q: `%${search.trim()}%` },
+    );
+    return rows.map(toNote);
+  },
+  async get(db: SQLiteDatabase, id: number) {
+    const row = await db.getFirstAsync<Row>('SELECT * FROM notes WHERE id = ?', id);
+    return row ? toNote(row) : null;
+  },
+  async create(db: SQLiteDatabase, title: string, body: string) {
+    const result = await db.runAsync('INSERT INTO notes (title, body, updated_at) VALUES (?, ?, ?)', title, body, Date.now());
+    return result.lastInsertRowId;
+  },
+  update(db: SQLiteDatabase, id: number, fields: { title: string; body: string }) {
+    return db.runAsync('UPDATE notes SET title = ?, body = ?, updated_at = ? WHERE id = ?', fields.title, fields.body, Date.now(), id);
+  },
+  togglePin(db: SQLiteDatabase, id: number) {
+    return db.runAsync('UPDATE notes SET pinned = 1 - pinned WHERE id = ?', id);
+  },
+  remove(db: SQLiteDatabase, id: number) {
+    return db.runAsync('DELETE FROM notes WHERE id = ?', id);
+  },
+};
+```
+
+</CodeTabs>
+
+</Step>
+<Step title="Layout raíz con la base de datos y la navegación">
+
+```tsx title="src/app/_layout.tsx"
+import { Stack } from 'expo-router';
+import { SQLiteProvider } from 'expo-sqlite';
+import { migrate } from '@/db/migrations';
+
+export default function RootLayout() {
+  return (
+    <SQLiteProvider databaseName="notes.db" onInit={migrate}>
+      <Stack>
+        <Stack.Screen name="index" options={{ title: 'Notas', headerLargeTitle: true }} />
+        <Stack.Screen name="nota/[id]" options={{ title: '' }} />
+        <Stack.Screen name="nueva" options={{ presentation: 'modal', title: 'Nueva nota' }} />
+      </Stack>
+    </SQLiteProvider>
+  );
+}
+```
+
+</Step>
+<Step title="Hooks: lista con búsqueda y guardado automático">
+
+<CodeTabs>
+
+```ts title="src/hooks/use-notes.ts"
+import { useCallback, useState } from 'react';
+import { useFocusEffect } from 'expo-router';
+import { useSQLiteContext } from 'expo-sqlite';
+import { notesRepository, type Note } from '@/db/notes-repository';
+
+export function useNotes(search: string) {
+  const db = useSQLiteContext();
+  const [notes, setNotes] = useState<Note[]>([]);
+
+  const reload = useCallback(() => {
+    notesRepository.list(db, search).then(setNotes);
+  }, [db, search]);
+
+  // Se recarga al volver a la lista (tras crear o editar) y al cambiar la búsqueda
+  useFocusEffect(reload);
+
+  return { notes, reload };
+}
+```
+
+```ts title="src/hooks/use-debounced-callback.ts"
+import { useEffect, useRef } from 'react';
+
+/** Ejecuta fn cuando pasan `delay` ms sin nuevas llamadas */
+export function useDebouncedCallback<A extends unknown[]>(fn: (...args: A) => void, delay = 600) {
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fnRef = useRef(fn);
+  fnRef.current = fn;
+
+  useEffect(() => () => {
+    if (timer.current) clearTimeout(timer.current);
+  }, []);
+
+  return (...args: A) => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => fnRef.current(...args), delay);
+  };
+}
+```
+
+</CodeTabs>
+
+</Step>
+<Step title="Pantalla de lista">
+
+```tsx title="src/app/index.tsx"
+import { useState } from 'react';
+import { Link, Stack, router } from 'expo-router';
+import { useSQLiteContext } from 'expo-sqlite';
+import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { notesRepository } from '@/db/notes-repository';
+import { useNotes } from '@/hooks/use-notes';
+
+const formatter = new Intl.DateTimeFormat('es', { day: 'numeric', month: 'short' });
+
+export default function NotesList() {
+  const db = useSQLiteContext();
+  const [search, setSearch] = useState('');
+  const { notes, reload } = useNotes(search);
+
+  return (
+    <>
+      <Stack.Screen
+        options={{
+          headerSearchBarOptions: { placeholder: 'Buscar notas…', onChangeText: (e) => setSearch(e.nativeEvent.text) },
+          headerRight: () => (
+            <Link href="/nueva" style={styles.newLink}>
+              Nueva
+            </Link>
+          ),
+        }}
+      />
+      <FlatList
+        data={notes}
+        keyExtractor={(n) => String(n.id)}
+        contentInsetAdjustmentBehavior="automatic"
+        contentContainerStyle={{ flexGrow: 1 }}
+        ListEmptyComponent={<Text style={styles.empty}>{search ? 'Sin resultados.' : 'Crea tu primera nota con «Nueva».'}</Text>}
+        renderItem={({ item }) => (
+          <Pressable
+            onPress={() => router.push({ pathname: '/nota/[id]', params: { id: String(item.id) } })}
+            onLongPress={() => notesRepository.togglePin(db, item.id).then(reload)}
+            style={({ pressed }) => [styles.row, pressed && { backgroundColor: '#f8fafc' }]}
+            accessibilityHint="Mantén pulsado para fijar o desfijar"
+          >
+            <View style={{ flex: 1 }}>
+              <Text style={styles.title} numberOfLines={1}>
+                {item.pinned ? '📌 ' : ''}
+                {item.title || 'Sin título'}
+              </Text>
+              <Text style={styles.preview} numberOfLines={1}>
+                {item.body || 'Sin contenido'}
+              </Text>
+            </View>
+            <Text style={styles.date}>{formatter.format(item.updatedAt)}</Text>
+          </Pressable>
+        )}
+      />
+    </>
+  );
+}
+
+const styles = StyleSheet.create({
+  newLink: { color: '#0284c7', fontSize: 17, fontWeight: '600' },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: '#e2e8f0' },
+  title: { fontSize: 16, fontWeight: '600' },
+  preview: { color: '#64748b', marginTop: 2 },
+  date: { color: '#94a3b8', fontSize: 12 },
+  empty: { textAlign: 'center', color: '#94a3b8', marginTop: 64 },
+});
+```
+
+</Step>
+<Step title="Modal de creación y editor con guardado automático">
+
+<CodeTabs>
+
+```tsx title="src/app/nueva.tsx"
+import { useState } from 'react';
+import { Stack, router } from 'expo-router';
+import { useSQLiteContext } from 'expo-sqlite';
+import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { notesRepository } from '@/db/notes-repository';
+
+export default function NewNote() {
+  const db = useSQLiteContext();
+  const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
+
+  async function save() {
+    const id = await notesRepository.create(db, title.trim(), body.trim());
+    router.dismiss(); // cierra el modal…
+    router.push({ pathname: '/nota/[id]', params: { id: String(id) } }); // …y abre la nota
+  }
+
+  return (
+    <View style={styles.container}>
+      <Stack.Screen
+        options={{
+          headerRight: () => (
+            <Pressable onPress={save} disabled={!title.trim() && !body.trim()} hitSlop={8}>
+              <Text style={styles.save}>Guardar</Text>
+            </Pressable>
+          ),
+        }}
+      />
+      <TextInput value={title} onChangeText={setTitle} placeholder="Título" style={styles.title} autoFocus />
+      <TextInput value={body} onChangeText={setBody} placeholder="Escribe tu nota…" multiline style={styles.body} textAlignVertical="top" />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, padding: 20, gap: 12, backgroundColor: '#fff' },
+  save: { color: '#0284c7', fontSize: 17, fontWeight: '600' },
+  title: { fontSize: 22, fontWeight: '700' },
+  body: { flex: 1, fontSize: 17, lineHeight: 24 },
+});
+```
+
+```tsx title="src/app/nota/[id].tsx"
+import { useEffect, useState } from 'react';
+import { Stack, router, useLocalSearchParams } from 'expo-router';
+import { useSQLiteContext } from 'expo-sqlite';
+import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { notesRepository } from '@/db/notes-repository';
+import { useDebouncedCallback } from '@/hooks/use-debounced-callback';
+
+export default function NoteEditor() {
+  const db = useSQLiteContext();
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const noteId = Number(id);
+  const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
+  const [status, setStatus] = useState<'cargando' | 'guardado' | 'editando'>('cargando');
+
+  useEffect(() => {
+    notesRepository.get(db, noteId).then((note) => {
+      if (!note) return router.back(); // id inválido o nota eliminada
+      setTitle(note.title);
+      setBody(note.body);
+      setStatus('guardado');
+    });
+  }, [db, noteId]);
+
+  const persist = useDebouncedCallback(async (t: string, b: string) => {
+    await notesRepository.update(db, noteId, { title: t, body: b });
+    setStatus('guardado');
+  });
+
+  function change(t: string, b: string) {
+    setTitle(t);
+    setBody(b);
+    setStatus('editando');
+    persist(t, b);
+  }
+
+  function remove() {
+    Alert.alert('Eliminar nota', 'Esta acción no se puede deshacer.', [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: 'Eliminar', style: 'destructive', onPress: () => notesRepository.remove(db, noteId).then(() => router.back()) },
+    ]);
+  }
+
+  return (
+    <View style={styles.container}>
+      <Stack.Screen
+        options={{
+          headerRight: () => (
+            <Pressable onPress={remove} hitSlop={8} accessibilityLabel="Eliminar nota">
+              <Text style={styles.delete}>Eliminar</Text>
+            </Pressable>
+          ),
+        }}
+      />
+      <Text style={styles.status}>{status === 'editando' ? 'Guardando…' : status === 'guardado' ? 'Guardado' : ''}</Text>
+      <TextInput value={title} onChangeText={(t) => change(t, body)} placeholder="Título" style={styles.title} />
+      <TextInput value={body} onChangeText={(b) => change(title, b)} placeholder="Escribe tu nota…" multiline style={styles.body} textAlignVertical="top" />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, padding: 20, gap: 8, backgroundColor: '#fff' },
+  delete: { color: '#dc2626', fontSize: 17 },
+  status: { color: '#94a3b8', fontSize: 12 },
+  title: { fontSize: 24, fontWeight: '700' },
+  body: { flex: 1, fontSize: 17, lineHeight: 24 },
+});
+```
+
+</CodeTabs>
+
+</Step>
+</Steps>
+
+## Qué has aprendido
+
+- **Navegación por archivos** con Expo Router: rutas estáticas, dinámicas (`nota/[id]`) y modales.
+- **Parámetros de ruta** con `useLocalSearchParams` y su validación (una nota inexistente vuelve atrás).
+- **SQLite** con migraciones versionadas y un repositorio que oculta el SQL a las pantallas.
+- **`useFocusEffect`** para recargar datos al volver a una pantalla.
+- **Debounce** para guardar automáticamente sin escribir en la base de datos en cada tecla.
+
+## Mejoras y funcionalidades adicionales
+
+<Checklist
+  items={[
+    'Búsqueda de texto completo con FTS5 de SQLite',
+    'Etiquetas y filtro por etiqueta (tabla many-to-many)',
+    'Formato Markdown con vista previa',
+    'Adjuntar imágenes con expo-image-picker y expo-file-system',
+    'Exportar e importar copias de seguridad en JSON',
+    'Migrar estilos al kit de componentes con NativeWind',
+    'Bloquear notas privadas con biometría (expo-local-authentication)',
+    'Sincronizar con un backend (ver el proyecto de sincronización)',
+  ]}
+/>

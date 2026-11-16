@@ -1,0 +1,390 @@
+---
+title: Aplicación de finanzas personales
+sidebarTitle: Finanzas personales
+description: Registro de ingresos y gastos con categorías, presupuestos mensuales, gráfico de gastos por categoría, recordatorio diario y exportación a CSV, todo local con Zustand.
+difficulty: intermedio
+time: 300
+prerequisites:
+  - arquitectura/estado-global-zustand
+  - sistema-de-componentes/formularios
+  - expo/expo-notifications
+related:
+  - expo/expo-sharing
+  - estilos/animaciones
+  - proyectos/ventas
+resources:
+  - title: Zustand — persist
+    url: https://zustand.docs.pmnd.rs/integrations/persisting-store-data
+  - title: Expo — Notificaciones locales
+    url: https://docs.expo.dev/versions/latest/sdk/notifications/
+  - title: Intl.NumberFormat
+    url: https://developer.mozilla.org/es/docs/Web/JavaScript/Reference/Global_Objects/Intl/NumberFormat
+goal: Modelar un dominio con reglas de negocio (periodos, presupuestos, totales), mantenerlo en un store persistente con selectores y presentar datos con visualizaciones accesibles.
+technologies: [Expo SDK 58, Expo Router, Zustand, NativeWind, React Hook Form, Zod, expo-notifications, Reanimated, expo-sharing]
+features:
+  - Registrar ingresos y gastos con categoría, fecha y nota
+  - Resumen mensual con balance, ingresos y gastos
+  - Presupuesto por categoría con alerta al superar el 80 %
+  - Gráfico de barras de gastos por categoría
+  - Recordatorio diario para anotar gastos
+  - Exportar el mes a CSV
+---
+
+## Descripción del proyecto
+
+Una app para responder a la pregunta "¿en qué se me va el dinero?". El usuario anota movimientos en segundos, ve el balance del mes, compara cada categoría con su presupuesto y recibe un recordatorio diario.
+
+Todo vive en el dispositivo con un **store de Zustand persistido**. La parte interesante es el **dominio**: periodos mensuales, importes en céntimos para evitar errores de redondeo, presupuestos y cálculos derivados mediante **selectores**.
+
+## Arquitectura propuesta
+
+<Layers
+  layers={[
+    { title: 'Rutas', desc: 'Tabs + modal', items: ['Resumen', 'Movimientos', 'Presupuestos', 'nuevo (modal)'], tone: 'brand' },
+    { title: 'Componentes', desc: 'Kit + gráficos', items: ['BalanceCard', 'CategoryBars', 'TransactionRow'] },
+    { title: 'Selectores', desc: 'Datos derivados', items: ['selectMonth', 'selectTotals', 'selectByCategory', 'selectBudgetUsage'] },
+    { title: 'Store', desc: 'Zustand + persist', items: ['transactions', 'budgets', 'add', 'remove', 'setBudget'], tone: 'muted' },
+  ]}
+/>
+
+## Estructura de carpetas
+
+```tree
+finanzas/
+  src/
+    app/
+      (tabs)/
+        _layout.tsx
+        index.tsx # Resumen del mes
+        movimientos.tsx
+        presupuestos.tsx
+      nuevo.tsx # Modal de alta
+    features/
+      finance/
+        domain/
+          money.ts * # Céntimos y formato
+          categories.ts
+          selectors.ts *
+        store/
+          finance-store.ts *
+        components/
+          balance-card.tsx
+          category-bars.tsx
+        notifications.ts
+```
+
+## Diseño de las pantallas
+
+<Screens>
+  <ScreenSketch
+    title="Resumen"
+    blocks={[
+      { type: 'header', label: 'Noviembre', action: '+ Nuevo' },
+      { type: 'card', label: 'Balance del mes', value: '$412.300' },
+      { type: 'stats', items: [{ label: 'Ingresos', value: '$1.250.000' }, { label: 'Gastos', value: '$837.700' }] },
+      { type: 'list', items: ['Alimentación ████████', 'Transporte ████', 'Ocio ██'], meta: ['$312k', '$148k', '$65k'] },
+      { type: 'tabs', items: ['Resumen', 'Movimientos', 'Presupuestos'], active: 0 },
+    ]}
+  />
+  <ScreenSketch
+    title="Nuevo movimiento"
+    blocks={[
+      { type: 'header', label: 'Nuevo movimiento', action: 'Guardar' },
+      { type: 'segmented', items: ['Gasto', 'Ingreso'], active: 0 },
+      { type: 'display', value: '$12.500' },
+      { type: 'chips', items: ['Alimentación', 'Transporte', 'Hogar', 'Ocio'], active: 1 },
+      { type: 'input', label: 'Nota' },
+      { type: 'button', label: 'Guardar' },
+    ]}
+  />
+  <ScreenSketch
+    title="Presupuestos"
+    blocks={[
+      { type: 'header', label: 'Presupuestos' },
+      { type: 'list', items: ['Alimentación 89 % ⚠', 'Transporte 49 %', 'Ocio 32 %'], meta: ['$350k', '$300k', '$200k'] },
+      { type: 'button', label: 'Editar presupuestos', variant: 'secondary' },
+      { type: 'tabs', items: ['Resumen', 'Movimientos', 'Presupuestos'], active: 2 },
+    ]}
+  />
+</Screens>
+
+## Implementación paso a paso
+
+<Steps>
+<Step title="Dinero en céntimos y categorías">
+
+Los importes se guardan como **enteros en céntimos** (o en la unidad mínima de la moneda): `0.1 + 0.2` nunca dará sorpresas.
+
+<CodeTabs>
+
+```ts title="features/finance/domain/money.ts"
+export type Cents = number;
+
+const formatter = new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' });
+
+export const toCents = (amount: number): Cents => Math.round(amount * 100);
+export const formatMoney = (cents: Cents) => formatter.format(cents / 100);
+
+/** "12.500,50" o "12500.5" → céntimos */
+export function parseMoneyInput(text: string): Cents | null {
+  const normalized = text.replace(/\./g, '').replace(',', '.').replace(/[^\d.]/g, '');
+  const value = Number.parseFloat(normalized);
+  return Number.isFinite(value) && value > 0 ? toCents(value) : null;
+}
+```
+
+```ts title="features/finance/domain/categories.ts"
+export const CATEGORIES = {
+  food: { label: 'Alimentación', color: '#f97316' },
+  transport: { label: 'Transporte', color: '#0ea5e9' },
+  home: { label: 'Hogar', color: '#8b5cf6' },
+  leisure: { label: 'Ocio', color: '#ec4899' },
+  health: { label: 'Salud', color: '#22c55e' },
+  salary: { label: 'Sueldo', color: '#14b8a6' },
+  other: { label: 'Otros', color: '#64748b' },
+} as const;
+
+export type CategoryId = keyof typeof CATEGORIES;
+```
+
+</CodeTabs>
+
+</Step>
+<Step title="El store persistente">
+
+```ts title="features/finance/store/finance-store.ts"
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { create } from 'zustand';
+import { createJSONStorage, persist } from 'zustand/middleware';
+import type { CategoryId } from '../domain/categories';
+import type { Cents } from '../domain/money';
+
+export type Transaction = {
+  id: string;
+  kind: 'expense' | 'income';
+  amount: Cents;
+  category: CategoryId;
+  date: string; // YYYY-MM-DD
+  note?: string;
+};
+
+type FinanceState = {
+  transactions: Transaction[];
+  budgets: Partial<Record<CategoryId, Cents>>;
+  add: (t: Omit<Transaction, 'id'>) => void;
+  remove: (id: string) => void;
+  setBudget: (category: CategoryId, amount: Cents | null) => void;
+};
+
+export const useFinanceStore = create<FinanceState>()(
+  persist(
+    (set) => ({
+      transactions: [],
+      budgets: {},
+      add: (t) =>
+        set((s) => ({ transactions: [{ ...t, id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }, ...s.transactions] })),
+      remove: (id) => set((s) => ({ transactions: s.transactions.filter((t) => t.id !== id) })),
+      setBudget: (category, amount) =>
+        set((s) => {
+          const budgets = { ...s.budgets };
+          if (amount === null) delete budgets[category];
+          else budgets[category] = amount;
+          return { budgets };
+        }),
+    }),
+    { name: 'finance-v1', storage: createJSONStorage(() => AsyncStorage), version: 1 },
+  ),
+);
+```
+
+</Step>
+<Step title="Selectores: los cálculos del dominio">
+
+```ts title="features/finance/domain/selectors.ts"
+import { CATEGORIES, type CategoryId } from './categories';
+import type { Transaction } from '../store/finance-store';
+import type { Cents } from './money';
+
+export const monthKey = (date = new Date()) => date.toISOString().slice(0, 7); // YYYY-MM
+
+export function monthTransactions(all: Transaction[], month: string) {
+  return all.filter((t) => t.date.startsWith(month));
+}
+
+export function totals(list: Transaction[]) {
+  let income = 0;
+  let expenses = 0;
+  for (const t of list) t.kind === 'income' ? (income += t.amount) : (expenses += t.amount);
+  return { income, expenses, balance: income - expenses };
+}
+
+export function expensesByCategory(list: Transaction[]) {
+  const map = new Map<CategoryId, Cents>();
+  for (const t of list) if (t.kind === 'expense') map.set(t.category, (map.get(t.category) ?? 0) + t.amount);
+  return [...map.entries()]
+    .map(([category, amount]) => ({ category, amount, ...CATEGORIES[category] }))
+    .sort((a, b) => b.amount - a.amount);
+}
+
+export function budgetUsage(list: Transaction[], budgets: Partial<Record<CategoryId, Cents>>) {
+  const spent = new Map(expensesByCategory(list).map((c) => [c.category, c.amount]));
+  return (Object.entries(budgets) as [CategoryId, Cents][]).map(([category, budget]) => {
+    const used = spent.get(category) ?? 0;
+    const ratio = budget > 0 ? used / budget : 0;
+    return { category, budget, used, ratio, status: ratio >= 1 ? 'over' : ratio >= 0.8 ? 'warning' : 'ok' } as const;
+  });
+}
+```
+
+</Step>
+<Step title="Gráfico de barras accesible">
+
+```tsx title="features/finance/components/category-bars.tsx"
+import { View } from 'react-native';
+import Animated from 'react-native-reanimated';
+import { Text } from '@/components/ui';
+import { formatMoney, type Cents } from '../domain/money';
+
+type Item = { category: string; label: string; color: string; amount: Cents };
+
+export function CategoryBars({ items }: { items: Item[] }) {
+  const max = Math.max(...items.map((i) => i.amount), 1);
+  return (
+    <View className="gap-3">
+      {items.map((item) => (
+        <View key={item.category} className="gap-1" accessible accessibilityLabel={`${item.label}: ${formatMoney(item.amount)}`}>
+          <View className="flex-row justify-between">
+            <Text variant="label">{item.label}</Text>
+            <Text variant="caption">{formatMoney(item.amount)}</Text>
+          </View>
+          <View className="h-2.5 overflow-hidden rounded-full bg-muted">
+            <Animated.View
+              style={{
+                height: '100%',
+                borderRadius: 999,
+                backgroundColor: item.color,
+                width: `${(item.amount / max) * 100}%`,
+                transitionProperty: 'width', // transición CSS de Reanimated 4
+                transitionDuration: 500,
+              }}
+            />
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+```
+
+</Step>
+<Step title="Pantalla de resumen">
+
+```tsx title="src/app/(tabs)/index.tsx"
+import { router } from 'expo-router';
+import { ScrollView, View } from 'react-native';
+import { useShallow } from 'zustand/react/shallow';
+import { EmptyState } from '@/components/feedback';
+import { Button, Card, Text } from '@/components/ui';
+import { CategoryBars } from '@/features/finance/components/category-bars';
+import { formatMoney } from '@/features/finance/domain/money';
+import { expensesByCategory, monthKey, monthTransactions, totals } from '@/features/finance/domain/selectors';
+import { useFinanceStore } from '@/features/finance/store/finance-store';
+
+export default function SummaryScreen() {
+  const month = monthKey();
+  const transactions = useFinanceStore(useShallow((s) => monthTransactions(s.transactions, month)));
+  const { income, expenses, balance } = totals(transactions);
+  const byCategory = expensesByCategory(transactions);
+  const monthName = new Date().toLocaleDateString('es', { month: 'long', year: 'numeric' });
+
+  if (transactions.length === 0) {
+    return (
+      <EmptyState
+        title={`Sin movimientos en ${monthName}`}
+        description="Registra tu primer gasto o ingreso para ver el resumen."
+        action={{ label: 'Añadir movimiento', onPress: () => router.push('/nuevo') }}
+      />
+    );
+  }
+
+  return (
+    <ScrollView className="flex-1 bg-background" contentContainerClassName="gap-4 p-4">
+      <Card className="gap-1 p-5">
+        <Text variant="caption" className="capitalize">
+          Balance de {monthName}
+        </Text>
+        <Text variant="display" tone={balance >= 0 ? 'success' : 'danger'}>
+          {formatMoney(balance)}
+        </Text>
+        <View className="mt-2 flex-row gap-6">
+          <Text variant="caption">Ingresos {formatMoney(income)}</Text>
+          <Text variant="caption">Gastos {formatMoney(expenses)}</Text>
+        </View>
+      </Card>
+      <Card className="gap-3 p-5">
+        <Text variant="heading">Gastos por categoría</Text>
+        <CategoryBars items={byCategory} />
+      </Card>
+      <Button onPress={() => router.push('/nuevo')} fullWidth>
+        Añadir movimiento
+      </Button>
+    </ScrollView>
+  );
+}
+```
+
+</Step>
+<Step title="Recordatorio diario con notificaciones locales">
+
+```ts title="features/finance/notifications.ts"
+import * as Notifications from 'expo-notifications';
+
+const REMINDER_ID = 'daily-expenses-reminder';
+
+export async function enableDailyReminder(hour = 21, minute = 0) {
+  const { status } = await Notifications.requestPermissionsAsync();
+  if (status !== 'granted') return false;
+
+  await Notifications.cancelScheduledNotificationAsync(REMINDER_ID).catch(() => {});
+  await Notifications.scheduleNotificationAsync({
+    identifier: REMINDER_ID,
+    content: { title: '¿Anotaste tus gastos de hoy?', body: 'Te toma 10 segundos 💸', data: { url: '/nuevo' } },
+    trigger: { type: Notifications.SchedulableTriggerInputTypes.DAILY, hour, minute },
+  });
+  return true;
+}
+
+export function disableDailyReminder() {
+  return Notifications.cancelScheduledNotificationAsync(REMINDER_ID);
+}
+```
+
+</Step>
+</Steps>
+
+<Callout type="info" title="Formulario de alta y exportación">
+El modal `nuevo.tsx` usa React Hook Form con un esquema de Zod (`kind`, `amount` como texto que se convierte con `parseMoneyInput`, `category`, `date`, `note`) y llama a `useFinanceStore.getState().add(...)` al enviar. La exportación del mes reutiliza el patrón CSV de [Expo Sharing](/docs/expo/expo-sharing).
+</Callout>
+
+## Qué has aprendido
+
+- **Modelar dinero** sin errores de coma flotante y formatearlo con `Intl.NumberFormat`.
+- **Selectores puros** para derivar totales, agrupaciones y estados de presupuesto.
+- **`useShallow`** para seleccionar listas derivadas sin renders innecesarios.
+- **Visualizaciones accesibles** con etiquetas que describen los datos.
+- **Notificaciones locales** recurrentes con identificador fijo para no duplicarlas.
+
+## Mejoras y funcionalidades adicionales
+
+<Checklist
+  items={[
+    'Movimientos recurrentes (sueldo, suscripciones)',
+    'Varias cuentas y transferencias entre ellas',
+    'Comparación con meses anteriores y tendencias',
+    'Migrar a SQLite cuando haya miles de movimientos',
+    'Bloqueo con biometría al abrir',
+    'Escanear recibos con la cámara y adjuntar la foto',
+    'Varias monedas con tipo de cambio',
+    'Widgets con el balance del mes',
+  ]}
+/>

@@ -1,0 +1,358 @@
+---
+title: Calculadora
+description: Una calculadora con teclado en cuadrícula, lógica en un reducer puro y testeado, precisión decimal, pantalla que ajusta el tamaño de la fuente y diseño adaptable.
+difficulty: principiante
+time: 90
+prerequisites:
+  - proyectos/contador
+  - fundamentos/flexbox-y-responsive
+related:
+  - react-typescript/interfaces-y-tipos
+  - calidad/testing
+  - estilos/dimensiones
+resources:
+  - title: React — Extraer la lógica de estado a un reducer
+    url: https://react.dev/learn/extracting-state-logic-into-a-reducer
+  - title: React Native — useWindowDimensions
+    url: https://reactnative.dev/docs/usewindowdimensions
+  - title: MDN — Number.prototype.toPrecision
+    url: https://developer.mozilla.org/es/docs/Web/JavaScript/Reference/Global_Objects/Number/toPrecision
+goal: Separar la lógica (máquina de estados pura y testeada) de la interfaz, construir layouts en cuadrícula con Flexbox y resolver problemas reales como la precisión decimal.
+technologies: [Expo SDK 58, TypeScript, useReducer, Flexbox, useWindowDimensions, Jest, expo-haptics]
+features:
+  - Operaciones básicas, porcentaje, cambio de signo y decimales
+  - Operaciones encadenadas (2 + 3 × 4 =)
+  - Resultado sin errores de coma flotante (0,1 + 0,2 = 0,3)
+  - Texto que se reduce para números largos
+  - Teclado que se adapta a teléfonos y tablets
+  - Lógica cubierta por tests unitarios
+---
+
+## Descripción del proyecto
+
+Una calculadora es un ejercicio excelente para aprender a **modelar estado**: el valor actual, el operando anterior, la operación pendiente y si el siguiente dígito empieza un número nuevo. Implementaremos esa lógica como un **reducer puro**, sin nada de React Native, y la cubriremos con tests. La interfaz solo enviará acciones y mostrará el resultado.
+
+También resolveremos dos problemas reales: la **precisión decimal** de JavaScript (`0.1 + 0.2 === 0.30000000000000004`) y un **layout en cuadrícula** que funcione en cualquier pantalla.
+
+## Arquitectura propuesta
+
+<Flow
+  steps={[
+    { title: 'Tecla', desc: 'onPress' },
+    { title: 'Acción', desc: "{ type: 'digit', digit: '7' }" },
+    { title: 'calculatorReducer', desc: 'Función pura', tone: 'brand' },
+    { title: 'Estado', desc: 'display, pending, operator' },
+    { title: 'Pantalla', desc: 'Muestra display' },
+  ]}
+/>
+
+## Estructura de carpetas
+
+```tree
+calculadora/
+  src/
+    app/
+      index.tsx
+    features/
+      calculator/
+        calculator-reducer.ts * # Lógica pura
+        calculator-reducer.test.ts
+        components/
+          display.tsx
+          keypad.tsx
+```
+
+## Diseño de las pantallas
+
+<Screens>
+  <ScreenSketch
+    title="Calculadora"
+    description="Pantalla y teclado 4×5"
+    blocks={[
+      { type: 'text', label: ' ' },
+      { type: 'text', label: '12 ×', muted: true },
+      { type: 'display', value: '1.250' },
+      { type: 'keypad', items: ['AC', '±', '%', '÷', '7', '8', '9', '×', '4', '5', '6', '−', '1', '2', '3', '+', '0', '00', ',', '='] },
+    ]}
+  />
+</Screens>
+
+## Implementación paso a paso
+
+<Steps>
+<Step title="Modela el estado y las acciones">
+
+```ts title="src/features/calculator/calculator-reducer.ts"
+export type Operator = '+' | '−' | '×' | '÷';
+
+export type CalculatorState = {
+  display: string; // lo que se ve en pantalla
+  previous: number | null; // operando guardado
+  operator: Operator | null; // operación pendiente
+  overwrite: boolean; // el próximo dígito empieza un número nuevo
+};
+
+export type CalculatorAction =
+  | { type: 'digit'; digit: string }
+  | { type: 'decimal' }
+  | { type: 'operator'; operator: Operator }
+  | { type: 'equals' }
+  | { type: 'percent' }
+  | { type: 'toggleSign' }
+  | { type: 'clear' };
+
+export const initialState: CalculatorState = { display: '0', previous: null, operator: null, overwrite: true };
+
+/** Evita errores de coma flotante: 0.1 + 0.2 → 0.3 */
+function normalize(value: number) {
+  return Number.parseFloat(value.toPrecision(12));
+}
+
+function compute(a: number, b: number, op: Operator): number {
+  switch (op) {
+    case '+':
+      return normalize(a + b);
+    case '−':
+      return normalize(a - b);
+    case '×':
+      return normalize(a * b);
+    case '÷':
+      return b === 0 ? Number.NaN : normalize(a / b);
+  }
+}
+
+const toDisplay = (value: number) => (Number.isFinite(value) ? String(value) : 'Error');
+
+export function calculatorReducer(state: CalculatorState, action: CalculatorAction): CalculatorState {
+  if (state.display === 'Error' && action.type !== 'clear') state = initialState;
+
+  switch (action.type) {
+    case 'digit': {
+      if (state.overwrite) return { ...state, display: action.digit, overwrite: false };
+      if (state.display === '0') return { ...state, display: action.digit };
+      if (state.display.replace(/[-.]/g, '').length >= 12) return state; // límite de dígitos
+      return { ...state, display: state.display + action.digit };
+    }
+    case 'decimal': {
+      if (state.overwrite) return { ...state, display: '0.', overwrite: false };
+      if (state.display.includes('.')) return state;
+      return { ...state, display: state.display + '.' };
+    }
+    case 'operator': {
+      const current = Number(state.display);
+      // Encadenado: si ya había una operación pendiente y se escribió un número, se resuelve
+      if (state.operator && state.previous !== null && !state.overwrite) {
+        const result = compute(state.previous, current, state.operator);
+        return { display: toDisplay(result), previous: result, operator: action.operator, overwrite: true };
+      }
+      return { ...state, previous: current, operator: action.operator, overwrite: true };
+    }
+    case 'equals': {
+      if (!state.operator || state.previous === null) return state;
+      const result = compute(state.previous, Number(state.display), state.operator);
+      return { display: toDisplay(result), previous: null, operator: null, overwrite: true };
+    }
+    case 'percent':
+      return { ...state, display: toDisplay(normalize(Number(state.display) / 100)) };
+    case 'toggleSign':
+      return state.display === '0' ? state : { ...state, display: state.display.startsWith('-') ? state.display.slice(1) : '-' + state.display };
+    case 'clear':
+      return initialState;
+  }
+}
+```
+
+</Step>
+<Step title="Escribe los tests antes de la interfaz">
+
+```ts title="src/features/calculator/calculator-reducer.test.ts"
+import { calculatorReducer, initialState, type CalculatorAction } from './calculator-reducer';
+
+function run(...actions: CalculatorAction[]) {
+  return actions.reduce(calculatorReducer, initialState).display;
+}
+
+const d = (digit: string): CalculatorAction => ({ type: 'digit', digit });
+
+test('suma decimales sin errores de coma flotante', () => {
+  expect(run({ type: 'decimal' }, d('1'), { type: 'operator', operator: '+' }, { type: 'decimal' }, d('2'), { type: 'equals' })).toBe('0.3');
+});
+
+test('encadena operaciones de izquierda a derecha', () => {
+  expect(run(d('2'), { type: 'operator', operator: '+' }, d('3'), { type: 'operator', operator: '×' }, d('4'), { type: 'equals' })).toBe('20');
+});
+
+test('dividir entre cero muestra Error y la siguiente tecla reinicia', () => {
+  expect(run(d('5'), { type: 'operator', operator: '÷' }, d('0'), { type: 'equals' })).toBe('Error');
+  expect(run(d('5'), { type: 'operator', operator: '÷' }, d('0'), { type: 'equals' }, d('7'))).toBe('7');
+});
+```
+
+```bash
+npx expo install jest-expo jest @types/jest --dev
+npx jest
+```
+
+</Step>
+<Step title="Crea la pantalla de resultado">
+
+```tsx title="src/features/calculator/components/display.tsx"
+import { StyleSheet, Text, View } from 'react-native';
+
+function formatDisplay(value: string) {
+  if (value === 'Error') return value;
+  const [int, dec] = value.split('.');
+  const grouped = Number(int).toLocaleString('es-CL'); // separador de miles
+  return dec !== undefined ? `${grouped},${dec}` : grouped;
+}
+
+export function Display({ value, expression }: { value: string; expression: string }) {
+  return (
+    <View style={styles.container}>
+      <Text style={styles.expression}>{expression}</Text>
+      <Text
+        style={styles.value}
+        numberOfLines={1}
+        adjustsFontSizeToFit // reduce la fuente para que quepa el número
+        minimumFontScale={0.4}
+        accessibilityLiveRegion="polite"
+        accessibilityLabel={`Resultado ${formatDisplay(value)}`}
+      >
+        {formatDisplay(value)}
+      </Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, justifyContent: 'flex-end', paddingHorizontal: 24, paddingBottom: 16 },
+  expression: { color: '#94a3b8', fontSize: 22, textAlign: 'right', minHeight: 28 },
+  value: { color: '#fff', fontSize: 88, fontWeight: '300', textAlign: 'right', fontVariant: ['tabular-nums'] },
+});
+```
+
+</Step>
+<Step title="Crea el teclado en cuadrícula">
+
+```tsx title="src/features/calculator/components/keypad.tsx"
+import * as Haptics from 'expo-haptics';
+import { Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import type { CalculatorAction, Operator } from '../calculator-reducer';
+
+type Key = { label: string; action: CalculatorAction; kind: 'digit' | 'fn' | 'op'; wide?: boolean };
+
+const op = (operator: Operator): Key => ({ label: operator, action: { type: 'operator', operator }, kind: 'op' });
+const digit = (d: string): Key => ({ label: d, action: { type: 'digit', digit: d }, kind: 'digit' });
+
+const ROWS: Key[][] = [
+  [{ label: 'AC', action: { type: 'clear' }, kind: 'fn' }, { label: '±', action: { type: 'toggleSign' }, kind: 'fn' }, { label: '%', action: { type: 'percent' }, kind: 'fn' }, op('÷')],
+  [digit('7'), digit('8'), digit('9'), op('×')],
+  [digit('4'), digit('5'), digit('6'), op('−')],
+  [digit('1'), digit('2'), digit('3'), op('+')],
+  [{ ...digit('0'), wide: true }, { label: ',', action: { type: 'decimal' }, kind: 'digit' }, { label: '=', action: { type: 'equals' }, kind: 'op' }],
+];
+
+export function Keypad({ onPress, activeOperator }: { onPress: (a: CalculatorAction) => void; activeOperator: Operator | null }) {
+  const { width, height } = useWindowDimensions();
+  const gap = 12;
+  // Tamaño de tecla según el lado más limitante (también en horizontal y tablets)
+  const size = Math.min((Math.min(width, 520) - gap * 5) / 4, (height * 0.6 - gap * 6) / 5);
+
+  return (
+    <View style={[styles.pad, { gap, padding: gap }]}>
+      {ROWS.map((row, i) => (
+        <View key={i} style={[styles.row, { gap }]}>
+          {row.map((key) => {
+            const active = key.kind === 'op' && key.label === activeOperator;
+            return (
+              <Pressable
+                key={key.label}
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  onPress(key.action);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel={key.label === 'AC' ? 'Borrar todo' : key.label}
+                accessibilityState={{ selected: active }}
+                style={({ pressed }) => [
+                  styles.key,
+                  { height: size, width: key.wide ? size * 2 + gap : size, borderRadius: size / 2 },
+                  styles[key.kind],
+                  active && styles.activeOp,
+                  pressed && { opacity: 0.7 },
+                ]}
+              >
+                <Text style={[styles.label, key.kind === 'fn' && styles.fnLabel, active && styles.activeLabel]}>{key.label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  pad: { alignSelf: 'center' },
+  row: { flexDirection: 'row' },
+  key: { alignItems: 'center', justifyContent: 'center' },
+  digit: { backgroundColor: '#334155' },
+  fn: { backgroundColor: '#cbd5e1' },
+  op: { backgroundColor: '#f59e0b' },
+  activeOp: { backgroundColor: '#fff' },
+  label: { color: '#fff', fontSize: 32, fontWeight: '500' },
+  fnLabel: { color: '#0f172a' },
+  activeLabel: { color: '#f59e0b' },
+});
+```
+
+</Step>
+<Step title="Une todo en la pantalla">
+
+```tsx title="src/app/index.tsx"
+import { useReducer } from 'react';
+import { StatusBar } from 'expo-status-bar';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { calculatorReducer, initialState } from '@/features/calculator/calculator-reducer';
+import { Display } from '@/features/calculator/components/display';
+import { Keypad } from '@/features/calculator/components/keypad';
+
+export default function CalculatorScreen() {
+  const [state, dispatch] = useReducer(calculatorReducer, initialState);
+  const expression = state.operator && state.previous !== null ? `${state.previous} ${state.operator}` : '';
+
+  return (
+    <SafeAreaView style={{ flex: 1, backgroundColor: '#0f172a' }}>
+      <StatusBar style="light" />
+      <Display value={state.display} expression={expression} />
+      <Keypad onPress={dispatch} activeOperator={state.overwrite ? state.operator : null} />
+    </SafeAreaView>
+  );
+}
+```
+
+</Step>
+</Steps>
+
+## Qué has aprendido
+
+- **Modelar estado como máquina** con `useReducer`: cada tecla es una acción y el reducer decide la transición.
+- **Testear lógica pura** sin renderizar nada: los tests corren en milisegundos.
+- **Precisión decimal** con `toPrecision` para ocultar los errores de coma flotante.
+- **Layouts en cuadrícula** con filas de Flexbox y tamaños calculados con `useWindowDimensions`.
+- **`adjustsFontSizeToFit`** para textos que deben caber en una línea.
+
+## Mejoras y funcionalidades adicionales
+
+<Checklist
+  items={[
+    'Historial de operaciones en una hoja inferior',
+    'Precedencia de operadores (× antes que +) con un parser de expresiones',
+    'Modo científico en horizontal (sin, cos, potencias)',
+    'Copiar el resultado con pulsación larga (expo-clipboard)',
+    'Tema claro y oscuro con NativeWind',
+    'Borrar el último dígito deslizando sobre la pantalla',
+    'Soporte de teclado físico en tablets',
+    'Tests de componente del teclado con React Native Testing Library',
+  ]}
+/>

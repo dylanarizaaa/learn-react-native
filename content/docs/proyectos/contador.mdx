@@ -1,0 +1,295 @@
+---
+title: Contador
+description: Tu primera app completa. Un contador con pasos configurables, límites, vibración háptica, persistencia del valor y un hook personalizado.
+difficulty: principiante
+time: 60
+prerequisites:
+  - introduccion/preparacion-del-entorno
+  - react-typescript/usestate
+related:
+  - fundamentos/pressable-y-touchableopacity
+  - react-typescript/hooks-personalizados
+  - proyectos/lista-de-tareas
+resources:
+  - title: React — useState
+    url: https://react.dev/reference/react/useState
+  - title: Expo — Haptics
+    url: https://docs.expo.dev/versions/latest/sdk/haptics/
+  - title: Expo — SQLite (kv-store)
+    url: https://docs.expo.dev/versions/latest/sdk/sqlite/
+goal: Dominar el ciclo estado → render → evento con useState, extraer lógica a un hook personalizado y persistir datos sencillos en el dispositivo.
+technologies: [Expo SDK 58, TypeScript, React Native, useState, expo-haptics, expo-sqlite/kv-store]
+features:
+  - Incrementar y decrementar con un paso configurable (1, 5, 10)
+  - Límite inferior en 0 y superior configurable
+  - Reinicio con pulsación larga
+  - Vibración háptica al pulsar y al alcanzar un límite
+  - El valor se conserva al cerrar la app
+---
+
+## Descripción del proyecto
+
+Un contador parece trivial, pero reúne todo lo esencial de React Native: **estado**, **eventos táctiles**, **estilos**, **accesibilidad**, una **API nativa** (vibración) y **persistencia**. Es ideal como primer proyecto porque cada concepto se ve de inmediato en la pantalla.
+
+Construiremos una app de una sola pantalla para contar cualquier cosa: vasos de agua, repeticiones de ejercicio o personas en un aforo.
+
+## Arquitectura propuesta
+
+<Layers
+  layers={[
+    { title: 'Pantalla', desc: 'src/app/index.tsx', items: ['Display', 'Botones', 'Selector de paso'], tone: 'brand' },
+    { title: 'Hook', desc: 'useCounter()', items: ['value', 'increment', 'decrement', 'reset', 'step'] },
+    { title: 'Persistencia', desc: 'kv-store', items: ['getItemSync', 'setItemSync'] },
+    { title: 'Nativo', desc: 'expo-haptics', items: ['impactAsync', 'notificationAsync'], tone: 'muted' },
+  ]}
+/>
+
+## Estructura de carpetas
+
+```tree
+contador/
+  src/
+    app/
+      _layout.tsx
+      index.tsx * # Pantalla principal
+    hooks/
+      use-counter.ts * # Lógica del contador
+    components/
+      step-selector.tsx
+  app.json
+```
+
+## Diseño de las pantallas
+
+<Screens>
+  <ScreenSketch
+    title="Contador"
+    description="Valor grande y acciones claras"
+    blocks={[
+      { type: 'header', label: 'Contador' },
+      { type: 'display', value: '24', label: 'Vasos de agua' },
+      { type: 'segmented', items: ['+1', '+5', '+10'], active: 0 },
+      { type: 'button', label: '+ Sumar' },
+      { type: 'button', label: '− Restar', variant: 'secondary' },
+      { type: 'text', label: 'Mantén pulsado el número para reiniciar', muted: true },
+    ]}
+  />
+  <ScreenSketch
+    title="Límite alcanzado"
+    description="Feedback visual y háptico"
+    blocks={[
+      { type: 'header', label: 'Contador' },
+      { type: 'display', value: '100', label: 'Máximo alcanzado' },
+      { type: 'segmented', items: ['+1', '+5', '+10'], active: 2 },
+      { type: 'button', label: '+ Sumar', variant: 'secondary' },
+      { type: 'button', label: '− Restar' },
+    ]}
+  />
+</Screens>
+
+## Implementación paso a paso
+
+<Steps>
+<Step title="Crea el proyecto e instala las dependencias">
+
+```bash
+npx create-expo-app@latest contador --template default@sdk-58
+cd contador
+npm run reset-project
+npx expo install expo-haptics expo-sqlite
+```
+
+</Step>
+<Step title="Escribe el hook useCounter">
+
+Toda la lógica vive en un hook: la pantalla solo dibujará. Así podríamos tener varios contadores en la app reutilizando el mismo código.
+
+```ts title="src/hooks/use-counter.ts"
+import { useState } from 'react';
+import * as Haptics from 'expo-haptics';
+import Storage from 'expo-sqlite/kv-store';
+
+type Options = { key: string; min?: number; max?: number };
+
+function readStored(key: string, fallback: number) {
+  const raw = Storage.getItemSync(key);
+  const parsed = raw === null ? NaN : Number(raw);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+export function useCounter({ key, min = 0, max = 100 }: Options) {
+  // Inicialización perezosa: leemos el valor guardado solo una vez
+  const [value, setValue] = useState(() => readStored(key, min));
+  const [step, setStep] = useState(1);
+
+  function update(next: number) {
+    const clamped = Math.min(max, Math.max(min, next));
+    if (clamped !== next) {
+      // Intentó pasar el límite: vibración de advertencia
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    } else {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+    setValue(clamped);
+    Storage.setItemSync(key, String(clamped));
+  }
+
+  return {
+    value,
+    step,
+    setStep,
+    atMin: value <= min,
+    atMax: value >= max,
+    increment: () => update(value + step),
+    decrement: () => update(value - step),
+    reset: () => {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setValue(min);
+      Storage.setItemSync(key, String(min));
+    },
+  };
+}
+```
+
+</Step>
+<Step title="Crea el selector de paso">
+
+```tsx title="src/components/step-selector.tsx"
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+
+const STEPS = [1, 5, 10] as const;
+
+export function StepSelector({ value, onChange }: { value: number; onChange: (step: number) => void }) {
+  return (
+    <View style={styles.row} accessibilityRole="radiogroup" accessibilityLabel="Tamaño del paso">
+      {STEPS.map((step) => {
+        const selected = step === value;
+        return (
+          <Pressable
+            key={step}
+            onPress={() => onChange(step)}
+            accessibilityRole="radio"
+            accessibilityState={{ checked: selected }}
+            style={[styles.option, selected && styles.selected]}
+          >
+            <Text style={[styles.label, selected && styles.selectedLabel]}>+{step}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  row: { flexDirection: 'row', backgroundColor: '#f1f5f9', borderRadius: 14, padding: 4 },
+  option: { flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
+  selected: { backgroundColor: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.12)' },
+  label: { fontSize: 16, color: '#64748b', fontWeight: '600' },
+  selectedLabel: { color: '#0f172a' },
+});
+```
+
+</Step>
+<Step title="Construye la pantalla">
+
+```tsx title="src/app/index.tsx"
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { StepSelector } from '@/components/step-selector';
+import { useCounter } from '@/hooks/use-counter';
+
+const MAX = 100;
+
+export default function CounterScreen() {
+  const counter = useCounter({ key: 'counter.water', max: MAX });
+
+  return (
+    <SafeAreaView style={styles.screen}>
+      <Text style={styles.title}>Vasos de agua</Text>
+
+      <Pressable
+        onLongPress={counter.reset}
+        delayLongPress={600}
+        accessibilityRole="button"
+        accessibilityLabel={`Valor actual ${counter.value}`}
+        accessibilityHint="Mantén pulsado para reiniciar a cero"
+      >
+        <Text style={[styles.value, counter.atMax && styles.valueMax]}>{counter.value}</Text>
+      </Pressable>
+      {counter.atMax ? <Text style={styles.hint}>Has alcanzado el máximo ({MAX})</Text> : null}
+
+      <View style={styles.controls}>
+        <StepSelector value={counter.step} onChange={counter.setStep} />
+        <Pressable
+          onPress={counter.increment}
+          disabled={counter.atMax}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.button, styles.primary, (pressed || counter.atMax) && styles.dimmed]}
+        >
+          <Text style={styles.primaryText}>+ Sumar {counter.step}</Text>
+        </Pressable>
+        <Pressable
+          onPress={counter.decrement}
+          disabled={counter.atMin}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.button, styles.secondary, (pressed || counter.atMin) && styles.dimmed]}
+        >
+          <Text style={styles.secondaryText}>− Restar {counter.step}</Text>
+        </Pressable>
+        <Text style={styles.footnote}>Mantén pulsado el número para reiniciar</Text>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'space-between', padding: 24 },
+  title: { fontSize: 20, fontWeight: '600', color: '#334155', marginTop: 24 },
+  value: { fontSize: 120, fontWeight: '800', color: '#0f172a', fontVariant: ['tabular-nums'] },
+  valueMax: { color: '#0284c7' },
+  hint: { color: '#0284c7', fontWeight: '500' },
+  controls: { alignSelf: 'stretch', gap: 12 },
+  button: { paddingVertical: 18, borderRadius: 16, alignItems: 'center' },
+  primary: { backgroundColor: '#0f172a' },
+  secondary: { backgroundColor: '#f1f5f9' },
+  dimmed: { opacity: 0.5 },
+  primaryText: { color: '#fff', fontSize: 18, fontWeight: '700' },
+  secondaryText: { color: '#0f172a', fontSize: 18, fontWeight: '700' },
+  footnote: { textAlign: 'center', color: '#94a3b8', fontSize: 13 },
+});
+```
+
+</Step>
+<Step title="Pruébalo en tu teléfono">
+
+```bash
+npx expo start
+```
+
+Escanea el código QR con Expo Go. Suma, resta, cambia el paso, cierra la app por completo y vuelve a abrirla: el valor se conserva.
+
+</Step>
+</Steps>
+
+## Qué has aprendido
+
+- **Estado y renders**: cada `setValue` vuelve a ejecutar el componente y la pantalla refleja el nuevo valor.
+- **Inicialización perezosa** de `useState` para leer de almacenamiento solo una vez.
+- **Hook personalizado** que separa la lógica de la interfaz ([Hooks personalizados](/docs/react-typescript/hooks-personalizados)).
+- **Accesibilidad**: roles `button` y `radio`, estados y pistas para lectores de pantalla.
+- **APIs nativas** con una línea gracias al SDK de Expo.
+
+## Mejoras y funcionalidades adicionales
+
+<Checklist
+  items={[
+    'Varios contadores con nombre en una lista (FlatList + Expo Router)',
+    'Animar el número al cambiar con Reanimated (escala o desplazamiento)',
+    'Historial diario del contador con fecha y gráfico semanal',
+    'Meta diaria configurable con barra de progreso',
+    'Modo oscuro con useColorScheme',
+    'Migrar los estilos a NativeWind',
+    'Test unitario del hook con renderHook',
+    'Widget de pantalla de inicio (requiere módulos nativos)',
+  ]}
+/>

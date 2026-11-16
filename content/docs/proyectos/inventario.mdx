@@ -1,0 +1,575 @@
+---
+title: Aplicación de inventario
+sidebarTitle: Inventario
+description: Gestión de productos y stock con SQLite, entradas y salidas en transacciones, alertas de stock bajo, búsqueda por código de barras con la cámara y formularios con el kit de componentes.
+difficulty: intermedio
+time: 300
+prerequisites:
+  - proyectos/notas
+  - sistema-de-componentes/formularios
+  - expo/expo-camera
+related:
+  - expo/expo-sqlite
+  - datos/tanstack-query
+  - proyectos/lector-qr
+resources:
+  - title: Expo — SQLite (transacciones)
+    url: https://docs.expo.dev/versions/latest/sdk/sqlite/
+  - title: Expo — Camera (escáner de códigos)
+    url: https://docs.expo.dev/versions/latest/sdk/camera/
+  - title: TanStack Query — Mutaciones
+    url: https://tanstack.com/query/latest/docs/framework/react/guides/mutations
+goal: Diseñar un modelo de datos relacional local, garantizar la consistencia con transacciones, integrar la cámara en un flujo de trabajo y construir formularios validados con el kit.
+technologies: [Expo SDK 58, Expo Router, expo-sqlite, TanStack Query, NativeWind, React Hook Form, Zod, expo-camera]
+features:
+  - Catálogo de productos con SKU, categoría, precio y stock
+  - Entradas y salidas de stock con historial de movimientos
+  - Alerta visual de productos bajo el stock mínimo
+  - Búsqueda por nombre o escaneando el código de barras
+  - Alta y edición de productos con validación
+  - Funciona sin conexión
+---
+
+## Descripción del proyecto
+
+Pequeños comercios, almacenes y talleres necesitan saber **qué tienen y cuánto**. Esta app permite registrar productos, sumar y restar stock con un historial de movimientos, y encontrar un producto al instante **escaneando su código de barras**.
+
+El reto técnico principal es la **consistencia**: una salida de stock debe registrar el movimiento **y** actualizar el stock a la vez, y nunca dejar el stock en negativo. Lo resolvemos con **transacciones de SQLite**. Para la UI usamos el [kit de componentes](/docs/sistema-de-componentes/vision-general) y TanStack Query como capa de caché sobre la base de datos local.
+
+## Arquitectura propuesta
+
+<Layers
+  layers={[
+    { title: 'Rutas', desc: 'Expo Router', items: ['index', 'producto/[id]', 'producto/nuevo', 'escanear'], tone: 'brand' },
+    { title: 'Hooks', desc: 'TanStack Query', items: ['useProducts', 'useProduct', 'useRegisterMovement', 'useSaveProduct'] },
+    { title: 'Repositorio', desc: 'SQL + transacciones', items: ['listProducts', 'findBySku', 'registerMovement'] },
+    { title: 'SQLite', desc: 'inventory.db', items: ['products', 'movements'], tone: 'muted' },
+  ]}
+/>
+
+```tree title="Modelo de datos"
+products/
+  id
+  sku # único, código de barras
+  name
+  category
+  price
+  stock
+  min_stock
+movements/
+  id
+  product_id # → products.id
+  type # 'in' | 'out'
+  quantity
+  note
+  created_at
+```
+
+## Estructura de carpetas
+
+```tree
+inventario/
+  src/
+    app/
+      _layout.tsx # Proveedores: SQLite, Query, tema
+      index.tsx # Listado y búsqueda
+      escanear.tsx # Cámara (modal)
+      producto/
+        nuevo.tsx
+        [id].tsx # Detalle + movimientos
+    features/
+      inventory/
+        db/
+          migrations.ts
+          inventory-repository.ts *
+        hooks/
+          use-inventory.ts *
+        components/
+          product-row.tsx
+          stock-badge.tsx
+          movement-sheet.tsx
+          product-form.tsx
+        schemas.ts
+    components/ # Kit: ui, form, feedback
+```
+
+## Diseño de las pantallas
+
+<Screens>
+  <ScreenSketch
+    title="Inventario"
+    blocks={[
+      { type: 'header', label: 'Inventario', action: 'Escanear' },
+      { type: 'search', label: 'Buscar por nombre o SKU' },
+      { type: 'chips', items: ['Todos', 'Stock bajo (3)'], active: 0 },
+      { type: 'list', items: ['Café molido 500 g', 'Filtros papel x100', 'Taza cerámica', 'Leche avena 1 L'], meta: ['24', '2 ⚠', '15', '1 ⚠'] },
+      { type: 'fab' },
+    ]}
+  />
+  <ScreenSketch
+    title="Detalle"
+    blocks={[
+      { type: 'header', label: 'Filtros papel x100', back: true, action: 'Editar' },
+      { type: 'stats', items: [{ label: 'Stock', value: '2' }, { label: 'Mínimo', value: '10' }] },
+      { type: 'segmented', items: ['Entrada', 'Salida'], active: 0 },
+      { type: 'button', label: 'Registrar movimiento' },
+      { type: 'list', items: ['Salida · venta', 'Entrada · proveedor', 'Salida · merma'], meta: ['−3', '+20', '−1'] },
+    ]}
+  />
+  <ScreenSketch
+    title="Escanear"
+    blocks={[
+      { type: 'header', label: 'Escanear código', back: true },
+      { type: 'camera', label: 'Apunta al código de barras' },
+      { type: 'text', label: 'Si el producto no existe, podrás crearlo con ese SKU.', muted: true },
+    ]}
+  />
+</Screens>
+
+## Implementación paso a paso
+
+<Steps>
+<Step title="Crea el proyecto con el kit">
+
+Parte de un proyecto configurado como en [Configuración del proyecto](/docs/sistema-de-componentes/configuracion-del-proyecto) (Expo + NativeWind + kit) y añade:
+
+```bash
+npx expo install expo-sqlite expo-camera
+npm install @tanstack/react-query react-hook-form zod @hookform/resolvers
+```
+
+```json title="app.json (plugins)"
+{
+  "expo": {
+    "plugins": [["expo-camera", { "cameraPermission": "Usamos la cámara para leer códigos de barras de tus productos.", "barcodeScannerEnabled": true }]]
+  }
+}
+```
+
+</Step>
+<Step title="Migraciones y repositorio con transacciones">
+
+<CodeTabs>
+
+```ts title="features/inventory/db/migrations.ts"
+import type { SQLiteDatabase } from 'expo-sqlite';
+
+export async function migrate(db: SQLiteDatabase) {
+  const row = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
+  if ((row?.user_version ?? 0) >= 1) return;
+
+  await db.execAsync(`
+    PRAGMA journal_mode = WAL;
+    PRAGMA foreign_keys = ON;
+    CREATE TABLE products (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sku TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL,
+      price REAL NOT NULL DEFAULT 0,
+      stock INTEGER NOT NULL DEFAULT 0 CHECK (stock >= 0),
+      min_stock INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE movements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL REFERENCES products (id) ON DELETE CASCADE,
+      type TEXT NOT NULL CHECK (type IN ('in', 'out')),
+      quantity INTEGER NOT NULL CHECK (quantity > 0),
+      note TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX idx_movements_product ON movements (product_id, created_at DESC);
+    PRAGMA user_version = 1;
+  `);
+}
+```
+
+```ts title="features/inventory/db/inventory-repository.ts"
+import type { SQLiteDatabase } from 'expo-sqlite';
+
+export type Product = { id: number; sku: string; name: string; category: string; price: number; stock: number; minStock: number };
+export type Movement = { id: number; type: 'in' | 'out'; quantity: number; note: string | null; createdAt: number };
+type ProductRow = Omit<Product, 'minStock'> & { min_stock: number };
+
+const toProduct = ({ min_stock, ...rest }: ProductRow): Product => ({ ...rest, minStock: min_stock });
+
+export class InsufficientStockError extends Error {
+  constructor(public available: number) {
+    super(`Solo hay ${available} unidades disponibles`);
+  }
+}
+
+export const inventoryRepository = {
+  async list(db: SQLiteDatabase, { search = '', lowOnly = false }) {
+    const rows = await db.getAllAsync<ProductRow>(
+      `SELECT * FROM products
+       WHERE (name LIKE $q OR sku LIKE $q) AND ($low = 0 OR stock <= min_stock)
+       ORDER BY (stock <= min_stock) DESC, name`,
+      { $q: `%${search}%`, $low: lowOnly ? 1 : 0 },
+    );
+    return rows.map(toProduct);
+  },
+  async get(db: SQLiteDatabase, id: number) {
+    const row = await db.getFirstAsync<ProductRow>('SELECT * FROM products WHERE id = ?', id);
+    return row ? toProduct(row) : null;
+  },
+  async findBySku(db: SQLiteDatabase, sku: string) {
+    const row = await db.getFirstAsync<ProductRow>('SELECT * FROM products WHERE sku = ?', sku);
+    return row ? toProduct(row) : null;
+  },
+  async save(db: SQLiteDatabase, p: Omit<Product, 'id' | 'stock'> & { id?: number }) {
+    if (p.id) {
+      await db.runAsync('UPDATE products SET sku=?, name=?, category=?, price=?, min_stock=? WHERE id=?', p.sku, p.name, p.category, p.price, p.minStock, p.id);
+      return p.id;
+    }
+    const r = await db.runAsync('INSERT INTO products (sku, name, category, price, min_stock) VALUES (?,?,?,?,?)', p.sku, p.name, p.category, p.price, p.minStock);
+    return r.lastInsertRowId;
+  },
+  movements(db: SQLiteDatabase, productId: number) {
+    return db.getAllAsync<Movement>(
+      'SELECT id, type, quantity, note, created_at AS createdAt FROM movements WHERE product_id = ? ORDER BY created_at DESC LIMIT 50',
+      productId,
+    );
+  },
+  /** Registra el movimiento y actualiza el stock de forma atómica */
+  async registerMovement(db: SQLiteDatabase, input: { productId: number; type: 'in' | 'out'; quantity: number; note?: string }) {
+    await db.withExclusiveTransactionAsync(async (tx) => {
+      const product = await tx.getFirstAsync<{ stock: number }>('SELECT stock FROM products WHERE id = ?', input.productId);
+      if (!product) throw new Error('Producto no encontrado');
+      const delta = input.type === 'in' ? input.quantity : -input.quantity;
+      if (product.stock + delta < 0) throw new InsufficientStockError(product.stock);
+
+      await tx.runAsync('UPDATE products SET stock = stock + ? WHERE id = ?', delta, input.productId);
+      await tx.runAsync(
+        'INSERT INTO movements (product_id, type, quantity, note, created_at) VALUES (?, ?, ?, ?, ?)',
+        input.productId, input.type, input.quantity, input.note ?? null, Date.now(),
+      );
+    });
+  },
+};
+```
+
+</CodeTabs>
+
+</Step>
+<Step title="Hooks con TanStack Query sobre SQLite">
+
+TanStack Query no es solo para APIs: también cachea consultas locales y gestiona la invalidación tras cada mutación.
+
+```ts title="features/inventory/hooks/use-inventory.ts"
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSQLiteContext } from 'expo-sqlite';
+import { inventoryRepository, type Product } from '../db/inventory-repository';
+
+const keys = {
+  all: ['inventory'] as const,
+  list: (f: { search: string; lowOnly: boolean }) => [...keys.all, 'list', f] as const,
+  product: (id: number) => [...keys.all, 'product', id] as const,
+  movements: (id: number) => [...keys.all, 'movements', id] as const,
+};
+
+export function useProducts(filters: { search: string; lowOnly: boolean }) {
+  const db = useSQLiteContext();
+  return useQuery({ queryKey: keys.list(filters), queryFn: () => inventoryRepository.list(db, filters) });
+}
+
+export function useProduct(id: number) {
+  const db = useSQLiteContext();
+  return useQuery({ queryKey: keys.product(id), queryFn: () => inventoryRepository.get(db, id) });
+}
+
+export function useMovements(id: number) {
+  const db = useSQLiteContext();
+  return useQuery({ queryKey: keys.movements(id), queryFn: () => inventoryRepository.movements(db, id) });
+}
+
+export function useRegisterMovement() {
+  const db = useSQLiteContext();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: Parameters<typeof inventoryRepository.registerMovement>[1]) => inventoryRepository.registerMovement(db, input),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.all }),
+  });
+}
+
+export function useSaveProduct() {
+  const db = useSQLiteContext();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (p: Omit<Product, 'id' | 'stock'> & { id?: number }) => inventoryRepository.save(db, p),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.all }),
+  });
+}
+```
+
+</Step>
+<Step title="Listado con búsqueda y filtro de stock bajo">
+
+```tsx title="src/app/index.tsx"
+import { useState } from 'react';
+import { Link, router } from 'expo-router';
+import { FlatList, View } from 'react-native';
+import { EmptyState, ListSkeleton } from '@/components/feedback';
+import { Badge, Button, Input, SegmentedControl } from '@/components/ui';
+import { useDebouncedValue } from '@/hooks/use-debounced-value';
+import { ProductRow } from '@/features/inventory/components/product-row';
+import { useProducts } from '@/features/inventory/hooks/use-inventory';
+
+export default function InventoryScreen() {
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState<'all' | 'low'>('all');
+  const debounced = useDebouncedValue(search, 250);
+  const { data: products, isPending } = useProducts({ search: debounced, lowOnly: filter === 'low' });
+
+  return (
+    <View className="flex-1 gap-3 bg-background p-4">
+      <View className="flex-row gap-2">
+        <Input containerClassName="flex-1" placeholder="Buscar por nombre o SKU" value={search} onChangeText={setSearch} />
+        <Link href="/escanear" asChild>
+          <Button variant="outline" size="icon" accessibilityLabel="Escanear código">
+            ▣
+          </Button>
+        </Link>
+      </View>
+      <SegmentedControl
+        accessibilityLabel="Filtro"
+        options={[
+          { value: 'all', label: 'Todos' },
+          { value: 'low', label: 'Stock bajo' },
+        ]}
+        value={filter}
+        onChange={setFilter}
+      />
+      {isPending ? (
+        <ListSkeleton />
+      ) : (
+        <FlatList
+          data={products}
+          keyExtractor={(p) => String(p.id)}
+          contentContainerClassName="grow gap-2 pb-24"
+          renderItem={({ item }) => (
+            <ProductRow product={item} onPress={() => router.push({ pathname: '/producto/[id]', params: { id: String(item.id) } })} />
+          )}
+          ListEmptyComponent={
+            <EmptyState
+              title={filter === 'low' ? 'Todo en orden' : 'Sin productos'}
+              description={filter === 'low' ? 'Ningún producto está bajo el mínimo.' : 'Añade tu primer producto o escanea un código.'}
+              action={filter === 'all' ? { label: 'Añadir producto', onPress: () => router.push('/producto/nuevo') } : undefined}
+            />
+          }
+        />
+      )}
+      <View className="absolute right-4 bottom-8">
+        <Button onPress={() => router.push('/producto/nuevo')} size="lg">
+          + Producto
+        </Button>
+      </View>
+    </View>
+  );
+}
+```
+
+```tsx title="features/inventory/components/product-row.tsx"
+import { Badge, Card, Text } from '@/components/ui';
+import { View } from 'react-native';
+import type { Product } from '../db/inventory-repository';
+
+export function ProductRow({ product, onPress }: { product: Product; onPress: () => void }) {
+  const low = product.stock <= product.minStock;
+  return (
+    <Card.Pressable variant="outline" onPress={onPress} accessibilityLabel={`${product.name}, ${product.stock} unidades${low ? ', stock bajo' : ''}`}>
+      <View className="flex-row items-center gap-3 p-4">
+        <View className="flex-1">
+          <Text className="font-medium">{product.name}</Text>
+          <Text variant="caption">
+            {product.sku} · {product.category}
+          </Text>
+        </View>
+        <View className="items-end gap-1">
+          <Text className="text-lg font-bold">{product.stock}</Text>
+          {low ? <Badge label="Stock bajo" tone="danger" /> : null}
+        </View>
+      </View>
+    </Card.Pressable>
+  );
+}
+```
+
+</Step>
+<Step title="Detalle con registro de movimientos">
+
+```tsx title="src/app/producto/[id].tsx"
+import { useState } from 'react';
+import { Stack, useLocalSearchParams } from 'expo-router';
+import { Alert, FlatList, View } from 'react-native';
+import { LoadingState } from '@/components/feedback';
+import { Button, Card, Input, SegmentedControl, Text } from '@/components/ui';
+import { InsufficientStockError } from '@/features/inventory/db/inventory-repository';
+import { useMovements, useProduct, useRegisterMovement } from '@/features/inventory/hooks/use-inventory';
+
+export default function ProductDetail() {
+  const id = Number(useLocalSearchParams<{ id: string }>().id);
+  const { data: product, isPending } = useProduct(id);
+  const { data: movements = [] } = useMovements(id);
+  const register = useRegisterMovement();
+  const [type, setType] = useState<'in' | 'out'>('in');
+  const [quantity, setQuantity] = useState('1');
+  const [note, setNote] = useState('');
+
+  if (isPending || !product) return <LoadingState />;
+
+  function submit() {
+    const qty = Number.parseInt(quantity, 10);
+    if (!Number.isInteger(qty) || qty <= 0) return Alert.alert('Cantidad no válida');
+    register.mutate(
+      { productId: id, type, quantity: qty, note: note.trim() || undefined },
+      {
+        onSuccess: () => {
+          setQuantity('1');
+          setNote('');
+        },
+        onError: (error) =>
+          Alert.alert('No se pudo registrar', error instanceof InsufficientStockError ? error.message : 'Inténtalo de nuevo.'),
+      },
+    );
+  }
+
+  return (
+    <FlatList
+      className="flex-1 bg-background"
+      contentContainerClassName="gap-3 p-4"
+      data={movements}
+      keyExtractor={(m) => String(m.id)}
+      ListHeaderComponent={
+        <View className="gap-4 pb-2">
+          <Stack.Screen options={{ title: product.name }} />
+          <View className="flex-row gap-3">
+            <Card className="flex-1 p-4">
+              <Text variant="caption">Stock</Text>
+              <Text variant="title" tone={product.stock <= product.minStock ? 'danger' : 'default'}>
+                {product.stock}
+              </Text>
+            </Card>
+            <Card className="flex-1 p-4">
+              <Text variant="caption">Mínimo</Text>
+              <Text variant="title">{product.minStock}</Text>
+            </Card>
+          </View>
+          <SegmentedControl
+            accessibilityLabel="Tipo de movimiento"
+            options={[
+              { value: 'in', label: 'Entrada' },
+              { value: 'out', label: 'Salida' },
+            ]}
+            value={type}
+            onChange={setType}
+          />
+          <Input label="Cantidad" value={quantity} onChangeText={setQuantity} inputMode="numeric" />
+          <Input label="Nota (opcional)" value={note} onChangeText={setNote} placeholder="Proveedor, venta, merma…" />
+          <Button onPress={submit} loading={register.isPending} fullWidth>
+            Registrar {type === 'in' ? 'entrada' : 'salida'}
+          </Button>
+          <Text variant="heading" className="mt-2">
+            Movimientos
+          </Text>
+        </View>
+      }
+      renderItem={({ item }) => (
+        <View className="flex-row justify-between border-b border-border py-2">
+          <View>
+            <Text>{item.type === 'in' ? 'Entrada' : 'Salida'}</Text>
+            {item.note ? <Text variant="caption">{item.note}</Text> : null}
+          </View>
+          <Text tone={item.type === 'in' ? 'success' : 'danger'} className="font-semibold">
+            {item.type === 'in' ? '+' : '−'}
+            {item.quantity}
+          </Text>
+        </View>
+      )}
+    />
+  );
+}
+```
+
+</Step>
+<Step title="Escanear un código de barras">
+
+```tsx title="src/app/escanear.tsx"
+import { useRef } from 'react';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import { router } from 'expo-router';
+import { useSQLiteContext } from 'expo-sqlite';
+import * as Haptics from 'expo-haptics';
+import { View } from 'react-native';
+import { Button, Text } from '@/components/ui';
+import { inventoryRepository } from '@/features/inventory/db/inventory-repository';
+
+export default function ScanScreen() {
+  const db = useSQLiteContext();
+  const [permission, requestPermission] = useCameraPermissions();
+  const handled = useRef(false);
+
+  if (!permission) return null;
+  if (!permission.granted) {
+    return (
+      <View className="flex-1 items-center justify-center gap-4 bg-background p-6">
+        <Text align="center">Necesitamos la cámara para leer códigos de barras.</Text>
+        <Button onPress={requestPermission}>Permitir cámara</Button>
+      </View>
+    );
+  }
+
+  async function onScanned({ data }: { data: string }) {
+    if (handled.current) return; // el evento llega muchas veces por segundo
+    handled.current = true;
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    const product = await inventoryRepository.findBySku(db, data);
+    if (product) router.replace({ pathname: '/producto/[id]', params: { id: String(product.id) } });
+    else router.replace({ pathname: '/producto/nuevo', params: { sku: data } });
+  }
+
+  return (
+    <View className="flex-1 bg-black">
+      <CameraView
+        style={{ flex: 1 }}
+        facing="back"
+        barcodeScannerSettings={{ barcodeTypes: ['ean13', 'ean8', 'upc_a', 'code128', 'qr'] }}
+        onBarcodeScanned={onScanned}
+      />
+      <View className="absolute inset-x-0 bottom-12 items-center">
+        <Text className="text-white">Apunta al código de barras del producto</Text>
+      </View>
+    </View>
+  );
+}
+```
+
+</Step>
+</Steps>
+
+<Callout type="info" title="Formulario de producto">
+La pantalla `producto/nuevo.tsx` sigue exactamente el patrón de [Formularios](/docs/sistema-de-componentes/formularios): un esquema de Zod (`sku`, `name`, `category`, `price`, `minStock`), `FormInput`/`FormSelect` del kit y `useSaveProduct().mutateAsync` en el `handleSubmit`. Si llega el parámetro `sku` desde el escáner, úsalo como valor por defecto.
+</Callout>
+
+## Qué has aprendido
+
+- **Modelado relacional** con claves foráneas, restricciones `CHECK` e índices.
+- **Transacciones** para mantener la consistencia entre tablas y errores de dominio tipados (`InsufficientStockError`).
+- **TanStack Query sobre datos locales**: caché e invalidación también fuera de las APIs.
+- **Flujos con cámara**: escanear, buscar y navegar a crear o editar.
+- **El kit de componentes** aplicado a una app real.
+
+## Mejoras y funcionalidades adicionales
+
+<Checklist
+  items={[
+    'Notificación local cuando un producto baja del mínimo',
+    'Exportar el inventario a CSV con expo-sharing',
+    'Fotos de productos con expo-image-picker',
+    'Varios almacenes y traspasos entre ellos',
+    'Valoración del inventario (stock × coste) y gráficos',
+    'Sincronización con un backend para varios dispositivos',
+    'Roles: solo administradores pueden ajustar stock',
+    'Lectura continua de códigos para recuentos rápidos',
+  ]}
+/>
