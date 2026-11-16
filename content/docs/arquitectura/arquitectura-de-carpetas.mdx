@@ -1,0 +1,157 @@
+---
+title: Arquitectura de carpetas
+description: Organizar un proyecto Expo que escale. Estructura por funcionalidades, rutas delgadas, código compartido y reglas de dependencias entre módulos.
+difficulty: intermedio
+time: 18
+prerequisites:
+  - expo/estructura-del-proyecto
+related:
+  - arquitectura/separacion-de-responsabilidades
+  - sistema-de-componentes/organizacion-de-componentes
+  - arquitectura/servicios-y-repositorios
+resources:
+  - title: Expo Router — Directorio src
+    url: https://docs.expo.dev/router/reference/src-directory/
+  - title: React — Pensar en React
+    url: https://react.dev/learn/thinking-in-react
+keywords: [arquitectura, carpetas, estructura, features, módulos, feature folders, rutas delgadas, dependencias, monolito modular]
+---
+
+## Introducción conceptual
+
+Al principio cualquier estructura funciona. El problema aparece con 40 pantallas y cinco personas trabajando: ¿dónde está la lógica del carrito?, ¿qué se rompe si cambio este hook? Una buena arquitectura de carpetas responde a dos preguntas: **dónde encuentro algo** y **qué puede depender de qué**.
+
+Hay dos grandes enfoques:
+
+- **Por tipo** (`components/`, `hooks/`, `services/`): sencillo al principio, pero la lógica de una misma funcionalidad queda repartida por todo el proyecto.
+- **Por funcionalidad** (`features/cart/`, `features/orders/`): todo lo de una funcionalidad vive junto. Escala mejor y es el enfoque que recomendamos a partir de un tamaño mediano.
+
+<Overview
+  purpose="Organizar el código para que crezca sin volverse inmanejable y cada persona sepa dónde trabajar."
+  importance="La estructura condiciona el acoplamiento: si todo puede importar de todo, cualquier cambio tiene efectos inesperados."
+  when="Al iniciar un proyecto que va a crecer, o cuando encontrar código empieza a costar tiempo."
+  problem="Evita carpetas 'components' con cien archivos sin relación y dependencias circulares entre funcionalidades."
+/>
+
+## Explicación visual
+
+<Layers
+  caption="Las capas superiores pueden importar de las inferiores, nunca al revés."
+  layers={[
+    { title: 'src/app', desc: 'Rutas (delgadas)', items: ['Componen pantallas', 'Leen parámetros', 'Sin lógica de negocio'], tone: 'brand' },
+    { title: 'src/features/*', desc: 'Funcionalidades', items: ['cart', 'orders', 'auth', 'profile'] },
+    { title: 'src/components', desc: 'UI compartida', items: ['ui/button', 'ui/input', 'feedback/empty-state'] },
+    { title: 'src/lib · src/config', desc: 'Infraestructura', items: ['http-client', 'storage', 'query-client', 'env'], tone: 'muted' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+Estructura recomendada para una app de comercio de tamaño medio:
+
+```tree title="src/"
+src/
+  app/ # Solo rutas de Expo Router
+    _layout.tsx
+    (auth)/
+      login.tsx
+    (app)/
+      _layout.tsx
+      index.tsx
+      cart.tsx
+      orders/
+        index.tsx
+        [id].tsx
+  features/
+    cart/
+      components/
+        cart-item.tsx
+        cart-summary.tsx
+      hooks/
+        use-cart-totals.ts
+      store/
+        cart-store.ts
+      types.ts
+      index.ts # API pública de la funcionalidad *
+    orders/
+      api/
+        orders-service.ts
+        order-keys.ts
+      components/
+        order-card.tsx
+        order-status-badge.tsx
+      hooks/
+        use-orders.ts
+        use-order.ts
+      screens/
+        orders-screen.tsx
+        order-detail-screen.tsx
+      types.ts
+      index.ts
+    auth/
+      ...
+  components/ # UI compartida, sin lógica de negocio
+    ui/
+      button.tsx
+      input.tsx
+    feedback/
+      empty-state.tsx
+      error-state.tsx
+  lib/ # Infraestructura y utilidades genéricas
+    http-client.ts
+    query-client.ts
+    format.ts
+  config/
+    env.ts
+  constants/
+    routes.ts
+    storage-keys.ts
+```
+
+Las rutas son delgadas: delegan en la pantalla de la funcionalidad.
+
+```tsx title="src/app/(app)/orders/[id].tsx"
+import { useLocalSearchParams } from 'expo-router';
+import { OrderDetailScreen } from '@/features/orders';
+
+export default function OrderDetailRoute() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  return <OrderDetailScreen orderId={id} />;
+}
+```
+
+Cada funcionalidad expone solo lo que otras partes necesitan:
+
+```ts title="src/features/orders/index.ts"
+// API pública del módulo de pedidos
+export { OrdersScreen } from './screens/orders-screen';
+export { OrderDetailScreen } from './screens/order-detail-screen';
+export { useOrders } from './hooks/use-orders';
+export type { Order, OrderStatus } from './types';
+// orders-service, order-keys y los componentes internos NO se exportan
+```
+
+## Explicación del código
+
+- **`src/app` solo compone**: lee parámetros de la URL y renderiza una pantalla de `features/`. Así las rutas se pueden reorganizar sin tocar la lógica, y las pantallas se pueden testear sin el router.
+- **Cada `features/*` agrupa todo lo suyo**: componentes, hooks, llamadas a la API, estado y tipos. Para borrar o refactorizar una funcionalidad, trabajas en una sola carpeta.
+- **`index.ts` define la API pública**: otras funcionalidades importan de `@/features/orders`, nunca de `@/features/orders/api/orders-service`. Esto limita el acoplamiento y permite cambiar el interior sin romper a nadie.
+- **`components/` compartidos** no conocen el negocio: un `Button` no sabe qué es un pedido.
+- **`lib/` y `config/`** contienen infraestructura: cliente HTTP, configuración de TanStack Query, formateadores.
+
+## Buenas prácticas
+
+- **Reglas de dependencia claras**: `app → features → components/lib`. Una funcionalidad no importa los internos de otra.
+- **Empieza simple**: en un proyecto pequeño, carpetas por tipo están bien. Migra a funcionalidades cuando una carpeta supere unos 15–20 archivos.
+- **Nombres en kebab-case** para archivos (`order-card.tsx`), como la plantilla de Expo.
+- **Automatiza las reglas** con ESLint (`no-restricted-imports` o `eslint-plugin-boundaries`) cuando el equipo crezca.
+
+### Errores comunes
+
+- Lógica de negocio en `src/app/*.tsx`: las rutas crecen y no se pueden reutilizar ni testear.
+- *Barrel files* enormes en `components/index.ts` que reexportan todo: empeoran el tiempo de arranque y crean ciclos.
+- Carpetas `utils/` o `helpers/` que acumulan funciones de todo tipo sin dueño.
+
+### Cuándo usar otra solución
+
+Si varias apps comparten funcionalidades o UI, pasa a un **monorepo** con paquetes (`packages/ui`, `packages/api-client`). Lo vemos en [Biblioteca interna](/docs/arquitectura/biblioteca-interna) y en [Biblioteca compartida](/docs/sistema-de-componentes/biblioteca-compartida).

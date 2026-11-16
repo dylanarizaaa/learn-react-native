@@ -1,0 +1,163 @@
+---
+title: Custom Hooks en la arquitectura
+sidebarTitle: Custom Hooks
+description: Hooks de funcionalidad como capa de aplicación. Factorías de query keys, hooks de lectura y escritura, composición de hooks y tests con renderHook.
+difficulty: avanzado
+time: 20
+prerequisites:
+  - react-typescript/hooks-personalizados
+  - datos/tanstack-query
+related:
+  - arquitectura/servicios-y-repositorios
+  - arquitectura/componentes-contenedores
+  - calidad/testing
+resources:
+  - title: TanStack Query — Query keys
+    url: https://tanstack.com/query/latest/docs/framework/react/guides/query-keys
+  - title: React Native Testing Library — renderHook
+    url: https://oss.callstack.com/react-native-testing-library/docs/api/misc/render-hook
+keywords: [custom hooks, hooks de funcionalidad, capa de aplicación, query keys, useQuery, useMutation, renderHook, testing hooks]
+---
+
+## Introducción conceptual
+
+En [Hooks personalizados](/docs/react-typescript/hooks-personalizados) vimos hooks genéricos (`useDebouncedValue`, `useToggle`). En la arquitectura de una app, los hooks cumplen un papel más importante: son la **capa de aplicación** entre la interfaz y los datos.
+
+Cada funcionalidad expone hooks con nombres del negocio (`useOrders`, `useCreateOrder`, `useCartTotals`). Las pantallas los usan sin saber si los datos vienen de una API REST, de SQLite o de un store: esa decisión queda encapsulada.
+
+<Overview
+  purpose="Definir la API de cada funcionalidad para la interfaz: qué datos ofrece y qué acciones permite."
+  importance="Desacopla las pantallas de la infraestructura y concentra la caché, la invalidación y las reglas de cada operación."
+  when="En cada funcionalidad con datos o acciones: listados, detalles, formularios que guardan, totales calculados."
+  problem="Evita que cada pantalla repita queryKeys, invalidaciones y transformaciones, con el riesgo de hacerlo de forma distinta."
+/>
+
+## Explicación visual
+
+<Layers
+  layers={[
+    { title: 'Pantallas', desc: 'Consumen hooks', items: ['ProductsScreen', 'ProductDetailScreen'], tone: 'muted' },
+    { title: 'Hooks de funcionalidad', desc: 'API de la feature', items: ['useProducts(filters)', 'useProduct(id)', 'useUpdateStock()'], tone: 'brand' },
+    { title: 'Query keys', desc: 'Identidad de la caché', items: ['productKeys.list(filters)', 'productKeys.detail(id)'] },
+    { title: 'Servicios', desc: 'Acceso a datos', items: ['productsService.list', 'productsService.updateStock'] },
+  ]}
+/>
+
+## Ejemplo práctico
+
+<CodeTabs>
+
+```ts title="features/products/api/product-keys.ts"
+// Factoría de query keys: una sola fuente para leer e invalidar
+export type ProductFilters = { search?: string; category?: string };
+
+export const productKeys = {
+  all: ['products'] as const,
+  lists: () => [...productKeys.all, 'list'] as const,
+  list: (filters: ProductFilters) => [...productKeys.lists(), filters] as const,
+  details: () => [...productKeys.all, 'detail'] as const,
+  detail: (id: string) => [...productKeys.details(), id] as const,
+};
+```
+
+```ts title="features/products/hooks/use-products.ts"
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { productsService } from '../api/products-service';
+import { productKeys, type ProductFilters } from '../api/product-keys';
+
+export function useProducts(filters: ProductFilters) {
+  return useQuery({
+    queryKey: productKeys.list(filters),
+    queryFn: () => productsService.list(filters),
+    placeholderData: keepPreviousData, // mantiene la lista anterior mientras llega la nueva
+    staleTime: 60_000,
+  });
+}
+
+export function useProduct(id: string) {
+  return useQuery({
+    queryKey: productKeys.detail(id),
+    queryFn: () => productsService.get(id),
+  });
+}
+```
+
+```ts title="features/products/hooks/use-update-stock.ts"
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { productsService } from '../api/products-service';
+import { productKeys } from '../api/product-keys';
+import type { Product } from '../types';
+
+export function useUpdateStock() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ id, stock }: { id: string; stock: number }) => productsService.updateStock(id, stock),
+    onSuccess: (updated: Product) => {
+      // Actualiza el detalle en caché sin otra petición
+      queryClient.setQueryData(productKeys.detail(updated.id), updated);
+      // Marca como obsoletas todas las listas (cualquier filtro)
+      queryClient.invalidateQueries({ queryKey: productKeys.lists() });
+    },
+  });
+}
+```
+
+```ts title="features/products/hooks/use-low-stock.ts"
+import { useProducts } from './use-products';
+
+/** Hook compuesto: reutiliza useProducts y añade una regla de negocio */
+export function useLowStock(threshold = 5) {
+  return useProducts({}).data?.filter((p) => p.stock <= threshold) ?? [];
+}
+```
+
+```tsx title="features/products/hooks/use-products.test.tsx"
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { renderHook, waitFor } from '@testing-library/react-native';
+import type { ReactNode } from 'react';
+import { productsService } from '../api/products-service';
+import { useProducts } from './use-products';
+
+jest.mock('../api/products-service');
+
+function wrapper({ children }: { children: ReactNode }) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+}
+
+test('devuelve los productos filtrados', async () => {
+  jest.mocked(productsService.list).mockResolvedValue([{ id: '1', name: 'Café', stock: 3, price: 10 }]);
+
+  const { result } = await renderHook(() => useProducts({ search: 'caf' }), { wrapper });
+
+  await waitFor(() => expect(result.current.isSuccess).toBe(true));
+  expect(productsService.list).toHaveBeenCalledWith({ search: 'caf' });
+  expect(result.current.data).toHaveLength(1);
+});
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **La factoría `productKeys`** genera claves jerárquicas. Como `['products', 'list', { search }]` empieza por `['products', 'list']`, invalidar `productKeys.lists()` afecta a **todas** las listas, sean cuales sean sus filtros.
+- **`keepPreviousData`** evita que la lista se vacíe y muestre un spinner cada vez que el usuario escribe en el buscador.
+- **`setQueryData`** actualiza la caché del detalle con la respuesta de la mutación, y **`invalidateQueries`** obliga a refrescar las listas la próxima vez que se usen.
+- **`useLowStock`** compone otro hook: la regla "stock bajo" queda definida en un único lugar.
+- **El test** sustituye el servicio con `jest.mock` y usa un `QueryClient` nuevo por test, sin reintentos. `renderHook` también es asíncrono en React Native Testing Library 14.
+
+## Buenas prácticas
+
+- **Nombra los hooks con el lenguaje del negocio** (`useApproveInvoice`), no con el técnico (`usePostInvoiceStatus`).
+- **Centraliza las query keys** por funcionalidad; nunca escribas `['products', id]` a mano en una pantalla.
+- **Los hooks devuelven el resultado de TanStack Query** (o un objeto equivalente) para que las pantallas manejen `isPending`/`isError` de forma uniforme.
+
+### Errores comunes
+
+- Hooks que devuelven datos y además navegan o muestran alertas: mezclan capa de aplicación y presentación. Devuelve estado y deja que la pantalla decida.
+- Duplicar la misma consulta con claves ligeramente distintas: la caché no se comparte.
+
+### Cuándo usar otra solución
+
+Para estado del cliente que no viene del servidor (carrito, filtros persistentes), los hooks pueden envolver un [store de Zustand](/docs/arquitectura/estado-global-zustand). Para el acceso a datos en sí, usa [servicios y repositorios](/docs/arquitectura/servicios-y-repositorios).

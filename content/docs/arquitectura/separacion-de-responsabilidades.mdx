@@ -1,0 +1,188 @@
+---
+title: Separación de responsabilidades
+description: Dividir una pantalla en capas (UI, estado, dominio y datos). Refactorización paso a paso de un componente que lo hace todo.
+difficulty: intermedio
+time: 20
+prerequisites:
+  - arquitectura/arquitectura-de-carpetas
+  - react-typescript/hooks-personalizados
+related:
+  - arquitectura/componentes-de-presentacion
+  - arquitectura/componentes-contenedores
+  - sistema-de-componentes/logica-y-presentacion
+resources:
+  - title: React — Mantener los componentes puros
+    url: https://react.dev/learn/keeping-components-pure
+  - title: TanStack Query — Visión general
+    url: https://tanstack.com/query/latest/docs/framework/react/overview
+keywords: [separación de responsabilidades, capas, SRP, dominio, lógica de negocio, refactorización, testabilidad]
+---
+
+## Introducción conceptual
+
+Una pantalla típica mezcla muchas responsabilidades: pedir datos a la API, transformar la respuesta, calcular totales, gestionar estados de carga, validar entradas y dibujar la interfaz. Cuando todo vive en un componente de 400 líneas, cualquier cambio es arriesgado y casi nada se puede testear por separado.
+
+Separar responsabilidades significa que **cada pieza tiene una sola razón para cambiar**:
+
+| Capa | Responsabilidad | Ejemplo |
+| --- | --- | --- |
+| Presentación | Cómo se ve | `ExpenseList`, `ExpenseRow` |
+| Estado / aplicación | Qué datos y acciones tiene la pantalla | `useExpenses()` |
+| Dominio | Reglas del negocio (funciones puras) | `groupByCategory`, `monthlyTotal` |
+| Datos | De dónde vienen los datos | `expensesService.list()` |
+
+<Overview
+  purpose="Repartir el código en piezas con una única responsabilidad, fáciles de entender, cambiar y probar."
+  importance="Reduce el coste de cada cambio y permite que varias personas trabajen en la misma funcionalidad sin conflictos."
+  when="En cuanto un componente mezcla acceso a datos, reglas de negocio y UI, o supera unas 150 líneas."
+  problem="Evita componentes gigantes donde un cambio visual rompe un cálculo o una llamada a la API."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'Servicio', desc: 'fetch / SQLite' },
+    { title: 'Hook', desc: 'useQuery + acciones' },
+    { title: 'Dominio', desc: 'Funciones puras', tone: 'brand' },
+    { title: 'Pantalla', desc: 'Conecta hook y UI' },
+    { title: 'Componentes', desc: 'Solo presentación' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+**Antes**: un componente que lo hace todo.
+
+```tsx title="Antes: src/app/gastos.tsx" collapse
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, FlatList, Text, View } from 'react-native';
+
+export default function ExpensesScreen() {
+  const [data, setData] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch('https://api.example.com/expenses')
+      .then((r) => r.json())
+      .then((json) => setData(json))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return <ActivityIndicator />;
+
+  const total = data.reduce((sum, e) => sum + e.amount, 0);
+  const byCategory: Record<string, number> = {};
+  data.forEach((e) => (byCategory[e.category] = (byCategory[e.category] ?? 0) + e.amount));
+
+  return (
+    <View>
+      <Text>Total: ${total.toFixed(2)}</Text>
+      {Object.entries(byCategory).map(([c, v]) => (
+        <Text key={c}>
+          {c}: ${v.toFixed(2)}
+        </Text>
+      ))}
+      <FlatList data={data} renderItem={({ item }) => <Text>{item.description}</Text>} />
+    </View>
+  );
+}
+```
+
+**Después**: cada capa en su lugar.
+
+<CodeTabs>
+
+```ts title="features/expenses/api/expenses-service.ts"
+import { httpClient } from '@/lib/http-client';
+import { expenseListSchema, type Expense } from '../types';
+
+export const expensesService = {
+  async list(): Promise<Expense[]> {
+    const json = await httpClient.get('/expenses');
+    return expenseListSchema.parse(json); // valida en el borde
+  },
+};
+```
+
+```ts title="features/expenses/domain/expenses.ts"
+import type { Expense } from '../types';
+
+// Funciones puras: sin React, sin red. Triviales de testear.
+export function totalAmount(expenses: Expense[]) {
+  return expenses.reduce((sum, e) => sum + e.amount, 0);
+}
+
+export function totalsByCategory(expenses: Expense[]) {
+  const totals = new Map<string, number>();
+  for (const e of expenses) totals.set(e.category, (totals.get(e.category) ?? 0) + e.amount);
+  return [...totals.entries()].map(([category, amount]) => ({ category, amount })).sort((a, b) => b.amount - a.amount);
+}
+```
+
+```ts title="features/expenses/hooks/use-expenses.ts"
+import { useQuery } from '@tanstack/react-query';
+import { expensesService } from '../api/expenses-service';
+import { totalAmount, totalsByCategory } from '../domain/expenses';
+
+export function useExpenses() {
+  return useQuery({
+    queryKey: ['expenses'],
+    queryFn: expensesService.list,
+    // select deriva datos del dominio y los memoiza
+    select: (expenses) => ({
+      expenses,
+      total: totalAmount(expenses),
+      byCategory: totalsByCategory(expenses),
+    }),
+  });
+}
+```
+
+```tsx title="features/expenses/screens/expenses-screen.tsx"
+import { ErrorState } from '@/components/feedback/error-state';
+import { LoadingState } from '@/components/feedback/loading-state';
+import { ExpenseSummary } from '../components/expense-summary';
+import { ExpenseList } from '../components/expense-list';
+import { useExpenses } from '../hooks/use-expenses';
+
+export function ExpensesScreen() {
+  const { data, isPending, isError, refetch } = useExpenses();
+
+  if (isPending) return <LoadingState />;
+  if (isError) return <ErrorState onRetry={refetch} />;
+
+  return (
+    <ExpenseList
+      expenses={data.expenses}
+      header={<ExpenseSummary total={data.total} byCategory={data.byCategory} />}
+    />
+  );
+}
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **Servicio**: sabe hablar con la API y valida la respuesta con Zod. Si cambias de REST a GraphQL, solo cambia este archivo.
+- **Dominio**: funciones puras con las reglas del negocio. No importan React ni hacen peticiones, así que un test unitario de tres líneas cubre cada caso.
+- **Hook**: orquesta. Usa TanStack Query para caché y estados, y `select` para derivar los datos del dominio sin recalcular en cada render.
+- **Pantalla**: decide qué mostrar según el estado (cargando, error, datos) y conecta el hook con componentes de presentación.
+- **Componentes** (`ExpenseList`, `ExpenseSummary`): reciben datos por props y los dibujan. Se pueden reutilizar y probar con datos de ejemplo.
+
+## Buenas prácticas
+
+- **Funciones puras siempre que puedas**: son el código más fácil de testear y de reutilizar.
+- **Valida los datos en el borde** (servicios) para que el resto de la app confíe en los tipos.
+- **No sobrediseñes**: en una pantalla de 50 líneas, separar en cinco archivos no aporta. Divide cuando la complejidad lo justifique.
+
+### Errores comunes
+
+- Mover la lógica a un hook gigante que hace lo mismo que el componente gigante: separa también el dominio.
+- Componentes de presentación que llaman a servicios "solo esta vez".
+- `any` en las respuestas de la API: los errores de forma aparecen en la UI, lejos de su causa.
+
+### Cuándo usar otra solución
+
+Para apps muy grandes con reglas de negocio complejas, puedes formalizar las capas con arquitectura hexagonal o *clean architecture* (puertos y adaptadores). En la mayoría de apps móviles, la separación servicio → hook → pantalla → componentes es suficiente.

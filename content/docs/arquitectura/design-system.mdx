@@ -1,0 +1,139 @@
+---
+title: Design System
+description: Qué es un design system, sus capas (tokens, primitivas, componentes, patrones), cómo implementarlo en React Native y cómo mantenerlo vivo en un equipo.
+difficulty: avanzado
+time: 20
+prerequisites:
+  - arquitectura/componentes-compartidos
+  - estilos/temas-personalizados
+related:
+  - sistema-de-componentes/temas-y-variantes
+  - arquitectura/biblioteca-interna
+  - sistema-de-componentes/vision-general
+resources:
+  - title: Material Design 3
+    url: https://m3.material.io/
+  - title: Apple Human Interface Guidelines
+    url: https://developer.apple.com/design/human-interface-guidelines/
+  - title: shadcn/ui — Filosofía
+    url: https://ui.shadcn.com/docs
+keywords: [design system, tokens, primitivas, componentes, patrones, tipografía, espaciado, documentación, gobernanza]
+---
+
+## Introducción conceptual
+
+Un <Term slug="design-system">design system</Term> es el conjunto de **decisiones de diseño codificadas**: qué colores existen y para qué, qué escala de espaciados se usa, cómo es un botón primario y cuándo se usa un modal. No es solo una librería de componentes: incluye los **tokens**, las **reglas de uso** y la **documentación**.
+
+Su objetivo es que diseño y desarrollo hablen el mismo idioma y que cualquier pantalla nueva sea consistente sin esfuerzo.
+
+<Overview
+  purpose="Codificar las decisiones visuales y de interacción en piezas reutilizables con reglas claras."
+  importance="Acelera el desarrollo, mantiene la consistencia y permite cambios globales (rebranding, modo oscuro) con poco esfuerzo."
+  when="Cuando hay varias personas creando pantallas, varias apps de la misma marca o la consistencia empieza a degradarse."
+  problem="Evita cada pantalla con su propio gris, su propio radio y su propio botón ligeramente distinto."
+/>
+
+## Explicación visual
+
+<Layers
+  layers={[
+    { title: 'Patrones', desc: 'Composiciones de pantalla', items: ['Formulario de login', 'Lista con búsqueda', 'Checkout'], tone: 'muted' },
+    { title: 'Componentes', desc: 'Con variantes', items: ['Button', 'Input', 'Card', 'Modal', 'Select'] },
+    { title: 'Primitivas', desc: 'Bloques básicos', items: ['Box', 'Text', 'Stack', 'Icon'] },
+    { title: 'Tokens', desc: 'Decisiones atómicas', items: ['color.primary', 'space.4', 'radius.lg', 'font.body'], tone: 'brand' },
+  ]}
+  caption="Cada capa solo usa las capas inferiores."
+/>
+
+| Token | Escala recomendada |
+| --- | --- |
+| Espaciado | 4, 8, 12, 16, 20, 24, 32, 40, 48 (múltiplos de 4) |
+| Tipografía | 12, 14, 16, 18, 20, 24, 30, 36 |
+| Radio | 6, 10, 14, 20, completo |
+| Colores | Semánticos: background, foreground, primary, muted, border, danger, success, warning |
+
+## Ejemplo práctico
+
+Una primitiva `Text` con variantes tipográficas: el componente más usado de cualquier design system.
+
+```tsx title="src/components/ui/text.tsx"
+import { cva, type VariantProps } from 'class-variance-authority';
+import { Text as RNText, type TextProps as RNTextProps } from 'react-native';
+import { cn } from '@/lib/cn';
+
+const textVariants = cva('text-foreground', {
+  variants: {
+    variant: {
+      display: 'text-4xl font-bold tracking-tight',
+      title: 'text-2xl font-bold',
+      heading: 'text-lg font-semibold',
+      body: 'text-base leading-6',
+      caption: 'text-sm text-muted-foreground',
+      label: 'text-sm font-medium',
+    },
+    tone: {
+      default: '',
+      muted: 'text-muted-foreground',
+      primary: 'text-primary',
+      danger: 'text-danger',
+    },
+  },
+  defaultVariants: { variant: 'body', tone: 'default' },
+});
+
+type TextProps = RNTextProps & VariantProps<typeof textVariants> & { className?: string };
+
+const HEADING_VARIANTS = new Set(['display', 'title', 'heading']);
+
+export function Text({ variant, tone, className, ...props }: TextProps) {
+  return (
+    <RNText
+      accessibilityRole={HEADING_VARIANTS.has(variant ?? '') ? 'header' : undefined}
+      className={cn(textVariants({ variant, tone }), className)}
+      {...props}
+    />
+  );
+}
+```
+
+```ts title="src/lib/cn.ts"
+import { clsx, type ClassValue } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+
+/** Combina clases y resuelve conflictos de Tailwind (la última gana) */
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+```
+
+Uso consistente en cualquier pantalla:
+
+```tsx
+<Text variant="title">Resumen del mes</Text>
+<Text variant="caption">Actualizado hace 5 minutos</Text>
+<Text tone="danger">Pago rechazado</Text>
+```
+
+## Explicación del código
+
+- **`cva`** (class-variance-authority) define un mapa de variantes a clases. El tipo `VariantProps` deriva automáticamente las props `variant` y `tone` con sus valores válidos.
+- **Tokens semánticos** (`text-foreground`, `text-muted-foreground`, `text-primary`) vienen del tema ([Temas personalizados](/docs/estilos/temas-personalizados)): el componente funciona en cualquier modo y marca.
+- **`cn`** combina clases con `clsx` (condicionales) y `tailwind-merge` (si pasas `className="text-lg"`, sustituye al `text-base` de la variante en lugar de duplicarlo).
+- **`accessibilityRole="header"`** en las variantes de título ayuda a los lectores de pantalla a navegar por encabezados.
+
+## Buenas prácticas
+
+- **Empieza por los tokens**, no por los componentes: sin tokens, cada componente inventa sus valores.
+- **Documenta el "cuándo"**: cuándo usar un modal o una pantalla, un botón primario o secundario.
+- **Un catálogo vivo** (una ruta interna `/catalogo` en desarrollo o Storybook) con todos los componentes y variantes.
+- **Gobernanza ligera**: una persona o grupo revisa nuevos componentes para evitar duplicados.
+
+### Errores comunes
+
+- Crear el design system "completo" antes de tener pantallas reales: se diseñan componentes que nadie usa.
+- Componentes que aceptan cualquier color o tamaño arbitrario: el sistema deja de restringir.
+- No sincronizar con el equipo de diseño: los tokens del código y los de Figma divergen.
+
+### Cuándo usar otra solución
+
+Si no tienes equipo de diseño o necesitas avanzar rápido, parte de una base existente (por ejemplo, componentes al estilo shadcn adaptados a React Native) y personaliza los tokens. En la [sección especial](/docs/sistema-de-componentes/vision-general) construimos uno paso a paso.

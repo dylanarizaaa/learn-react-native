@@ -1,0 +1,138 @@
+---
+title: Creación de una biblioteca interna de componentes
+sidebarTitle: Biblioteca interna
+description: Cuándo extraer tus componentes a un paquete, cómo definir su API pública, dependencias peer, versionado semántico, documentación y gobernanza.
+difficulty: avanzado
+time: 18
+prerequisites:
+  - arquitectura/design-system
+  - arquitectura/componentes-reutilizables
+related:
+  - sistema-de-componentes/biblioteca-compartida
+  - calidad/dependencias
+  - sistema-de-componentes/organizacion-de-componentes
+resources:
+  - title: Expo — Monorepos
+    url: https://docs.expo.dev/guides/monorepos/
+  - title: Semantic Versioning
+    url: https://semver.org/lang/es/
+  - title: Changesets
+    url: https://github.com/changesets/changesets
+keywords: [biblioteca interna, paquete, monorepo, peerDependencies, exports, semver, changesets, versionado, gobernanza, storybook]
+---
+
+## Introducción conceptual
+
+Cuando dos o más apps de la empresa repiten los mismos componentes, copiar archivos entre repositorios deja de escalar: los arreglos no se propagan y cada copia evoluciona por su lado. La solución es una **biblioteca interna**: un paquete (`@miempresa/ui`) con el design system, versionado y consumido por todas las apps.
+
+Este tema trata las **decisiones** (qué incluir, cómo versionar, cómo gobernarla). La implementación paso a paso en un monorepo con Expo y NativeWind está en [Biblioteca compartida](/docs/sistema-de-componentes/biblioteca-compartida).
+
+<Overview
+  purpose="Compartir componentes, tokens y utilidades entre varias apps con una única fuente de verdad."
+  importance="Las correcciones de accesibilidad o los cambios de marca llegan a todas las apps con una actualización de versión."
+  when="Con dos o más apps de la misma organización, o un design system estable que otros equipos deben adoptar."
+  problem="Evita copias divergentes de los mismos componentes en distintos repositorios."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'Componentes en la app', desc: 'src/components/ui' },
+    { title: '¿Otra app los necesita?', desc: 'Y la API es estable', tone: 'muted' },
+    { title: 'Paquete @org/ui', desc: 'Monorepo o registro privado', tone: 'brand' },
+    { title: 'Versiones semver', desc: 'Changelog y migraciones' },
+  ]}
+/>
+
+| Incluir en la biblioteca | Dejar en la app |
+| --- | --- |
+| Tokens, tema, utilidades de estilo (`cn`) | Pantallas y flujos |
+| Primitivas (`Text`, `Stack`, `Icon`) | Componentes con lógica de negocio |
+| Componentes genéricos (`Button`, `Input`, `Modal`) | Llamadas a APIs concretas |
+| Hooks de UI genéricos (`useDisclosure`) | Stores de la app |
+
+## Ejemplo práctico
+
+El `package.json` de una biblioteca interna, con su API pública y dependencias *peer*:
+
+```json title="packages/ui/package.json"
+{
+  "name": "@miempresa/ui",
+  "version": "2.3.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./tailwind-preset": "./tailwind-preset.js"
+  },
+  "files": ["src", "tailwind-preset.js"],
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "*",
+    "nativewind": "^4.2.0",
+    "react-native-reanimated": "*"
+  },
+  "dependencies": {
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^3.7.0"
+  }
+}
+```
+
+```ts title="packages/ui/src/index.ts"
+// API pública: solo lo que exportamos aquí está soportado
+export { Button, type ButtonProps } from './components/button';
+export { Input, type InputProps } from './components/input';
+export { Card } from './components/card';
+export { Text } from './components/text';
+export { cn } from './lib/cn';
+// Los archivos internos (helpers, estilos privados) no se exportan
+```
+
+Un registro de cambios generado con Changesets:
+
+```md title="packages/ui/CHANGELOG.md"
+## 2.3.0
+
+### Minor Changes
+
+- Button: nueva variante `ghost` y prop `loading` con indicador accesible.
+
+### Patch Changes
+
+- Input: el mensaje de error ahora se anuncia en lectores de pantalla.
+
+## 2.0.0
+
+### Major Changes
+
+- Button: la prop `type` se renombra a `variant`. Migración: reemplaza `type="primary"` por `variant="primary"`.
+```
+
+## Explicación del código
+
+- **`exports`** define la API pública: las apps solo pueden importar `@miempresa/ui` y `@miempresa/ui/tailwind-preset`. Los archivos internos quedan protegidos y puedes reorganizarlos sin romper a nadie.
+- **`peerDependencies`** declara librerías que **la app** debe proporcionar (`react`, `react-native`, `nativewind`). Así no se instalan dos copias de React Native, lo que causaría errores en tiempo de ejecución.
+- **`dependencies`** son utilidades propias de la biblioteca que no comparten estado con la app.
+- **Un preset de Tailwind** exportado permite que todas las apps compartan los mismos tokens con una línea en su `tailwind.config.js`.
+- **Versionado semántico**: `MAJOR` rompe compatibilidad (con guía de migración), `MINOR` añade funcionalidad compatible, `PATCH` corrige errores. Changesets genera el changelog a partir de pequeñas notas en cada PR.
+
+## Buenas prácticas
+
+- **Extrae cuando la API sea estable**: una biblioteca con cambios incompatibles cada semana es peor que copiar archivos.
+- **Documentación y catálogo** (Storybook para React Native o una app de ejemplo) con todas las variantes.
+- **Tests de los componentes** en la propia biblioteca: accesibilidad, variantes y estados.
+- **Dueño claro**: un equipo responsable de revisar contribuciones y publicar versiones.
+
+### Errores comunes
+
+- Meter lógica de negocio de una app en la biblioteca "porque otra app quizá la use".
+- Declarar `react-native` como `dependency` en lugar de `peerDependency`: duplica el módulo.
+- Publicar cambios incompatibles como versión menor.
+
+### Cuándo usar otra solución
+
+Si solo hay una app, `src/components/ui` con buenas fronteras es suficiente. Si las apps viven en repositorios separados, publica el paquete en un registro privado (GitHub Packages, npm privado) en lugar de un monorepo.

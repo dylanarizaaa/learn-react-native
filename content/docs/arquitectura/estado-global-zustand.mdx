@@ -1,0 +1,182 @@
+---
+title: Estado global con Zustand
+description: Stores tipados con Zustand 5, selectores, useShallow, acciones, persistencia en el dispositivo y cuándo elegir Zustand frente a Context o TanStack Query.
+difficulty: intermedio
+time: 22
+prerequisites:
+  - react-typescript/context-api
+related:
+  - introduccion/mapa-del-ecosistema
+  - proyectos/ecommerce
+  - datos/almacenamiento-seguro
+resources:
+  - title: Zustand — Documentación
+    url: https://zustand.docs.pmnd.rs/
+  - title: Zustand — persist
+    url: https://zustand.docs.pmnd.rs/integrations/persisting-store-data
+  - title: Zustand — TypeScript
+    url: https://zustand.docs.pmnd.rs/guides/typescript
+keywords: [zustand, estado global, store, create, selectores, useShallow, persist, createJSONStorage, AsyncStorage, slices]
+---
+
+## Introducción conceptual
+
+<Term slug="zustand">Zustand</Term> es una librería mínima de estado global. Un <Term slug="store">store</Term> es un hook creado con `create()` que contiene **estado y acciones**. Cada componente se suscribe solo a la parte que necesita mediante un **selector**, así que un cambio en el carrito no re-renderiza el componente que solo muestra el tema.
+
+Frente a Context, Zustand evita los renders en cascada y no necesita proveedores. Frente a Redux, tiene mucho menos código. Y es ideal para **estado del cliente**; los datos del servidor siguen siendo cosa de TanStack Query.
+
+<Overview
+  purpose="Compartir estado del cliente entre pantallas con actualizaciones precisas y sin proveedores."
+  importance="Mantiene el rendimiento en estado que cambia a menudo y simplifica la lógica de actualización con acciones."
+  when="Carrito de compras, filtros persistentes, preferencias, borradores de formularios largos, estado de un flujo de varios pasos."
+  problem="Evita el prop drilling, los re-renders masivos de Context y el código repetitivo de otras soluciones."
+/>
+
+## Explicación visual
+
+<Columns cols={3}>
+  <Column title="useState">
+    Estado local de un componente.
+  </Column>
+  <Column title="Context">
+    Valores que cambian poco y muchos leen: sesión, tema, idioma.
+  </Column>
+  <Column title="Zustand" tone="brand">
+    Estado global que cambia a menudo y del que cada componente usa una parte.
+  </Column>
+</Columns>
+
+<Flow
+  steps={[
+    { title: 'Componente', desc: 'useCartStore(s => s.count)' },
+    { title: 'Selector', desc: 'Solo escucha count', tone: 'brand' },
+    { title: 'Acción', desc: 'addItem(product)' },
+    { title: 'Store', desc: 'Actualiza el estado' },
+    { title: 'Re-render', desc: 'Solo si count cambió' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+```bash
+npx expo install zustand @react-native-async-storage/async-storage
+```
+
+Un carrito persistente con acciones y valores derivados:
+
+```ts title="src/features/cart/store/cart-store.ts"
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { create } from 'zustand';
+import { createJSONStorage, persist } from 'zustand/middleware';
+
+export type CartItem = { productId: string; name: string; price: number; quantity: number };
+
+type CartState = {
+  items: CartItem[];
+  addItem: (product: { id: string; name: string; price: number }) => void;
+  setQuantity: (productId: string, quantity: number) => void;
+  removeItem: (productId: string) => void;
+  clear: () => void;
+};
+
+export const useCartStore = create<CartState>()(
+  persist(
+    (set) => ({
+      items: [],
+      addItem: (product) =>
+        set((state) => {
+          const existing = state.items.find((i) => i.productId === product.id);
+          if (existing) {
+            return {
+              items: state.items.map((i) => (i.productId === product.id ? { ...i, quantity: i.quantity + 1 } : i)),
+            };
+          }
+          return { items: [...state.items, { productId: product.id, name: product.name, price: product.price, quantity: 1 }] };
+        }),
+      setQuantity: (productId, quantity) =>
+        set((state) => ({
+          items:
+            quantity <= 0
+              ? state.items.filter((i) => i.productId !== productId)
+              : state.items.map((i) => (i.productId === productId ? { ...i, quantity } : i)),
+        })),
+      removeItem: (productId) => set((state) => ({ items: state.items.filter((i) => i.productId !== productId) })),
+      clear: () => set({ items: [] }),
+    }),
+    {
+      name: 'cart-v1',
+      storage: createJSONStorage(() => AsyncStorage),
+      partialize: (state) => ({ items: state.items }), // solo persistimos datos, no funciones
+    },
+  ),
+);
+
+// Selectores reutilizables (valores derivados)
+export const selectItemCount = (s: CartState) => s.items.reduce((n, i) => n + i.quantity, 0);
+export const selectSubtotal = (s: CartState) => s.items.reduce((sum, i) => sum + i.price * i.quantity, 0);
+```
+
+Uso en componentes:
+
+```tsx title="src/features/cart/components/cart-badge.tsx"
+import { Text, View } from 'react-native';
+import { selectItemCount, useCartStore } from '../store/cart-store';
+
+export function CartBadge() {
+  // Solo se re-renderiza cuando cambia el número de artículos
+  const count = useCartStore(selectItemCount);
+  if (count === 0) return null;
+  return (
+    <View className="absolute -top-1 -right-2 min-w-5 items-center rounded-full bg-red-500 px-1">
+      <Text className="text-xs font-bold text-white">{count}</Text>
+    </View>
+  );
+}
+```
+
+```tsx title="src/features/cart/components/cart-summary.tsx"
+import { Pressable, Text, View } from 'react-native';
+import { useShallow } from 'zustand/react/shallow';
+import { selectSubtotal, useCartStore } from '../store/cart-store';
+
+export function CartSummary() {
+  const subtotal = useCartStore(selectSubtotal);
+  // useShallow: varias claves en un objeto sin re-renders innecesarios
+  const { clear, itemsLength } = useCartStore(useShallow((s) => ({ clear: s.clear, itemsLength: s.items.length })));
+
+  return (
+    <View className="gap-2 border-t border-zinc-200 p-4">
+      <Text className="text-lg font-semibold">Subtotal: ${subtotal.toFixed(2)}</Text>
+      <Pressable onPress={clear} disabled={itemsLength === 0}>
+        <Text className="text-red-600">Vaciar carrito</Text>
+      </Pressable>
+    </View>
+  );
+}
+```
+
+## Explicación del código
+
+- **`create<CartState>()(...)`**: los paréntesis dobles son la forma recomendada en TypeScript para que los *middlewares* infieran bien los tipos.
+- **`set`** recibe un objeto parcial (se fusiona con el estado) o una función con el estado anterior. Igual que en React, se crean arrays y objetos nuevos.
+- **`persist` + `createJSONStorage(() => AsyncStorage)`** guarda el store en el dispositivo y lo restaura al abrir la app. **`partialize`** elige qué guardar. El carrito no es un dato sensible, por eso AsyncStorage es adecuado.
+- **Selectores** (`selectItemCount`) derivan datos y determinan cuándo se re-renderiza cada componente: Zustand compara el resultado del selector con el anterior.
+- **`useShallow`** permite seleccionar varias propiedades en un objeto; sin él, el objeto sería nuevo en cada cambio y provocaría renders.
+- **Fuera de React** puedes usar `useCartStore.getState().clear()`, por ejemplo tras cerrar sesión desde un servicio.
+
+## Buenas prácticas
+
+- **Un store por dominio** (carrito, preferencias), no un store gigante con todo.
+- **Las acciones viven en el store**: los componentes llaman a `addItem`, no manipulan `items`.
+- **Versiona la clave de persistencia** (`cart-v1`) o usa la opción `version` + `migrate` cuando cambie la forma del estado.
+- **Nunca persistas tokens con AsyncStorage**: usa SecureStore ([Almacenamiento seguro](/docs/datos/almacenamiento-seguro)).
+
+### Errores comunes
+
+- Seleccionar todo el store (`const state = useCartStore()`): el componente se re-renderiza con cualquier cambio.
+- Guardar respuestas de la API en Zustand y sincronizarlas a mano: usa TanStack Query.
+- Devolver objetos nuevos en selectores sin `useShallow`.
+
+### Cuándo usar otra solución
+
+Para valores que cambian poco y deben inyectarse por subárbol (por ejemplo, en tests), [Context](/docs/react-typescript/context-api) es suficiente. Para datos remotos, [TanStack Query](/docs/datos/tanstack-query). Para equipos que ya dominan Redux Toolkit, es una alternativa igual de válida con más estructura.

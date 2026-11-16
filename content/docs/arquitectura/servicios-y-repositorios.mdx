@@ -1,0 +1,183 @@
+---
+title: Servicios y repositorios
+description: Un cliente HTTP central, servicios por recurso y el patrón repositorio para abstraer el origen de los datos (API, SQLite o caché) y facilitar los tests.
+difficulty: avanzado
+time: 22
+prerequisites:
+  - arquitectura/separacion-de-responsabilidades
+  - datos/fetch-y-axios
+related:
+  - datos/apis-rest
+  - arquitectura/custom-hooks
+  - proyectos/offline-first
+resources:
+  - title: MDN — Fetch API
+    url: https://developer.mozilla.org/es/docs/Web/API/Fetch_API
+  - title: Martin Fowler — Repository
+    url: https://martinfowler.com/eaaCatalog/repository.html
+keywords: [servicios, repositorios, http client, capa de datos, abstracción, inyección de dependencias, mocks, offline]
+---
+
+## Introducción conceptual
+
+La **capa de datos** responde a una pregunta: ¿de dónde vienen y a dónde van los datos? Se organiza en tres piezas:
+
+- **Cliente HTTP**: una sola función o instancia que conoce la URL base, añade el token, aplica timeouts y convierte errores HTTP en errores tipados.
+- **Servicios**: funciones por recurso (`ordersService.list`, `ordersService.create`) que usan el cliente y validan las respuestas.
+- **Repositorios** (opcional): una interfaz del dominio (`ProductRepository`) con varias implementaciones (API, SQLite, memoria). Útiles cuando los datos pueden venir de distintos orígenes, por ejemplo en apps *offline-first*.
+
+<Overview
+  purpose="Aislar el acceso a datos detrás de funciones con nombres del dominio y tipos validados."
+  importance="Si mañana cambia la API, el backend o el almacenamiento local, solo cambia esta capa."
+  when="En cualquier app que consuma una API; los repositorios, cuando hay más de un origen de datos o necesitas tests sin red."
+  problem="Evita URLs, cabeceras y parseos repetidos por las pantallas y hace posible testear sin servidor."
+/>
+
+## Explicación visual
+
+<Layers
+  layers={[
+    { title: 'Hooks', desc: 'useProducts()', items: ['TanStack Query'], tone: 'muted' },
+    { title: 'Repositorio', desc: 'Interfaz del dominio', items: ['list()', 'get(id)', 'save(product)'], tone: 'brand' },
+    { title: 'Implementaciones', desc: 'Intercambiables', items: ['ApiProductRepository', 'SqliteProductRepository', 'InMemoryProductRepository'] },
+    { title: 'Infraestructura', desc: 'Bajo nivel', items: ['httpClient', 'expo-sqlite'] },
+  ]}
+/>
+
+## Ejemplo práctico
+
+<CodeTabs>
+
+```ts title="src/lib/http-client.ts"
+import { env } from '@/config/env';
+import { getTokens } from '@/lib/secure-session';
+
+export class ApiError extends Error {
+  constructor(public status: number, message: string, public body?: unknown) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const tokens = await getTokens();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+
+  try {
+    const response = await fetch(`${env.EXPO_PUBLIC_API_URL}${path}`, {
+      ...init,
+      signal: init.signal ?? controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        ...(tokens ? { Authorization: `Bearer ${tokens.accessToken}` } : {}),
+        ...init.headers,
+      },
+    });
+    const body = response.status === 204 ? null : await response.json().catch(() => null);
+    if (!response.ok) throw new ApiError(response.status, body?.message ?? `Error ${response.status}`, body);
+    return body as T;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export const httpClient = {
+  get: <T>(path: string, signal?: AbortSignal) => request<T>(path, { signal }),
+  post: <T>(path: string, data: unknown) => request<T>(path, { method: 'POST', body: JSON.stringify(data) }),
+  patch: <T>(path: string, data: unknown) => request<T>(path, { method: 'PATCH', body: JSON.stringify(data) }),
+  delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
+};
+```
+
+```ts title="src/features/products/data/product-repository.ts"
+import type { Product } from '../types';
+
+/** Contrato del dominio: las capas superiores solo conocen esto */
+export interface ProductRepository {
+  list(search?: string): Promise<Product[]>;
+  get(id: string): Promise<Product | null>;
+  save(product: Product): Promise<void>;
+}
+```
+
+```ts title="src/features/products/data/api-product-repository.ts"
+import { httpClient } from '@/lib/http-client';
+import { productSchema, type Product } from '../types';
+import type { ProductRepository } from './product-repository';
+
+export const apiProductRepository: ProductRepository = {
+  async list(search = '') {
+    const json = await httpClient.get<unknown>(`/products?search=${encodeURIComponent(search)}`);
+    return productSchema.array().parse(json);
+  },
+  async get(id) {
+    const json = await httpClient.get<unknown>(`/products/${id}`);
+    return productSchema.parse(json);
+  },
+  async save(product: Product) {
+    await httpClient.patch(`/products/${product.id}`, product);
+  },
+};
+```
+
+```ts title="src/features/products/data/in-memory-product-repository.ts"
+import type { Product } from '../types';
+import type { ProductRepository } from './product-repository';
+
+/** Implementación en memoria: para tests, prototipos y Storybook */
+export function createInMemoryProductRepository(seed: Product[] = []): ProductRepository {
+  const store = new Map(seed.map((p) => [p.id, p]));
+  return {
+    async list(search = '') {
+      return [...store.values()].filter((p) => p.name.toLowerCase().includes(search.toLowerCase()));
+    },
+    async get(id) {
+      return store.get(id) ?? null;
+    },
+    async save(product) {
+      store.set(product.id, product);
+    },
+  };
+}
+```
+
+```tsx title="src/features/products/data/repository-provider.tsx"
+import { createContext, use, type ReactNode } from 'react';
+import { apiProductRepository } from './api-product-repository';
+import type { ProductRepository } from './product-repository';
+
+const RepositoryContext = createContext<ProductRepository>(apiProductRepository);
+
+export function ProductRepositoryProvider({ repository, children }: { repository: ProductRepository; children: ReactNode }) {
+  return <RepositoryContext value={repository}>{children}</RepositoryContext>;
+}
+
+export const useProductRepository = () => use(RepositoryContext);
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`httpClient`** centraliza la URL base (validada en `env`), las cabeceras, el token, el timeout con `AbortController` y la conversión de respuestas no exitosas en `ApiError` con el código HTTP. El resto de la app nunca llama a `fetch` directamente.
+- **`ProductRepository`** es una interfaz: describe *qué* operaciones existen, no *cómo* se implementan.
+- **`apiProductRepository`** implementa la interfaz contra la API y valida cada respuesta con Zod.
+- **`createInMemoryProductRepository`** implementa la misma interfaz en memoria: permite testear pantallas y hooks sin red ni mocks complejos.
+- **El contexto** actúa como inyección de dependencias: por defecto usa la API; en tests, envuelves con `ProductRepositoryProvider` y pasas la versión en memoria. Los hooks llaman a `useProductRepository()`.
+
+## Buenas prácticas
+
+- **Un único cliente HTTP** con la política de errores, tokens y timeouts de toda la app.
+- **Valida en el servicio o repositorio** y devuelve tipos del dominio.
+- **No sobrediseñes**: si tu app solo tiene un origen de datos, un servicio por recurso es suficiente; añade repositorios cuando aparezca un segundo origen (por ejemplo, SQLite para modo offline).
+
+### Errores comunes
+
+- Lanzar `Error` genéricos sin el código HTTP: la UI no puede distinguir un 401 de un 500.
+- Dejar que los tipos de la API (snake_case, fechas como strings) se propaguen por toda la app: transforma en el borde.
+
+### Cuándo usar otra solución
+
+Si tu backend tiene un esquema OpenAPI, genera el cliente y los tipos automáticamente. Para *interceptores* de refresco de token, Axios ofrece una API cómoda ([JWT](/docs/datos/jwt)).

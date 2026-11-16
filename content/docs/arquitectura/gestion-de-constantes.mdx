@@ -1,0 +1,121 @@
+---
+title: Gestión de constantes
+description: Dónde y cómo definir rutas, claves de almacenamiento, límites, configuración y catálogos. as const, satisfies y objetos que sustituyen a los enums.
+difficulty: intermedio
+time: 12
+prerequisites:
+  - react-typescript/interfaces-y-tipos
+related:
+  - expo/variables-de-entorno
+  - arquitectura/design-system
+  - arquitectura/arquitectura-de-carpetas
+resources:
+  - title: TypeScript — Aserciones const
+    url: https://www.typescriptlang.org/docs/handbook/release-notes/typescript-3-4.html#const-assertions
+  - title: TypeScript — satisfies
+    url: https://www.typescriptlang.org/docs/handbook/release-notes/typescript-4-9.html#the-satisfies-operator
+keywords: [constantes, as const, satisfies, enums, magic numbers, storage keys, rutas, configuración, catálogos]
+---
+
+## Introducción conceptual
+
+Los "números mágicos" y strings repetidos (`'auth.token'`, `20`, `'/orders'`) son una fuente silenciosa de errores: un día alguien escribe `'auth-token'` en otro archivo y nadie entiende por qué la sesión se pierde. Centralizar las constantes da **un único lugar para cambiar** y **tipos precisos** gracias a `as const`.
+
+No todo es una constante global: un valor que solo usa un componente puede quedarse en ese archivo. La regla es **centralizar lo que se comparte o lo que tiene significado de negocio**.
+
+<Overview
+  purpose="Dar nombre y un único origen a los valores fijos que usa la app."
+  importance="Evita errores tipográficos, facilita cambios globales y documenta las reglas del negocio (límites, plazos)."
+  when="Para claves de almacenamiento, rutas, límites de negocio, catálogos (estados, categorías), tiempos y configuración."
+  problem="Elimina literales duplicados y valores sin explicación dispersos por el código."
+/>
+
+## Explicación visual
+
+| Tipo de constante | Ubicación sugerida | Ejemplo |
+| --- | --- | --- |
+| Configuración por entorno | `src/config/env.ts` | URL de la API |
+| Claves de almacenamiento | `src/constants/storage-keys.ts` | `'auth.accessToken'` |
+| Rutas | `src/constants/routes.ts` | `'/orders/[id]'` |
+| Reglas de negocio | Junto a la funcionalidad | `MAX_CART_ITEMS = 50` |
+| Catálogos | `features/x/constants.ts` | Estados de pedido con etiquetas |
+| Tokens de diseño | `src/theme/` o `tailwind.config.js` | Colores, espaciados |
+
+## Ejemplo práctico
+
+```ts title="src/constants/storage-keys.ts"
+/** Todas las claves de almacenamiento local en un único lugar */
+export const STORAGE_KEYS = {
+  accessToken: 'auth.accessToken',
+  refreshToken: 'auth.refreshToken',
+  onboardingDone: 'app.onboardingDone',
+  themePreference: 'app.themePreference',
+} as const;
+
+export type StorageKey = (typeof STORAGE_KEYS)[keyof typeof STORAGE_KEYS];
+```
+
+```ts title="src/features/orders/constants.ts"
+/** Catálogo de estados: valores, orden y presentación en un solo objeto */
+export const ORDER_STATUS = {
+  pending: { label: 'Pendiente', tone: 'warning', canCancel: true },
+  paid: { label: 'Pagado', tone: 'success', canCancel: true },
+  shipped: { label: 'Enviado', tone: 'info', canCancel: false },
+  cancelled: { label: 'Cancelado', tone: 'neutral', canCancel: false },
+} as const satisfies Record<string, { label: string; tone: 'warning' | 'success' | 'info' | 'neutral'; canCancel: boolean }>;
+
+export type OrderStatus = keyof typeof ORDER_STATUS; // 'pending' | 'paid' | 'shipped' | 'cancelled'
+export const ORDER_STATUSES = Object.keys(ORDER_STATUS) as OrderStatus[];
+
+/** Reglas de negocio con nombre y unidad explícitos */
+export const ORDER_RULES = {
+  maxItemsPerOrder: 50,
+  cancelWindowHours: 24,
+  freeShippingFromClp: 30_000,
+} as const;
+```
+
+```ts title="src/constants/time.ts"
+export const SECOND = 1000;
+export const MINUTE = 60 * SECOND;
+export const HOUR = 60 * MINUTE;
+
+// staleTime: 5 * MINUTE es más legible que 300000
+```
+
+Uso:
+
+```tsx
+import { HOUR } from '@/constants/time';
+import { ORDER_RULES, ORDER_STATUS, type OrderStatus } from '@/features/orders/constants';
+
+function canCancel(status: OrderStatus, createdAt: Date) {
+  const hours = (Date.now() - createdAt.getTime()) / HOUR;
+  return ORDER_STATUS[status].canCancel && hours <= ORDER_RULES.cancelWindowHours;
+}
+```
+
+## Explicación del código
+
+- **`as const`** convierte los valores en literales de solo lectura: `STORAGE_KEYS.accessToken` tiene el tipo `'auth.accessToken'`, no `string`.
+- **`(typeof X)[keyof typeof X]`** extrae la unión de todos los valores, útil para tipar funciones que solo aceptan claves válidas.
+- **`as const satisfies Record<…>`** combina lo mejor de ambos: valida que cada estado tenga `label`, `tone` y `canCancel`, y conserva los tipos literales. Si añades un estado sin `tone`, falla la compilación.
+- **Un objeto en lugar de `enum`**: además del valor, guarda metadatos (etiqueta, tono, permisos) y no genera código extra de TypeScript.
+- **Nombres con unidad** (`cancelWindowHours`, `freeShippingFromClp`) eliminan ambigüedades.
+
+## Buenas prácticas
+
+- **Agrupa por dominio**, no un `constants.ts` gigante para toda la app.
+- **Nombra con unidad** cualquier número con dimensión: tiempo, dinero, distancia.
+- **Diferencia constantes y configuración**: lo que cambia por entorno va en variables de entorno, no en constantes.
+- **Las reglas de negocio importantes** deberían venir también validadas por el servidor; la constante del cliente es para la UX.
+
+### Errores comunes
+
+- Repetir la misma clave de almacenamiento como string en varios archivos.
+- Usar `enum` numéricos que se serializan como `0`, `1`, `2` y nadie recuerda qué significan.
+- Mezclar tokens de diseño con constantes de negocio en el mismo archivo.
+
+### Cuándo usar otra solución
+
+Si los valores deben cambiar sin publicar una versión (límites, textos legales, flags), muévelos al backend o a un servicio de configuración remota. Para tokens visuales, usa el [design system](/docs/arquitectura/design-system).

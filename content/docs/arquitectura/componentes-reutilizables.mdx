@@ -1,0 +1,182 @@
+---
+title: Creación de componentes reutilizables
+sidebarTitle: Componentes reutilizables
+description: Principios para diseñar la API de un componente reutilizable. Controlado y no controlado, composición, extensión de props nativas, accesibilidad y documentación.
+difficulty: avanzado
+time: 22
+prerequisites:
+  - react-typescript/tipado-de-componentes
+  - arquitectura/componentes-compartidos
+related:
+  - sistema-de-componentes/button
+  - sistema-de-componentes/composicion
+  - calidad/accesibilidad
+resources:
+  - title: React — Compartir estado entre componentes (controlados y no controlados)
+    url: https://react.dev/learn/sharing-state-between-components#controlled-and-uncontrolled-components
+  - title: React Native — Accesibilidad
+    url: https://reactnative.dev/docs/accessibility
+keywords: [componentes reutilizables, API de componentes, controlado, no controlado, composición, props, accesibilidad, segmented control]
+---
+
+## Introducción conceptual
+
+Un componente reutilizable es un **pequeño producto** con usuarios (el resto del equipo). Su éxito depende de su **API**: qué props acepta, qué valores por defecto tiene, cómo se extiende y qué comportamiento garantiza. Algunos principios que se repiten en las mejores librerías:
+
+1. **Haz fácil lo común y posible lo raro**: valores por defecto sensatos y puntos de extensión (`style`, `className`, slots).
+2. **Controlado y no controlado**: el componente puede gestionar su propio estado o dejar que el padre lo controle.
+3. **Extiende las props nativas**: si envuelves un `Pressable`, acepta todo lo que acepta un `Pressable`.
+4. **Accesible por defecto**: roles, estados y etiquetas incluidos, sin que quien lo use tenga que recordarlo.
+
+<Overview
+  purpose="Diseñar componentes que el equipo pueda usar en contextos distintos sin modificarlos."
+  importance="Una API mal diseñada obliga a copiar y modificar el componente, y el beneficio de reutilizar desaparece."
+  when="Al crear piezas compartidas: controles de formulario, selectores, tarjetas, botones, elementos de lista."
+  problem="Evita componentes rígidos que solo sirven para el primer caso de uso o que acumulan props contradictorias."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="Controlado">
+    - El padre tiene el estado: `value` + `onChange`.
+    - Útil con formularios y estado global.
+    - El componente no puede cambiar solo.
+  </Column>
+  <Column title="No controlado" tone="brand">
+    - El componente tiene su estado: `defaultValue`.
+    - Útil para casos simples.
+    - El padre solo escucha `onChange`.
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+Un `SegmentedControl` genérico que soporta ambos modos, es accesible y tipa sus opciones:
+
+```tsx title="src/components/ui/segmented-control.tsx"
+import { useState } from 'react';
+import { Pressable, Text, View, type ViewProps } from 'react-native';
+import { cn } from '@/lib/cn';
+
+type Option<T extends string> = { value: T; label: string; disabled?: boolean };
+
+type SegmentedControlProps<T extends string> = Omit<ViewProps, 'children'> & {
+  options: readonly Option<T>[];
+  /** Modo controlado */
+  value?: T;
+  /** Modo no controlado */
+  defaultValue?: T;
+  onChange?: (value: T) => void;
+  size?: 'sm' | 'md';
+  className?: string;
+  /** Nombre del grupo para lectores de pantalla */
+  accessibilityLabel: string;
+};
+
+export function SegmentedControl<T extends string>({
+  options,
+  value,
+  defaultValue,
+  onChange,
+  size = 'md',
+  className,
+  accessibilityLabel,
+  ...viewProps
+}: SegmentedControlProps<T>) {
+  const [internal, setInternal] = useState<T | undefined>(defaultValue ?? options[0]?.value);
+  const isControlled = value !== undefined;
+  const selected = isControlled ? value : internal;
+
+  function select(next: T) {
+    if (!isControlled) setInternal(next);
+    onChange?.(next);
+  }
+
+  return (
+    <View
+      accessibilityRole="radiogroup"
+      accessibilityLabel={accessibilityLabel}
+      className={cn('flex-row rounded-xl bg-muted p-1', className)}
+      {...viewProps}
+    >
+      {options.map((option) => {
+        const active = option.value === selected;
+        return (
+          <Pressable
+            key={option.value}
+            onPress={() => select(option.value)}
+            disabled={option.disabled}
+            accessibilityRole="radio"
+            accessibilityState={{ checked: active, disabled: option.disabled }}
+            className={cn(
+              'flex-1 items-center rounded-lg',
+              size === 'sm' ? 'py-1.5' : 'py-2.5',
+              active && 'bg-background shadow-sm',
+              option.disabled && 'opacity-40',
+            )}
+          >
+            <Text className={cn('text-sm', active ? 'font-semibold text-foreground' : 'text-muted-foreground')}>
+              {option.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+```
+
+Los dos modos de uso:
+
+```tsx
+// No controlado: el componente recuerda la selección
+<SegmentedControl
+  accessibilityLabel="Periodo"
+  options={[
+    { value: 'week', label: 'Semana' },
+    { value: 'month', label: 'Mes' },
+    { value: 'year', label: 'Año' },
+  ]}
+  defaultValue="month"
+  onChange={(period) => trackEvent('period_changed', { period })}
+/>;
+
+// Controlado: el estado vive fuera (por ejemplo, en la URL o en un store)
+const [view, setView] = useState<'list' | 'map'>('list');
+<SegmentedControl
+  accessibilityLabel="Vista"
+  options={[
+    { value: 'list', label: 'Lista' },
+    { value: 'map', label: 'Mapa' },
+  ] as const}
+  value={view}
+  onChange={setView}
+/>;
+```
+
+## Explicación del código
+
+- **Genérico `T extends string`**: si las opciones son `'list' | 'map'`, `onChange` recibe exactamente ese tipo. Un `setView` tipado encaja sin conversiones.
+- **`isControlled`** decide el modo: si llega `value`, manda el padre; si no, el estado interno (inicializado con `defaultValue`).
+- **`onChange` siempre se llama**, en ambos modos, para que el padre pueda reaccionar.
+- **Roles `radiogroup` y `radio`** con `accessibilityState.checked` hacen que VoiceOver y TalkBack anuncien "Mes, seleccionado, 2 de 3".
+- **`...viewProps` y `className`** permiten personalizar márgenes, `testID` o layout sin tocar el componente.
+- **`cn`** resuelve conflictos de clases cuando el consumidor pasa sus propias clases.
+
+## Buenas prácticas
+
+- **Nombra las props como la plataforma**: `value`/`onChange`, `disabled`, `onPress`. No inventes `isActive`/`handleClick`.
+- **Pocas props obligatorias** y valores por defecto razonables.
+- **No cambies de controlado a no controlado** durante la vida del componente (React avisa en la web por la misma razón).
+- **Escribe el ejemplo de uso antes que el componente**: si el uso es incómodo, la API está mal.
+
+### Errores comunes
+
+- Props booleanas que se combinan mal (`primary`, `secondary`, `outline` a la vez).
+- Componentes que solo funcionan en modo controlado y obligan a crear estado en todos los padres.
+- Olvidar la accesibilidad en controles personalizados: un `Pressable` con texto no es un "radio" para un lector de pantalla.
+
+### Cuándo usar otra solución
+
+Para controles complejos con lógica de accesibilidad avanzada (menús, comboboxes), valora primitivas *headless* existentes y céntrate en el estilo. En la [sección especial](/docs/sistema-de-componentes/button) aplicamos estos principios a botones, inputs, cards, modales y selectores.

@@ -1,0 +1,134 @@
+---
+title: Componentes contenedores
+description: El componente que conecta datos, navegación y acciones con la presentación. El patrón en la era de los hooks y cómo mantenerlo delgado.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - arquitectura/componentes-de-presentacion
+related:
+  - arquitectura/custom-hooks
+  - datos/tanstack-query
+  - sistema-de-componentes/logica-y-presentacion
+resources:
+  - title: React — Reutilizar lógica con hooks personalizados
+    url: https://react.dev/learn/reusing-logic-with-custom-hooks
+  - title: TanStack Query — Mutaciones
+    url: https://tanstack.com/query/latest/docs/framework/react/guides/mutations
+keywords: [contenedores, container components, smart components, conexión de datos, navegación, mutaciones, pantalla]
+---
+
+## Introducción conceptual
+
+Si los componentes de presentación se ocupan de **cómo se ven las cosas**, los **contenedores** se ocupan de **cómo funcionan**: obtienen datos, preparan las props, deciden qué ocurre al pulsar y a dónde se navega. Luego delegan el dibujo en componentes de presentación.
+
+Antes de los hooks, este patrón se implementaba con clases o *higher-order components*. Hoy, en la práctica, **las pantallas actúan como contenedores** y la lógica reutilizable vive en hooks. El contenedor queda delgado: leer de hooks, adaptar datos y conectar eventos.
+
+<Overview
+  purpose="Conectar los componentes visuales con datos, acciones y navegación en un único punto por pantalla."
+  importance="Mantiene la lógica de orquestación en un sitio predecible y los componentes visuales libres de dependencias."
+  when="En cada pantalla y en secciones con datos propios (por ejemplo, un widget de resumen en un dashboard)."
+  problem="Evita que la obtención de datos y la navegación se dispersen por componentes de bajo nivel."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'Hooks', desc: 'useOrders, useCancelOrder', tone: 'muted' },
+    { title: 'Contenedor', desc: 'Prepara props y callbacks', tone: 'brand' },
+    { title: 'Presentación', desc: 'OrderCard, EmptyState' },
+    { title: 'Evento', desc: 'onCancel → mutación' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+El contenedor de la lista de pedidos, que usa la `OrderCard` de presentación del tema anterior:
+
+```tsx title="src/features/orders/screens/orders-screen.tsx"
+import { useRouter } from 'expo-router';
+import { Alert, FlatList } from 'react-native';
+import { EmptyState } from '@/components/feedback/empty-state';
+import { ErrorState } from '@/components/feedback/error-state';
+import { LoadingState } from '@/components/feedback/loading-state';
+import { formatCurrency } from '@/lib/format';
+import { OrderCard } from '../components/order-card';
+import { useCancelOrder } from '../hooks/use-cancel-order';
+import { useOrders } from '../hooks/use-orders';
+import type { Order } from '../types';
+
+export function OrdersScreen() {
+  const router = useRouter();
+  const { data: orders, isPending, isError, refetch, isRefetching } = useOrders();
+  const cancelOrder = useCancelOrder();
+
+  function confirmCancel(order: Order) {
+    Alert.alert('¿Cancelar pedido?', `El pedido #${order.number} se anulará.`, [
+      { text: 'No', style: 'cancel' },
+      { text: 'Sí, cancelar', style: 'destructive', onPress: () => cancelOrder.mutate(order.id) },
+    ]);
+  }
+
+  if (isPending) return <LoadingState label="Cargando pedidos…" />;
+  if (isError) return <ErrorState onRetry={refetch} />;
+
+  return (
+    <FlatList
+      data={orders}
+      keyExtractor={(o) => o.id}
+      contentContainerClassName="gap-3 p-4"
+      refreshing={isRefetching}
+      onRefresh={refetch}
+      ListEmptyComponent={<EmptyState title="Sin pedidos" description="Cuando recibas un pedido aparecerá aquí." />}
+      renderItem={({ item }) => (
+        <OrderCard
+          number={item.number}
+          customerName={item.customer.name}
+          itemsCount={item.items.length}
+          total={formatCurrency(item.total)}
+          status={item.status}
+          onPress={() => router.push({ pathname: '/orders/[id]', params: { id: item.id } })}
+          onCancel={item.status === 'pending' ? () => confirmCancel(item) : undefined}
+        />
+      )}
+    />
+  );
+}
+```
+
+```ts title="src/features/orders/hooks/use-cancel-order.ts"
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { ordersService } from '../api/orders-service';
+import { orderKeys } from '../api/order-keys';
+
+export function useCancelOrder() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (orderId: string) => ordersService.cancel(orderId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: orderKeys.all }),
+  });
+}
+```
+
+## Explicación del código
+
+- **El contenedor no dibuja detalles**: decide qué estado mostrar (carga, error, lista, vacío) y delega cada uno en componentes ya existentes.
+- **Adapta los datos** a lo que espera la presentación: `formatCurrency(item.total)`, `item.items.length`, `item.customer.name`. Así `OrderCard` no conoce la forma de la respuesta de la API.
+- **Decide los permisos de la UI**: solo pasa `onCancel` si el pedido está pendiente.
+- **Conecta eventos con efectos**: navegación con `router.push`, confirmación con `Alert` y la mutación con `useCancelOrder`.
+- **`useCancelOrder`** encapsula la mutación y la invalidación de la caché; el contenedor solo llama a `mutate`.
+
+## Buenas prácticas
+
+- **Mantén el contenedor por debajo de ~100 líneas**: si crece, extrae hooks (lógica) o subcomponentes (UI).
+- **Un contenedor por pantalla** y, si una sección tiene datos independientes, un contenedor propio para esa sección.
+- **No pases funciones de la API a la presentación**: pasa callbacks con intención (`onCancel`), no `ordersService`.
+
+### Errores comunes
+
+- Contenedores que también contienen 200 líneas de JSX de estilos: separa la presentación.
+- "Prop drilling" de datos del contenedor a componentes profundos: si un componente lejano necesita datos propios, puede tener su propio hook.
+
+### Cuándo usar otra solución
+
+En componentes pequeños con poca lógica, separar contenedor y presentación es innecesario: un único componente con un hook es suficiente. Para la versión con NativeWind y el kit de componentes de este curso, consulta [Separación entre lógica y presentación](/docs/sistema-de-componentes/logica-y-presentacion).

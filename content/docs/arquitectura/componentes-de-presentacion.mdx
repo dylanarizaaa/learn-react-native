@@ -1,0 +1,156 @@
+---
+title: Componentes de presentación
+description: Componentes que solo reciben datos y emiten eventos. Cómo diseñarlos, por qué son fáciles de testear y cómo previsualizarlos con datos de ejemplo.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - react-typescript/props
+  - arquitectura/separacion-de-responsabilidades
+related:
+  - arquitectura/componentes-contenedores
+  - calidad/testing
+  - sistema-de-componentes/logica-y-presentacion
+resources:
+  - title: React — Mantener los componentes puros
+    url: https://react.dev/learn/keeping-components-pure
+  - title: React Native Testing Library
+    url: https://oss.callstack.com/react-native-testing-library/
+keywords: [componentes de presentación, presentational, dumb components, puros, props, eventos, testing, storybook]
+---
+
+## Introducción conceptual
+
+Un **componente de presentación** se ocupa de **cómo se ven las cosas**. Recibe todo lo que necesita por props, avisa de las interacciones mediante callbacks y no sabe de dónde vienen los datos: ni APIs, ni stores, ni navegación.
+
+Es el equivalente visual de una función pura: **mismas props, misma interfaz**. Esa propiedad los hace fáciles de reutilizar, de testear y de previsualizar con datos inventados.
+
+<Overview
+  purpose="Describir la interfaz de forma predecible a partir de props, sin depender de la infraestructura."
+  importance="Son los componentes más reutilizables y los más baratos de testear; aíslan los cambios visuales de los de lógica."
+  when="Para tarjetas, filas, resúmenes, formularios visuales y cualquier pieza que pueda alimentarse con props."
+  problem="Evita que un cambio de diseño requiera entender peticiones de red o stores, y viceversa."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="Hace" tone="good">
+    - Recibe datos por props.
+    - Renderiza estados visuales (vacío, error, cargando si se le indica).
+    - Emite eventos: `onPress`, `onChange`.
+    - Puede tener estado de UI local (por ejemplo, expandido/contraído).
+  </Column>
+  <Column title="No hace" tone="bad">
+    - Llamar a la API o a stores.
+    - Navegar directamente.
+    - Leer `AsyncStorage` o `SecureStore`.
+    - Conocer de dónde viene `onPress`.
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+Una tarjeta de pedido puramente visual, con su test:
+
+```tsx title="src/features/orders/components/order-card.tsx"
+import { Pressable, Text, View } from 'react-native';
+import type { OrderStatus } from '../types';
+
+export type OrderCardProps = {
+  number: string;
+  customerName: string;
+  itemsCount: number;
+  total: string; // ya formateado: la tarjeta no decide la moneda
+  status: OrderStatus;
+  onPress: () => void;
+  onCancel?: () => void;
+};
+
+const STATUS: Record<OrderStatus, { label: string; className: string }> = {
+  pending: { label: 'Pendiente', className: 'bg-amber-100 text-amber-800' },
+  paid: { label: 'Pagado', className: 'bg-emerald-100 text-emerald-800' },
+  shipped: { label: 'Enviado', className: 'bg-sky-100 text-sky-800' },
+  cancelled: { label: 'Cancelado', className: 'bg-zinc-200 text-zinc-600' },
+};
+
+export function OrderCard({ number, customerName, itemsCount, total, status, onPress, onCancel }: OrderCardProps) {
+  const badge = STATUS[status];
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`Pedido ${number} de ${customerName}, ${badge.label}, total ${total}`}
+      className="gap-2 rounded-2xl border border-zinc-200 bg-white p-4 active:opacity-80"
+    >
+      <View className="flex-row items-center justify-between">
+        <Text className="font-semibold">Pedido #{number}</Text>
+        <Text className={`rounded-full px-2 py-0.5 text-xs font-semibold ${badge.className}`}>{badge.label}</Text>
+      </View>
+      <Text className="text-zinc-500">
+        {customerName} · {itemsCount} {itemsCount === 1 ? 'artículo' : 'artículos'}
+      </Text>
+      <View className="flex-row items-center justify-between">
+        <Text className="text-lg font-bold">{total}</Text>
+        {onCancel && status === 'pending' ? (
+          <Pressable onPress={onCancel} hitSlop={8} accessibilityRole="button">
+            <Text className="font-medium text-red-600">Cancelar</Text>
+          </Pressable>
+        ) : null}
+      </View>
+    </Pressable>
+  );
+}
+```
+
+```tsx title="src/features/orders/components/order-card.test.tsx"
+import { render, screen, userEvent } from '@testing-library/react-native';
+import { OrderCard } from './order-card';
+
+const baseProps = {
+  number: '1042',
+  customerName: 'Ana Pérez',
+  itemsCount: 3,
+  total: '$45.900',
+  status: 'pending' as const,
+};
+
+test('muestra el resumen y permite cancelar un pedido pendiente', async () => {
+  const user = userEvent.setup();
+  const onCancel = jest.fn();
+  await render(<OrderCard {...baseProps} onPress={jest.fn()} onCancel={onCancel} />);
+
+  expect(screen.getByText('Pedido #1042')).toBeOnTheScreen();
+  expect(screen.getByText('Pendiente')).toBeOnTheScreen();
+
+  await user.press(screen.getByRole('button', { name: 'Cancelar' }));
+  expect(onCancel).toHaveBeenCalledTimes(1);
+});
+
+test('no muestra la acción de cancelar en pedidos enviados', async () => {
+  await render(<OrderCard {...baseProps} status="shipped" onPress={jest.fn()} onCancel={jest.fn()} />);
+  expect(screen.queryByText('Cancelar')).not.toBeOnTheScreen();
+});
+```
+
+## Explicación del código
+
+- **`total` llega formateado** como string. La tarjeta no decide moneda ni idioma: eso es responsabilidad de quien prepara los datos.
+- **`onCancel` es opcional**: si el contenedor no permite cancelar, no lo pasa y el botón no aparece. La tarjeta no consulta permisos.
+- **El mapa `STATUS`** contiene clases completas (no construidas dinámicamente) para que Tailwind las genere.
+- **`accessibilityLabel`** resume toda la tarjeta para los lectores de pantalla.
+- **El test** no necesita mocks de red, stores ni navegación: renderiza con props y comprueba lo que ve el usuario. En React Native Testing Library 14, `render` es asíncrono (`await render(...)`).
+
+## Buenas prácticas
+
+- **Props de datos ya preparadas** (formateadas, filtradas) desde el contenedor o el hook.
+- **Callbacks con nombres de intención** (`onCancel`, `onSelectProduct`) en lugar de detalles de implementación (`onButtonPress`).
+- **Crea variantes de ejemplo** (pendiente, enviado, cancelado) en un catálogo o Storybook para revisar el diseño sin la app completa.
+
+### Errores comunes
+
+- Importar `useRouter` o un store "por comodidad": el componente deja de ser reutilizable.
+- Pasar el objeto completo de la API cuando solo se necesitan tres campos: acopla la UI a la forma de la respuesta.
+
+### Cuándo usar otra solución
+
+No todo tiene que ser presentacional: un `SearchBar` con su propio *debounce* o un `Select` con su lista desplegable pueden tener estado interno de UI. Lo importante es que no dependan de datos externos. Los datos llegan desde [componentes contenedores](/docs/arquitectura/componentes-contenedores) o hooks.

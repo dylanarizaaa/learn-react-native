@@ -1,0 +1,137 @@
+---
+title: Componentes compartidos
+description: Qué componentes deben compartirse, dónde viven, cómo diseñar su API y cómo evitar que acumulen lógica de una funcionalidad concreta.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - arquitectura/arquitectura-de-carpetas
+related:
+  - arquitectura/componentes-reutilizables
+  - arquitectura/design-system
+  - sistema-de-componentes/organizacion-de-componentes
+resources:
+  - title: React — Pensar en React
+    url: https://react.dev/learn/thinking-in-react
+  - title: React — Pasar JSX como children
+    url: https://react.dev/learn/passing-props-to-a-component#passing-jsx-as-children
+keywords: [componentes compartidos, shared, reutilización, regla de tres, acoplamiento, API de componentes]
+---
+
+## Introducción conceptual
+
+Un componente compartido es aquel que usan **varias funcionalidades**: un `Avatar`, un `ListItem`, un `EmptyState`, un `Price`. Vive en `src/components` y **no conoce el negocio**: no sabe qué es un pedido, un producto o un usuario; recibe datos genéricos y los muestra.
+
+El reto no es crear componentes compartidos, sino **mantenerlos genéricos**. Cada vez que una funcionalidad necesita "solo una prop más", el componente se acerca a ser un monstruo con 25 props booleanas.
+
+<Overview
+  purpose="Reutilizar piezas de interfaz comunes en toda la app con un aspecto y comportamiento consistentes."
+  importance="Los componentes compartidos son la base de la consistencia visual y de la velocidad de desarrollo."
+  when="Cuando la misma pieza de UI aparece en al menos dos o tres funcionalidades distintas."
+  problem="Evita duplicar componentes casi iguales en cada funcionalidad y las inconsistencias que eso provoca."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="Compartido" tone="good">
+    - `Avatar`, `Badge`, `ListItem`, `Price`.
+    - Props genéricas: `title`, `subtitle`, `left`, `right`.
+    - Sin llamadas a la API ni stores.
+    - Vive en `src/components`.
+  </Column>
+  <Column title="De una funcionalidad" tone="neutral">
+    - `OrderCard`, `CartItem`, `ProfileHeader`.
+    - Conoce tipos del dominio (`Order`).
+    - Puede usar hooks de su funcionalidad.
+    - Vive en `src/features/x/components`.
+  </Column>
+</Columns>
+
+<Flow
+  steps={[
+    { title: 'Primera vez', desc: 'Componente en la funcionalidad' },
+    { title: 'Segunda vez', desc: 'Copia consciente o espera' },
+    { title: 'Tercera vez', desc: 'Extrae a components/', tone: 'brand' },
+  ]}
+  caption="La regla de tres: extrae cuando el patrón está claro, no antes."
+/>
+
+## Ejemplo práctico
+
+Un `ListItem` genérico basado en **composición** (*slots*) en lugar de props específicas, y su uso en dos funcionalidades:
+
+```tsx title="src/components/ui/list-item.tsx"
+import type { ReactNode } from 'react';
+import { Pressable, Text, View, type PressableProps } from 'react-native';
+
+type ListItemProps = Omit<PressableProps, 'children'> & {
+  title: string;
+  subtitle?: string;
+  /** Contenido a la izquierda: avatar, icono, imagen… */
+  leading?: ReactNode;
+  /** Contenido a la derecha: precio, badge, chevron… */
+  trailing?: ReactNode;
+};
+
+export function ListItem({ title, subtitle, leading, trailing, ...pressableProps }: ListItemProps) {
+  return (
+    <Pressable
+      accessibilityRole={pressableProps.onPress ? 'button' : undefined}
+      className="flex-row items-center gap-3 bg-white px-4 py-3 active:bg-zinc-50 dark:bg-zinc-900 dark:active:bg-zinc-800"
+      {...pressableProps}
+    >
+      {leading}
+      <View className="flex-1">
+        <Text className="text-base font-medium text-zinc-900 dark:text-zinc-50" numberOfLines={1}>
+          {title}
+        </Text>
+        {subtitle ? <Text className="text-sm text-zinc-500" numberOfLines={1}>{subtitle}</Text> : null}
+      </View>
+      {trailing}
+    </Pressable>
+  );
+}
+```
+
+```tsx title="Uso en dos funcionalidades distintas"
+// features/orders/components/order-row.tsx
+<ListItem
+  title={`Pedido #${order.number}`}
+  subtitle={formatDate(order.createdAt)}
+  trailing={<OrderStatusBadge status={order.status} />}
+  onPress={() => router.push(`/orders/${order.id}`)}
+/>
+
+// features/contacts/components/contact-row.tsx
+<ListItem
+  title={contact.name}
+  subtitle={contact.email}
+  leading={<Avatar name={contact.name} uri={contact.photoUrl} size="sm" />}
+  trailing={<Text className="text-zinc-400">›</Text>}
+  onPress={() => openContact(contact.id)}
+/>
+```
+
+## Explicación del código
+
+- **`leading` y `trailing`** son *slots*: el componente reserva un espacio y el consumidor decide qué poner. Esto elimina props como `showAvatar`, `avatarUrl`, `showBadge`, `badgeColor`…
+- **`Omit<PressableProps, 'children'>`** + `...pressableProps`: el componente acepta `onPress`, `onLongPress`, `disabled` o `testID` sin declararlos uno a uno.
+- **`accessibilityRole` condicional**: solo es un botón si es interactivo.
+- **`OrderStatusBadge`** es un componente de la funcionalidad de pedidos; `ListItem` no sabe nada de estados de pedido.
+
+## Buenas prácticas
+
+- **Prefiere composición** (`children`, slots) a configuración (muchas props booleanas).
+- **Sin dependencias de negocio**: un componente compartido nunca importa de `features/`.
+- **Documenta con ejemplos** (un catálogo interno o Storybook) para que el equipo sepa que existe antes de crear otro igual.
+- **Acepta `style`/`className`** para ajustes de layout desde fuera.
+
+### Errores comunes
+
+- Extraer demasiado pronto: un componente "compartido" usado en un único sitio y lleno de props hipotéticas.
+- Añadir lógica específica ("si es un pedido cancelado, pinta en rojo") dentro del compartido.
+- Varios componentes compartidos que hacen lo mismo con nombres distintos (`Row`, `Item`, `Cell`).
+
+### Cuándo usar otra solución
+
+Cuando el conjunto de componentes compartidos crece y se usa en varias apps, conviértelo en un [design system](/docs/arquitectura/design-system) o en una [biblioteca interna](/docs/arquitectura/biblioteca-interna).
