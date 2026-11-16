@@ -19,6 +19,10 @@ function normalize(term: string) {
   return STOP_WORDS.has(t) ? null : t;
 }
 
+function normalizeTitle(title: string) {
+  return title.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+}
+
 let indexPromise: Promise<{ engine: MiniSearch<SearchRecord>; byId: Map<string, SearchRecord> }> | null = null;
 
 function loadIndex() {
@@ -26,15 +30,18 @@ function loadIndex() {
     .then((r) => r.json() as Promise<SearchRecord[]>)
     .then((records) => {
       const engine = new MiniSearch<SearchRecord>({
-        fields: ['title', 'keywords', 'description', 'parent', 'text'],
+        fields: ['title', 'keywords', 'description', 'parent', 'code', 'text'],
         storeFields: ['title', 'type', 'section', 'url', 'description', 'parent'],
         processTerm: normalize,
         searchOptions: {
-          boost: { title: 5, keywords: 2, description: 1.5, parent: 1 },
+          boost: { title: 5, keywords: 3, description: 1.5, parent: 1, code: 0.8 },
           prefix: true,
-          fuzzy: 0.18,
+          fuzzy: (term: string) => (term.length > 4 ? 0.18 : 0),
           combineWith: 'AND',
           processTerm: normalize,
+          // Coincidencia exacta con el título de un tema: va primero
+          boostDocument: (_id, term, stored) =>
+            stored?.title && normalizeTitle(String(stored.title)) === term ? 2 : 1,
         },
       });
       engine.addAll(records);
@@ -275,7 +282,7 @@ export function SearchTrigger({ className, variant = 'bar' }: { className?: stri
     >
       <Search className="size-4" aria-hidden />
       <span className="flex-1 text-left">Buscar documentación…</span>
-      <kbd className="rounded-md border border-border bg-background px-1.5 py-0.5 font-mono text-[10px]">⌘K</kbd>
+      <kbd className="hidden rounded-md border border-border bg-background px-1.5 py-0.5 font-mono text-[10px] [@media(hover:hover)]:inline">⌘K</kbd>
     </button>
   );
 }

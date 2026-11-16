@@ -52,7 +52,11 @@ function iconFor(node: TreeNode) {
 
 function TreeList({ nodes, depth }: { nodes: TreeNode[]; depth: number }) {
   return (
-    <ul className={cn(depth > 0 && 'ml-[0.55rem] border-l border-border pl-3')}>
+    <ul
+      data-reset
+      className={cn(depth > 0 && 'border-l border-border')}
+      style={depth > 0 ? { marginLeft: '0.55rem', paddingLeft: '0.75rem', marginTop: 0 } : undefined}
+    >
       {nodes.map((node, i) => {
         const Icon = iconFor(node);
         return (

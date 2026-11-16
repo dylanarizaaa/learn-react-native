@@ -53,7 +53,7 @@ export function MyLearning({ docs, sections }: { docs: ManifestEntry[]; sections
 
   return (
     <div className="flex flex-col gap-10">
-      <section className="grid gap-4 sm:grid-cols-3">
+      <section className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <div className="rounded-2xl border border-border bg-card p-5 sm:col-span-2">
           <div className="text-sm text-muted-foreground">Progreso total</div>
           <div className="mt-1 text-3xl font-bold tabular-nums">
@@ -93,7 +93,7 @@ export function MyLearning({ docs, sections }: { docs: ManifestEntry[]; sections
         <h2 id="por-seccion" className="text-lg font-semibold">
           Progreso por sección
         </h2>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
           {sections.map((s) => {
             const done = s.ids.filter((id) => doneIds.includes(id)).length;
             return (
@@ -111,7 +111,7 @@ export function MyLearning({ docs, sections }: { docs: ManifestEntry[]; sections
         </div>
       </section>
 
-      <div className="grid gap-10 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-10 lg:grid-cols-2">
         <section aria-labelledby="favoritos">
           <h2 id="favoritos" className="flex items-center gap-2 text-lg font-semibold">
             <Star className="size-4 text-warning" aria-hidden /> Favoritos

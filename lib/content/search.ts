@@ -17,7 +17,10 @@ export interface SearchRecord {
   /** Título del tema al que pertenece un encabezado. */
   parent?: string;
   text?: string;
+  /** Palabras clave del frontmatter (curadas, mayor peso). */
   keywords?: string;
+  /** Identificadores extraídos de los bloques de código. */
+  code?: string;
 }
 
 const MAX_TEXT = 1800;
@@ -68,7 +71,7 @@ function extract(body: string) {
   return {
     headings,
     text: text.join(' ').replace(/\s+/g, ' ').slice(0, MAX_TEXT),
-    keywords: [...identifiers].slice(0, 80).join(' '),
+    code: [...identifiers].slice(0, 80).join(' '),
   };
 }
 
@@ -77,7 +80,7 @@ export function buildSearchRecords(): SearchRecord[] {
   const records: SearchRecord[] = [];
 
   for (const { meta, body } of getAllDocs()) {
-    const { headings, text, keywords } = extract(body);
+    const { headings, text, code } = extract(body);
     records.push({
       id: meta.id,
       type: meta.kind === 'project' ? 'project' : 'doc',
@@ -86,7 +89,8 @@ export function buildSearchRecords(): SearchRecord[] {
       url: meta.url,
       description: meta.description,
       text,
-      keywords: [keywords, ...(meta.keywords ?? []), ...(meta.technologies ?? [])].join(' '),
+      code,
+      keywords: [...(meta.keywords ?? []), ...(meta.technologies ?? [])].join(' '),
     });
     for (const h of headings) {
       records.push({

@@ -76,7 +76,7 @@ export function Overview({
     { icon: Puzzle, label: '¿Qué problema resuelve?', text: problem },
   ];
   return (
-    <div className="not-prose grid gap-3 sm:grid-cols-2">
+    <div className="not-prose grid grid-cols-1 gap-3 sm:grid-cols-2">
       {items.map(({ icon: Icon, label, text }) => (
         <div key={label} className="rounded-xl border border-border bg-card p-4">
           <div className="mb-1.5 flex items-center gap-2 text-sm font-semibold">
@@ -109,6 +109,7 @@ export function Flow({
   return (
     <figure className="not-prose rounded-xl border border-border bg-card p-4 sm:p-5">
       <ol
+        data-reset
         className={cn(
           'flex flex-col items-stretch gap-2',
           !vertical && 'md:flex-row md:items-center',
@@ -239,7 +240,7 @@ export function Column({
 /* ---------------- SplitView (explicación + implementación) ---------------- */
 
 export function SplitView({ children }: { children: ReactNode }) {
-  return <div className="not-prose grid gap-4 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">{children}</div>;
+  return <div className="not-prose grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">{children}</div>;
 }
 
 export function Panel({ title, children }: { title: string; children: ReactNode }) {
@@ -290,7 +291,7 @@ export function Term({ slug, children }: { slug: string; children: ReactNode }) 
 /* ---------------- Cards (enlaces destacados) ---------------- */
 
 export function Cards({ children }: { children: ReactNode }) {
-  return <div className="not-prose grid gap-3 sm:grid-cols-2">{children}</div>;
+  return <div className="not-prose grid grid-cols-1 gap-3 sm:grid-cols-2">{children}</div>;
 }
 
 export function Card({ href, title, description }: { href: string; title: string; description?: string }) {
@@ -321,7 +322,7 @@ export function Card({ href, title, description }: { href: string; title: string
 
 export function Checklist({ items }: { items: string[] }) {
   return (
-    <ul className="not-prose grid gap-2 sm:grid-cols-2">
+    <ul data-reset className="not-prose grid grid-cols-1 gap-2 sm:grid-cols-2">
       {items.map((item) => (
         <li key={item} className="flex items-start gap-2.5 rounded-lg border border-border bg-card px-3 py-2.5 text-sm">
           <Wrench className="mt-0.5 size-4 shrink-0 text-brand" aria-hidden />

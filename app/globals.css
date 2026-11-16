@@ -141,7 +141,7 @@
 .doc-content p {
   color: color-mix(in oklch, var(--foreground) 88%, var(--muted-foreground));
 }
-.doc-content a:not(.not-prose a):not([data-card]) {
+.doc-content a:not([data-card]) {
   color: var(--brand);
   font-weight: 500;
   text-decoration: underline;
@@ -149,7 +149,7 @@
   text-underline-offset: 3px;
   transition: text-decoration-color 0.15s;
 }
-.doc-content a:not(.not-prose a):not([data-card]):hover {
+.doc-content a:not([data-card]):hover {
   text-decoration-color: var(--brand);
 }
 .doc-content strong {
@@ -226,6 +226,16 @@
 }
 .doc-content tr:last-child td {
   border-bottom: 0;
+}
+
+/* Listas propias de componentes (árbol, checklist, flujos): sin viñetas */
+.doc-content [data-reset] {
+  list-style: none;
+  padding-left: 0;
+}
+.doc-content [data-reset] > li {
+  margin-top: 0;
+  padding-left: 0;
 }
 
 /* ---------- Bloques de código (Shiki) ---------- */

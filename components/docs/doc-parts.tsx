@@ -74,7 +74,7 @@ export function DocHeader({ meta, prerequisites }: { meta: DocMeta; prerequisite
 /** Ficha técnica de un proyecto práctico. */
 export function ProjectSummary({ meta }: { meta: DocMeta }) {
   return (
-    <section aria-label="Ficha del proyecto" className="mt-8 grid gap-3 sm:grid-cols-2">
+    <section aria-label="Ficha del proyecto" className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-2">
       {meta.goal && (
         <div className="rounded-xl border border-brand/30 bg-brand-soft/60 p-4 sm:col-span-2">
           <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
@@ -121,7 +121,7 @@ export function RelatedResources({ meta, related }: { meta: DocMeta; related: Do
       <h2 id="recursos-relacionados" className="text-xl font-semibold tracking-tight">
         Recursos relacionados
       </h2>
-      <div className="mt-5 grid gap-6 md:grid-cols-2">
+      <div className="mt-5 grid grid-cols-1 gap-6 md:grid-cols-2">
         {meta.resources && meta.resources.length > 0 && (
           <div>
             <h3 className="mb-2 text-xs font-semibold tracking-wider text-muted-foreground uppercase">Documentación oficial</h3>
@@ -164,7 +164,7 @@ export function RelatedResources({ meta, related }: { meta: DocMeta; related: Do
 
 export function Pager({ prev, next }: { prev?: DocMeta; next?: DocMeta }) {
   return (
-    <nav aria-label="Navegación entre temas" className="mt-10 grid gap-3 sm:grid-cols-2">
+    <nav aria-label="Navegación entre temas" className="mt-10 grid grid-cols-1 gap-3 sm:grid-cols-2">
       {prev ? (
         <Link
           href={prev.url}

@@ -35,7 +35,7 @@ const BENEFITS = [
   {
     icon: FileCode2,
     title: 'Código funcional y actual',
-    text: 'Ejemplos completos verificados con Expo SDK 58 y React Native 0.88, sin APIs obsoletas.',
+    text: 'Ejemplos completos escritos para Expo SDK 58 y React Native 0.88, contrastados con la documentación oficial y sin APIs obsoletas.',
   },
   {
     icon: Workflow,
@@ -50,7 +50,7 @@ const BENEFITS = [
   {
     icon: Search,
     title: 'Buscador instantáneo',
-    text: 'Encuentra temas, secciones, APIs y términos del glosario con ⌘K, también sin conexión al servidor.',
+    text: 'Encuentra temas, secciones, APIs y términos del glosario con ⌘K o /. El índice se genera al compilar y la búsqueda se ejecuta en tu navegador.',
   },
   {
     icon: BookMarked,
@@ -81,7 +81,7 @@ export default function HomePage() {
           aria-hidden
           className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_right,var(--border)_1px,transparent_1px),linear-gradient(to_bottom,var(--border)_1px,transparent_1px)] [mask-image:radial-gradient(ellipse_at_top,black_20%,transparent_70%)] bg-[size:44px_44px] opacity-60"
         />
-        <div className="relative mx-auto grid max-w-7xl gap-12 px-4 pt-14 pb-16 sm:px-6 sm:pt-20 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] lg:items-center lg:gap-10 lg:pb-24">
+        <div className="relative mx-auto grid grid-cols-1 max-w-7xl gap-12 px-4 pt-14 pb-16 sm:px-6 sm:pt-20 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] lg:items-center lg:gap-10 lg:pb-24">
           <div className="animate-fade-in">
             <span className="inline-flex items-center gap-2 rounded-full border border-border bg-background px-3 py-1 text-xs text-muted-foreground">
               <span className="size-1.5 rounded-full bg-success" aria-hidden />
@@ -140,7 +140,7 @@ export default function HomePage() {
           href="/rutas"
           cta="Ver todas las rutas"
         />
-        <ol className="mt-10 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <ol className="mt-10 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
           {learningPaths.slice(0, 8).map((path, i) => (
             <li key={path.slug}>
               <Link
@@ -172,7 +172,7 @@ export default function HomePage() {
             href="/docs"
             cta="Ver índice completo"
           />
-          <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="mt-10 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {navigation.map((section) => {
               const items = section.groups.flatMap((g) => g.items);
               return (
@@ -208,7 +208,7 @@ export default function HomePage() {
 
       {/* Sección especial */}
       <section className="mx-auto max-w-7xl px-4 py-20 sm:px-6">
-        <div className="grid gap-10 overflow-hidden rounded-3xl border border-border bg-card p-6 sm:p-10 lg:grid-cols-2 lg:items-center">
+        <div className="grid grid-cols-1 gap-10 overflow-hidden rounded-3xl border border-border bg-card p-6 sm:p-10 lg:grid-cols-2 lg:items-center">
           <div>
             <span className="rounded-full bg-brand-soft px-2.5 py-1 text-xs font-semibold text-brand">Sección especial</span>
             <h2 className="mt-4 text-3xl font-bold tracking-tight">Expo + NativeWind: tu propio kit de componentes</h2>
@@ -224,7 +224,7 @@ export default function HomePage() {
               Construir el kit <ArrowRight className="size-4" />
             </Link>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2" aria-label="Componentes que construirás">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2" aria-label="Componentes que construirás">
             {[
               ['Button', 'Variantes, tamaños, estado de carga'],
               ['Input', 'Etiqueta, error, iconos, accesible'],
@@ -253,7 +253,7 @@ export default function HomePage() {
           href="/proyectos"
           cta={`Ver los ${projects.length} proyectos`}
         />
-        <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="mt-10 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {featured.map((p) => (
             <ProjectCard
               key={p.id}
@@ -281,7 +281,7 @@ export default function HomePage() {
             href="/docs/introduccion/mapa-del-ecosistema"
             cta="Ver el mapa del ecosistema"
           />
-          <div className="mt-10 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="mt-10 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {technologies.map((tech) => (
               <Link
                 key={tech.name}
@@ -311,7 +311,7 @@ export default function HomePage() {
           title="Documentación pensada para aprender, no solo para consultar"
           text="Una experiencia inspirada en las mejores documentaciones técnicas, en español y centrada en la práctica."
         />
-        <div className="mt-10 grid gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="mt-10 grid grid-cols-1 gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
           {BENEFITS.map(({ icon: Icon, title, text }) => (
             <div key={title}>
               <span className="flex size-10 items-center justify-center rounded-xl border border-border bg-card">

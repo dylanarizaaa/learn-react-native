@@ -69,7 +69,7 @@ export function Sidebar({ navigation, onNavigate }: { navigation: NavSection[]; 
                       : 'text-muted-foreground hover:text-foreground',
                   )}
                 >
-                  Visión general
+                  Índice de la sección
                 </Link>
                 {section.groups.map((group, gi) => (
                   <div key={group.title ?? gi}>

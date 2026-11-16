@@ -63,11 +63,6 @@ export function CodeBlockFrame({
           </button>
         </div>
       )}
-      {embedded && (
-        <div className="absolute top-2 right-2">
-          <CopyButton value={code} />
-        </div>
-      )}
     </div>
   );
 
