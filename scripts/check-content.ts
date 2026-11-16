@@ -37,6 +37,12 @@ for (const section of sections) {
     if (!['principiante', 'intermedio', 'avanzado'].includes(data.difficulty as string)) {
       errors.push(`${id}: dificultad no válida "${data.difficulty}"`);
     }
+    for (const key of ['technologies', 'features', 'keywords', 'prerequisites', 'related']) {
+      const list = data[key];
+      if (list !== undefined && (!Array.isArray(list) || list.some((v) => typeof v !== 'string'))) {
+        errors.push(`${id}: "${key}" debe ser una lista de textos (¿falta entrecomillar un elemento con ":"?)`);
+      }
+    }
     if (section.kind === 'project') {
       for (const key of ['goal', 'technologies', 'features']) {
         if (!data[key]) errors.push(`${id}: los proyectos requieren "${key}"`);
