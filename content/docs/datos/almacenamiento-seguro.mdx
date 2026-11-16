@@ -1,0 +1,139 @@
+---
+title: Almacenamiento local y seguro
+sidebarTitle: Almacenamiento seguro
+description: Qué guardar en SecureStore, AsyncStorage, expo-sqlite/kv-store, SQLite o archivos. Una capa de almacenamiento tipada y la limpieza al cerrar sesión.
+difficulty: intermedio
+time: 18
+prerequisites:
+  - expo/expo-secure-store
+related:
+  - datos/jwt
+  - expo/expo-sqlite
+  - calidad/seguridad
+resources:
+  - title: AsyncStorage — Documentación
+    url: https://react-native-async-storage.github.io/async-storage/
+  - title: Expo — Almacenar datos
+    url: https://docs.expo.dev/develop/user-interface/store-data/
+  - title: OWASP MASVS — Almacenamiento
+    url: https://mas.owasp.org/MASVS/05-MASVS-STORAGE/
+keywords: [almacenamiento, AsyncStorage, SecureStore, kv-store, SQLite, MMKV, cifrado, persistencia, logout, datos sensibles]
+---
+
+## Introducción conceptual
+
+Cada tipo de dato tiene un lugar adecuado. Elegir mal tiene consecuencias: tokens legibles en una copia de seguridad, preferencias que se pierden, o listas de miles de elementos serializadas en un único JSON que tarda segundos en leerse.
+
+| Almacén | Cifrado | Tamaño adecuado | Ideal para |
+| --- | --- | --- | --- |
+| **expo-secure-store** | Sí (Keychain/Keystore) | Valores pequeños | Tokens, claves, PIN |
+| **AsyncStorage** | No | Pequeño o medio | Preferencias, caché simple |
+| **expo-sqlite/kv-store** | No | Pequeño o medio | Preferencias con lectura síncrona |
+| **expo-sqlite** | Opcional (SQLCipher) | Grande, consultable | Datos offline, listas, historial |
+| **expo-file-system** | No | Archivos | Imágenes, PDFs, exportaciones |
+
+<Overview
+  purpose="Persistir datos en el dispositivo eligiendo el almacén adecuado para cada caso."
+  importance="Una mala elección afecta a la seguridad (tokens expuestos) y al rendimiento (JSON enormes)."
+  when="Al diseñar qué datos sobreviven al cierre de la app y cuáles deben protegerse."
+  problem="Evita guardar secretos en texto plano y usar un único almacén para todo."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: '¿Es secreto?', desc: 'Sí → SecureStore', tone: 'brand' },
+    { title: '¿Es estructurado o grande?', desc: 'Sí → SQLite' },
+    { title: '¿Es un archivo?', desc: 'Sí → FileSystem' },
+    { title: 'Preferencia o caché', desc: 'AsyncStorage / kv-store', tone: 'muted' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+Una capa de almacenamiento tipada que oculta qué almacén usa cada dato:
+
+```bash
+npx expo install @react-native-async-storage/async-storage expo-secure-store
+```
+
+```ts title="src/lib/storage.ts"
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
+
+type Preferences = {
+  theme: 'system' | 'light' | 'dark';
+  onboardingDone: boolean;
+  lastSeenVersion: string | null;
+};
+
+const DEFAULT_PREFERENCES: Preferences = { theme: 'system', onboardingDone: false, lastSeenVersion: null };
+const PREFS_KEY = 'app.preferences.v1';
+const SECRET_KEYS = ['auth.accessToken', 'auth.refreshToken'] as const;
+type SecretKey = (typeof SECRET_KEYS)[number];
+
+/** Preferencias: no sensibles, en AsyncStorage como un único objeto */
+export const preferences = {
+  async get(): Promise<Preferences> {
+    const raw = await AsyncStorage.getItem(PREFS_KEY);
+    if (!raw) return DEFAULT_PREFERENCES;
+    try {
+      return { ...DEFAULT_PREFERENCES, ...(JSON.parse(raw) as Partial<Preferences>) };
+    } catch {
+      return DEFAULT_PREFERENCES; // datos corruptos: volvemos a los valores por defecto
+    }
+  },
+  async update(patch: Partial<Preferences>) {
+    const next = { ...(await preferences.get()), ...patch };
+    await AsyncStorage.setItem(PREFS_KEY, JSON.stringify(next));
+    return next;
+  },
+};
+
+/** Secretos: siempre en SecureStore */
+export const secrets = {
+  get: (key: SecretKey) => SecureStore.getItemAsync(key),
+  set: (key: SecretKey, value: string) => SecureStore.setItemAsync(key, value),
+  async clearAll() {
+    await Promise.all(SECRET_KEYS.map((key) => SecureStore.deleteItemAsync(key)));
+  },
+};
+
+/** Al cerrar sesión: borra datos del usuario, conserva preferencias del dispositivo */
+export async function wipeUserData() {
+  await secrets.clearAll();
+  const keys = await AsyncStorage.getAllKeys();
+  const userKeys = keys.filter((k) => k.startsWith('user.'));
+  await AsyncStorage.multiRemove(userKeys);
+}
+```
+
+## Explicación del código
+
+- **AsyncStorage** guarda strings: serializamos con `JSON.stringify` y deserializamos con un `try/catch` por si el contenido está corrupto o se cambió el formato.
+- **Valores por defecto fusionados** (`{ ...DEFAULT, ...guardado }`): si en una versión nueva añades una preferencia, los usuarios antiguos la reciben con su valor por defecto.
+- **Versión en la clave** (`.v1`): si cambias la estructura de forma incompatible, usa `v2` y migra o descarta la anterior.
+- **`SecretKey` como unión de literales**: solo se pueden leer o escribir secretos conocidos, y `clearAll` sabe exactamente cuáles borrar.
+- **`wipeUserData`** separa datos del usuario (prefijo `user.`) de preferencias del dispositivo (tema), que pueden sobrevivir al cambio de cuenta.
+
+<Callout type="info" title="Versiones de AsyncStorage">
+Expo SDK 58 instala `@react-native-async-storage/async-storage` 2.x con `npx expo install`, que es la versión usada en estos ejemplos. Si utilizas otra versión mayor, revisa su guía de migración.
+</Callout>
+
+## Buenas prácticas
+
+- **Nada sensible fuera de SecureStore**: tokens, claves de API del usuario, datos de salud o financieros identificables.
+- **No guardes respuestas enteras de la API** en AsyncStorage para "cachear": usa TanStack Query con su persistidor o SQLite.
+- **Limpia al cerrar sesión** todo lo asociado al usuario (incluida la caché de TanStack Query).
+- **Ten en cuenta las copias de seguridad**: en Android, excluye datos sensibles de la copia automática (`configureAndroidBackup` en el plugin de SecureStore).
+
+### Errores comunes
+
+- Guardar el token en AsyncStorage "porque es más fácil".
+- Un único JSON con miles de registros: cada lectura y escritura procesa todo el contenido.
+- No contemplar que el almacenamiento puede estar vacío (primera ejecución, datos borrados por el usuario).
+
+### Cuándo usar otra solución
+
+Si necesitas un almacén clave-valor síncrono y muy rápido para estados que se leen constantemente, **react-native-mmkv** es una opción popular (requiere development build). Para datos relacionales offline, [expo-sqlite](/docs/expo/expo-sqlite).

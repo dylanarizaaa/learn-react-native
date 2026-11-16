@@ -1,0 +1,192 @@
+---
+title: Conexión con Firebase y Supabase
+sidebarTitle: Firebase y Supabase
+description: Backends como servicio en Expo. Configurar Supabase (Auth, Postgres con RLS, Realtime) y Firebase (JS SDK o React Native Firebase), y cómo elegir entre ambos.
+difficulty: avanzado
+time: 25
+prerequisites:
+  - datos/autenticacion
+  - expo/variables-de-entorno
+related:
+  - datos/tanstack-query
+  - datos/websockets
+  - calidad/seguridad
+resources:
+  - title: Expo — Usar Supabase
+    url: https://docs.expo.dev/guides/using-supabase/
+  - title: Expo — Usar Firebase
+    url: https://docs.expo.dev/guides/using-firebase/
+  - title: Supabase — Row Level Security
+    url: https://supabase.com/docs/guides/database/postgres/row-level-security
+keywords: [supabase, firebase, backend as a service, baas, rls, firestore, auth, realtime, publishable key]
+---
+
+## Introducción conceptual
+
+Un **backend como servicio** (BaaS) te da base de datos, autenticación, almacenamiento de archivos y tiempo real sin escribir ni mantener un servidor. Los dos más usados con Expo son:
+
+<Columns>
+  <Column title="Supabase" tone="brand">
+    - **PostgreSQL** (SQL, relaciones, transacciones).
+    - Seguridad con **Row Level Security** (políticas SQL).
+    - Auth, Storage, Realtime y Edge Functions.
+    - Open source, se puede autoalojar.
+    - SDK JavaScript: funciona en Expo Go.
+  </Column>
+  <Column title="Firebase">
+    - **Firestore** (documentos NoSQL) o Realtime Database.
+    - Seguridad con **Security Rules**.
+    - Auth, Storage, Cloud Functions, Analytics, Crashlytics, FCM.
+    - Ecosistema de Google muy completo.
+    - JS SDK (Expo Go) o React Native Firebase (development build).
+  </Column>
+</Columns>
+
+<Overview
+  purpose="Disponer de un backend completo (datos, auth, archivos, tiempo real) sin construirlo desde cero."
+  importance="Permite lanzar productos rápido con un equipo pequeño y escalar sin gestionar infraestructura."
+  when="MVPs, apps sin backend propio, equipos frontend o funcionalidades en tiempo real."
+  problem="Evita construir y operar desde cero autenticación, base de datos, permisos y almacenamiento."
+/>
+
+## Explicación visual
+
+<Layers
+  layers={[
+    { title: 'App Expo', desc: 'Cliente', items: ['SDK de Supabase / Firebase', 'Clave pública'], tone: 'brand' },
+    { title: 'Reglas de seguridad', desc: 'Lo que realmente protege los datos', items: ['RLS (Supabase)', 'Security Rules (Firebase)'] },
+    { title: 'Servicios', desc: 'Gestionados', items: ['Auth', 'Base de datos', 'Storage', 'Realtime'] },
+    { title: 'Lógica privada', desc: 'Con claves secretas', items: ['Edge Functions', 'Cloud Functions'], tone: 'muted' },
+  ]}
+  caption="La clave de la app es pública: la seguridad depende de las reglas, nunca de ocultar la clave."
+/>
+
+## Ejemplo práctico
+
+<CodeTabs>
+
+```bash title="Instalación"
+# Supabase (guía oficial de Expo)
+npx expo install @supabase/supabase-js expo-sqlite
+
+# Firebase JS SDK
+npx expo install firebase
+```
+
+```ts title="src/lib/supabase.ts"
+import 'expo-sqlite/localStorage/install';
+import { createClient } from '@supabase/supabase-js';
+import { AppState, Platform } from 'react-native';
+
+const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL!;
+const supabasePublishableKey = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY!;
+
+export const supabase = createClient(supabaseUrl, supabasePublishableKey, {
+  auth: {
+    storage: localStorage, // proporcionado por expo-sqlite
+    autoRefreshToken: true,
+    persistSession: true,
+    detectSessionInUrl: false,
+  },
+});
+
+// Refresca el token solo con la app en primer plano
+if (Platform.OS !== 'web') {
+  AppState.addEventListener('change', (state) => {
+    if (state === 'active') supabase.auth.startAutoRefresh();
+    else supabase.auth.stopAutoRefresh();
+  });
+}
+```
+
+```sql title="Supabase: tabla con Row Level Security"
+create table public.expenses (
+  id bigint generated always as identity primary key,
+  user_id uuid not null default auth.uid() references auth.users (id),
+  description text not null,
+  amount numeric(12, 2) not null,
+  created_at timestamptz not null default now()
+);
+
+alter table public.expenses enable row level security;
+
+-- Cada usuario solo ve y modifica sus propios gastos
+create policy "Leer mis gastos" on public.expenses for select to authenticated using (user_id = auth.uid());
+create policy "Crear mis gastos" on public.expenses for insert to authenticated with check (user_id = auth.uid());
+```
+
+```ts title="src/features/expenses/api/expenses-service.ts"
+import { supabase } from '@/lib/supabase';
+
+export const expensesService = {
+  async list() {
+    const { data, error } = await supabase
+      .from('expenses')
+      .select('id, description, amount, created_at')
+      .order('created_at', { ascending: false })
+      .limit(50);
+    if (error) throw error;
+    return data;
+  },
+  async create(input: { description: string; amount: number }) {
+    const { data, error } = await supabase.from('expenses').insert(input).select().single();
+    if (error) throw error;
+    return data;
+  },
+  signIn: (email: string, password: string) => supabase.auth.signInWithPassword({ email, password }),
+  signOut: () => supabase.auth.signOut(),
+};
+```
+
+```ts title="src/lib/firebase.ts"
+import { initializeApp, getApps } from 'firebase/app';
+import { getFirestore, collection, addDoc, query, where, orderBy, getDocs } from 'firebase/firestore';
+
+const firebaseConfig = {
+  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
+  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
+  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
+};
+
+export const app = getApps()[0] ?? initializeApp(firebaseConfig);
+export const db = getFirestore(app);
+
+export async function listExpenses(userId: string) {
+  const q = query(collection(db, 'expenses'), where('userId', '==', userId), orderBy('createdAt', 'desc'));
+  const snapshot = await getDocs(q);
+  return snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+export function addExpense(userId: string, description: string, amount: number) {
+  return addDoc(collection(db, 'expenses'), { userId, description, amount, createdAt: new Date() });
+}
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`expo-sqlite/localStorage/install`** añade un `localStorage` global respaldado por SQLite: es lo que la guía oficial de Expo usa para que Supabase persista la sesión. No necesitas el polyfill de URL, Expo ya incluye `URL`.
+- **`detectSessionInUrl: false`**: en Android e iOS no hay URL de la que leer una sesión (eso es para la web).
+- **`startAutoRefresh` / `stopAutoRefresh`** con `AppState`: evita refrescos de token en segundo plano, como recomienda Supabase.
+- **Clave *publishable* (o anon)**: es pública y viaja en la app. La seguridad real está en las **políticas RLS**: con `user_id = auth.uid()`, aunque alguien use la clave desde fuera, solo verá sus propios datos.
+- **`throw error`**: los SDK devuelven `{ data, error }`; lanzar el error lo integra con TanStack Query y sus reintentos.
+- **Firebase**: `getApps()[0] ?? initializeApp(...)` evita reinicializar con Fast Refresh. Para la persistencia de la sesión de Firebase Auth con el JS SDK, sigue la guía de Expo enlazada en los recursos; si necesitas Crashlytics, Analytics nativo o FCM directo, usa **React Native Firebase** con un development build.
+
+## Buenas prácticas
+
+- **Activa RLS o Security Rules desde el primer día** y pruébalas con usuarios distintos.
+- **Nunca uses claves de servicio** (service role, Admin SDK) en la app: van en funciones del servidor.
+- **Envuelve el SDK en servicios** y usa TanStack Query en la UI: si un día cambias de proveedor, solo cambia la capa de datos.
+- **Genera los tipos** de tu base de datos (Supabase CLI) para tener consultas tipadas.
+
+### Errores comunes
+
+- Tablas sin RLS: cualquiera con la clave pública puede leer todo.
+- Pensar que una consulta vacía es un error: con RLS, una política que no coincide devuelve un array vacío sin error.
+- Usar el JS SDK de Firebase esperando funciones que solo existen en el SDK nativo (por ejemplo, Crashlytics).
+
+### Cuándo usar otra solución
+
+Si tu dominio requiere lógica compleja, integraciones con sistemas internos o control total, un backend propio (Node, Django, Laravel, .NET) con una API REST puede ser mejor. Para sincronización offline automática sobre Postgres, existen soluciones especializadas como PowerSync o ElectricSQL.

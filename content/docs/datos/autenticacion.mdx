@@ -1,0 +1,202 @@
+---
+title: Autenticación
+description: Flujos de autenticación en apps móviles, ciclo de vida de la sesión, restaurar sesión al abrir, rutas protegidas con Expo Router, OAuth y cierre de sesión seguro.
+difficulty: avanzado
+time: 25
+prerequisites:
+  - react-typescript/context-api
+  - expo/navegacion-por-archivos
+related:
+  - datos/jwt
+  - datos/almacenamiento-seguro
+  - proyectos/autenticacion-con-api
+resources:
+  - title: Expo — Autenticación
+    url: https://docs.expo.dev/guides/authentication/
+  - title: Expo Router — Rutas protegidas
+    url: https://docs.expo.dev/router/advanced/protected/
+  - title: Expo — AuthSession
+    url: https://docs.expo.dev/versions/latest/sdk/auth-session/
+keywords: [autenticación, login, sesión, Stack.Protected, OAuth, expo-auth-session, cerrar sesión, splash, restaurar sesión]
+---
+
+## Introducción conceptual
+
+Autenticar es demostrar quién es el usuario; mantener la sesión es recordarlo de forma segura entre aperturas de la app. En móvil, el ciclo completo es:
+
+1. **Arranque**: leer la sesión guardada (SecureStore) mientras la *splash screen* sigue visible.
+2. **Decisión de rutas**: con sesión → app; sin sesión → login (con `Stack.Protected`).
+3. **Login**: credenciales u OAuth → tokens → guardar → navegar.
+4. **Uso**: cada petición lleva el token; si caduca, se refresca ([JWT](/docs/datos/jwt)).
+5. **Cierre**: borrar tokens, caché de datos y estado del usuario.
+
+<Overview
+  purpose="Identificar al usuario y mantener su sesión de forma segura y fluida."
+  importance="Un flujo de sesión mal hecho provoca parpadeos del login, datos de otro usuario en caché o tokens expuestos."
+  when="En cualquier app con cuentas de usuario."
+  problem="Unifica restauración de sesión, protección de rutas y limpieza al cerrar sesión en un único proveedor."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'Splash visible', desc: 'Leer SecureStore' },
+    { title: '¿Token válido?', desc: 'Restaurar sesión', tone: 'brand' },
+    { title: 'Stack.Protected', desc: 'guard = sesión' },
+    { title: 'App o Login', desc: 'Sin parpadeos' },
+  ]}
+/>
+
+| Método | Cómo | Cuándo |
+| --- | --- | --- |
+| Email + contraseña | Tu API devuelve tokens | Backend propio |
+| OAuth / OpenID (Google, Apple…) | `expo-auth-session` + navegador del sistema | Login social o corporativo |
+| Enlace mágico / OTP | Código por email o SMS | Apps de consumo con poca fricción |
+| Proveedor gestionado | Supabase Auth, Firebase Auth, Clerk | Sin backend de autenticación propio |
+
+## Ejemplo práctico
+
+Un proveedor de sesión completo integrado con Expo Router y TanStack Query:
+
+<CodeTabs>
+
+```tsx title="src/features/auth/session-provider.tsx"
+import { useQueryClient } from '@tanstack/react-query';
+import * as SplashScreen from 'expo-splash-screen';
+import { createContext, use, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { clearTokens, getTokens, saveTokens } from '@/lib/secure-session';
+import { authService, type User } from './api/auth-service';
+
+type SessionState = { status: 'loading' } | { status: 'signed-out' } | { status: 'signed-in'; user: User };
+
+type SessionContextValue = {
+  session: SessionState;
+  signIn: (email: string, password: string) => Promise<void>;
+  signOut: () => Promise<void>;
+};
+
+const SessionContext = createContext<SessionContextValue | null>(null);
+SplashScreen.preventAutoHideAsync();
+
+export function SessionProvider({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient();
+  const [session, setSession] = useState<SessionState>({ status: 'loading' });
+
+  // 1. Restaurar la sesión al abrir la app
+  useEffect(() => {
+    (async () => {
+      try {
+        const tokens = await getTokens();
+        if (!tokens) return setSession({ status: 'signed-out' });
+        const user = await authService.me(); // valida el token contra el servidor
+        setSession({ status: 'signed-in', user });
+      } catch {
+        await clearTokens();
+        setSession({ status: 'signed-out' });
+      } finally {
+        SplashScreen.hideAsync();
+      }
+    })();
+  }, []);
+
+  const signIn = useCallback(async (email: string, password: string) => {
+    const { user, accessToken, refreshToken } = await authService.login({ email, password });
+    await saveTokens({ accessToken, refreshToken });
+    setSession({ status: 'signed-in', user });
+  }, []);
+
+  const signOut = useCallback(async () => {
+    await authService.logout().catch(() => {}); // invalida el refresh token en el servidor
+    await clearTokens();
+    queryClient.clear(); // ¡datos del usuario fuera de la caché!
+    setSession({ status: 'signed-out' });
+  }, [queryClient]);
+
+  const value = useMemo(() => ({ session, signIn, signOut }), [session, signIn, signOut]);
+  return <SessionContext value={value}>{children}</SessionContext>;
+}
+
+export function useSession() {
+  const ctx = use(SessionContext);
+  if (!ctx) throw new Error('useSession debe usarse dentro de <SessionProvider>');
+  return ctx;
+}
+```
+
+```tsx title="src/app/_layout.tsx"
+import { Stack } from 'expo-router';
+import { QueryProvider } from '@/providers/query-provider';
+import { SessionProvider, useSession } from '@/features/auth/session-provider';
+
+function RootNavigator() {
+  const { session } = useSession();
+  if (session.status === 'loading') return null; // la splash sigue visible
+
+  const signedIn = session.status === 'signed-in';
+  return (
+    <Stack screenOptions={{ headerShown: false }}>
+      <Stack.Protected guard={!signedIn}>
+        <Stack.Screen name="(auth)" />
+      </Stack.Protected>
+      <Stack.Protected guard={signedIn} redirectTo="/login">
+        <Stack.Screen name="(app)" />
+      </Stack.Protected>
+    </Stack>
+  );
+}
+
+export default function RootLayout() {
+  return (
+    <QueryProvider>
+      <SessionProvider>
+        <RootNavigator />
+      </SessionProvider>
+    </QueryProvider>
+  );
+}
+```
+
+```ts title="Login con OAuth (esquema)"
+import * as AuthSession from 'expo-auth-session';
+import * as WebBrowser from 'expo-web-browser';
+
+WebBrowser.maybeCompleteAuthSession(); // cierra el navegador al volver a la app (web)
+
+const discovery = AuthSession.useAutoDiscovery('https://auth.miempresa.com');
+const redirectUri = AuthSession.makeRedirectUri({ scheme: 'miapp' });
+
+const [request, response, promptAsync] = AuthSession.useAuthRequest(
+  { clientId: 'mi-app-movil', redirectUri, scopes: ['openid', 'profile', 'email'], usePKCE: true },
+  discovery,
+);
+// Al pulsar: promptAsync(). Si response?.type === 'success', envía response.params.code
+// a tu backend para canjearlo por tokens (nunca guardes el client secret en la app).
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **Estado como unión** (`loading` | `signed-out` | `signed-in`): imposible tener un usuario "a medias", y TypeScript solo permite leer `user` cuando hay sesión.
+- **Restauración con validación**: no basta con que exista un token guardado; `authService.me()` comprueba que sigue siendo válido. Mientras tanto, la *splash screen* evita mostrar el login durante una fracción de segundo.
+- **`Stack.Protected`** declara qué grupo de rutas es accesible en cada estado. Al cambiar `signedIn`, Expo Router redirige automáticamente y limpia el historial de las pantallas que dejan de ser accesibles.
+- **`signOut` limpia todo**: invalida la sesión en el servidor, borra los tokens de SecureStore y vacía la caché de TanStack Query para que el siguiente usuario no vea datos ajenos.
+- **OAuth con PKCE**: `expo-auth-session` abre el navegador del sistema (seguro y con las sesiones del usuario) y devuelve un código que tu backend canjea por tokens.
+
+## Buenas prácticas
+
+- **Nunca guardes contraseñas**; guarda tokens en SecureStore.
+- **Valida la sesión en el arranque** y maneja el caso sin conexión (por ejemplo, permitir el acceso con datos en caché).
+- **Ofrece "Iniciar sesión con Apple"** si ofreces otros logins sociales en iOS (requisito de Apple).
+- **Elimina la cuenta desde la app** si permites registrarse (requisito de ambas tiendas).
+
+### Errores comunes
+
+- Mostrar el login un instante antes de redirigir a la app (falta mantener la splash mientras carga).
+- Proteger rutas con `useEffect` + `router.replace`: los deep links pueden saltarse la protección; usa `Stack.Protected`.
+- Olvidar `queryClient.clear()` al cerrar sesión.
+
+### Cuándo usar otra solución
+
+Si no quieres mantener tu propio backend de autenticación, usa un proveedor gestionado ([Firebase y Supabase](/docs/datos/firebase-y-supabase)) o servicios especializados. El proyecto [Autenticación con API](/docs/proyectos/autenticacion-con-api) implementa este flujo completo.

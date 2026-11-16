@@ -1,0 +1,192 @@
+---
+title: WebSockets
+description: Comunicación en tiempo real con la API WebSocket nativa. Reconexión con backoff, pausa en segundo plano, heartbeats e integración con la caché de TanStack Query.
+difficulty: avanzado
+time: 25
+prerequisites:
+  - datos/tanstack-query
+  - react-typescript/useeffect
+related:
+  - datos/firebase-y-supabase
+  - proyectos/sincronizacion-de-datos
+  - calidad/rendimiento
+resources:
+  - title: MDN — WebSocket
+    url: https://developer.mozilla.org/es/docs/Web/API/WebSocket
+  - title: React Native — Networking (WebSocket)
+    url: https://reactnative.dev/docs/network#websocket-support
+  - title: TanStack Query — Actualizaciones desde eventos
+    url: https://tkdodo.eu/blog/using-web-sockets-with-react-query
+keywords: [websocket, tiempo real, realtime, reconexión, backoff, heartbeat, AppState, chat, notificaciones en vivo, setQueryData]
+---
+
+## Introducción conceptual
+
+HTTP es "pregunta y respuesta": el cliente pide y el servidor contesta. Para datos que cambian constantemente (chat, ubicación de un repartidor, estado de un pedido, cotizaciones) necesitas que **el servidor te avise**. Un **WebSocket** mantiene una conexión bidireccional abierta por la que ambos pueden enviar mensajes en cualquier momento.
+
+React Native incluye la API `WebSocket` estándar. Lo difícil no es abrir la conexión, sino **mantenerla viva en móvil**: la red cambia (Wi-Fi ↔ datos), la app pasa a segundo plano y el sistema corta conexiones.
+
+<Overview
+  purpose="Recibir y enviar actualizaciones en tiempo real entre la app y el servidor."
+  importance="Las funcionalidades en vivo (chat, seguimiento, colaboración) dependen de conexiones fiables y de reconectar bien."
+  when="Datos que cambian con frecuencia y deben verse al instante mientras la app está abierta."
+  problem="Evita hacer polling cada pocos segundos (consume batería y datos) y conexiones que mueren sin reconectar."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'Conectar', desc: 'App activa' },
+    { title: 'Mensajes', desc: 'Actualizar caché', tone: 'brand' },
+    { title: 'Corte', desc: 'Red o servidor', tone: 'muted' },
+    { title: 'Backoff', desc: '1 s, 2 s, 4 s… máx. 30 s' },
+    { title: 'Reconectar', desc: 'Y resincronizar' },
+  ]}
+/>
+
+<Columns>
+  <Column title="Con la app abierta" tone="good">
+    WebSocket: latencia mínima, bidireccional.
+  </Column>
+  <Column title="Con la app cerrada">
+    El sistema corta los sockets: usa [notificaciones push](/docs/expo/expo-notifications) para avisar.
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+Un hook de conexión robusta y su uso para el seguimiento de un pedido:
+
+<CodeTabs>
+
+```ts title="src/hooks/use-websocket.ts"
+import { useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
+
+type Status = 'connecting' | 'open' | 'closed';
+
+export function useWebSocket<TMessage>(url: string | null, onMessage: (message: TMessage) => void) {
+  const [status, setStatus] = useState<Status>('closed');
+  const onMessageRef = useRef(onMessage);
+  onMessageRef.current = onMessage; // siempre la última versión sin reconectar
+
+  useEffect(() => {
+    if (!url) return;
+    let socket: WebSocket | null = null;
+    let retries = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    let stopped = false;
+
+    function connect() {
+      if (stopped || AppState.currentState !== 'active') return;
+      setStatus('connecting');
+      socket = new WebSocket(url!);
+
+      socket.onopen = () => {
+        retries = 0;
+        setStatus('open');
+        // Heartbeat: detecta conexiones "zombis" que el sistema no cerró
+        heartbeat = setInterval(() => socket?.send(JSON.stringify({ type: 'ping' })), 25_000);
+      };
+      socket.onmessage = (event) => {
+        try {
+          onMessageRef.current(JSON.parse(String(event.data)) as TMessage);
+        } catch {
+          // mensaje no válido: lo ignoramos
+        }
+      };
+      socket.onclose = () => {
+        clearInterval(heartbeat);
+        setStatus('closed');
+        if (stopped) return;
+        // Backoff exponencial con jitter, máximo 30 s
+        const delay = Math.min(30_000, 1000 * 2 ** retries) * (0.5 + Math.random() / 2);
+        retries += 1;
+        retryTimer = setTimeout(connect, delay);
+      };
+      socket.onerror = () => socket?.close();
+    }
+
+    function disconnect() {
+      clearTimeout(retryTimer);
+      clearInterval(heartbeat);
+      socket?.close();
+      socket = null;
+    }
+
+    // Conectar en primer plano, desconectar en segundo plano
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && !socket) connect();
+      if (state !== 'active') disconnect();
+    });
+
+    connect();
+    return () => {
+      stopped = true;
+      sub.remove();
+      disconnect();
+    };
+  }, [url]);
+
+  return status;
+}
+```
+
+```tsx title="src/features/orders/hooks/use-live-order.ts"
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useWebSocket } from '@/hooks/use-websocket';
+import { ordersService, type Order } from '../api/orders-service';
+
+type OrderEvent =
+  | { type: 'status'; orderId: string; status: Order['status'] }
+  | { type: 'courier-location'; orderId: string; lat: number; lng: number };
+
+export function useLiveOrder(orderId: string) {
+  const queryClient = useQueryClient();
+  const query = useQuery({ queryKey: ['orders', orderId], queryFn: () => ordersService.get(orderId) });
+
+  const connection = useWebSocket<OrderEvent>(
+    `${process.env.EXPO_PUBLIC_WS_URL}/orders/${orderId}`,
+    (event) => {
+      // El servidor empuja cambios: actualizamos la caché sin otra petición HTTP
+      queryClient.setQueryData<Order>(['orders', orderId], (order) => {
+        if (!order) return order;
+        if (event.type === 'status') return { ...order, status: event.status };
+        return { ...order, courier: { lat: event.lat, lng: event.lng } };
+      });
+    },
+  );
+
+  return { ...query, connection };
+}
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`onMessageRef`** guarda siempre la última función `onMessage` sin incluirla en las dependencias del efecto: cambiarla no reinicia la conexión.
+- **Backoff exponencial con *jitter***: tras cada corte esperamos 1 s, 2 s, 4 s… hasta 30 s, con una variación aleatoria. Así miles de dispositivos no reconectan a la vez cuando el servidor se recupera.
+- **Heartbeat**: un mensaje periódico detecta conexiones que parecen abiertas pero ya no funcionan (habitual al cambiar de red).
+- **AppState**: en segundo plano desconectamos (ahorro de batería y el sistema lo cortaría igualmente) y al volver reconectamos.
+- **`setQueryData`** integra los eventos con TanStack Query: la pantalla sigue leyendo `useQuery` y se actualiza sola. Los eventos son una **unión discriminada** por `type`, así cada rama está tipada.
+- **Resincronizar al reconectar**: durante el corte pudimos perder eventos; una buena práctica es invalidar la consulta al pasar a `open` tras una reconexión.
+
+## Buenas prácticas
+
+- **Usa `wss://`** (TLS) siempre en producción.
+- **Autentica la conexión** (token en el primer mensaje o en un parámetro de un solo uso), no confíes en una URL pública.
+- **Mensajes pequeños e idempotentes**: incluye identificadores y versiones para ignorar eventos repetidos o antiguos.
+- **Muestra el estado de la conexión** solo si afecta al usuario (por ejemplo, "Reconectando…" en un chat).
+
+### Errores comunes
+
+- No reconectar nunca tras el primer corte.
+- Reconectar en bucle sin espera, agotando batería y saturando el servidor.
+- Mantener la conexión abierta en segundo plano esperando recibir mensajes: usa notificaciones push.
+
+### Cuándo usar otra solución
+
+**Socket.IO** añade salas, acknowledgements y reconexión automática (requiere su servidor). **Supabase Realtime** y los *listeners* de Firestore ofrecen tiempo real gestionado. Para flujos solo de servidor a cliente (por ejemplo, respuestas de IA en streaming), `expo/fetch` admite lectura de respuestas en streaming, más simple que un WebSocket.

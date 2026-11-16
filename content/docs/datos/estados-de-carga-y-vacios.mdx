@@ -1,0 +1,155 @@
+---
+title: Loading y estados vacíos
+description: Modelar todos los estados de una pantalla con datos (cargando, error, vacío, listo, refrescando, sin conexión) a partir de TanStack Query, incluida la versión con Suspense.
+difficulty: intermedio
+time: 18
+prerequisites:
+  - datos/tanstack-query
+related:
+  - sistema-de-componentes/carga
+  - sistema-de-componentes/estado-vacio
+  - datos/manejo-de-errores
+resources:
+  - title: TanStack Query — Estados de las consultas
+    url: https://tanstack.com/query/latest/docs/framework/react/guides/queries
+  - title: TanStack Query — Suspense
+    url: https://tanstack.com/query/latest/docs/framework/react/guides/suspense
+  - title: React — Suspense
+    url: https://react.dev/reference/react/Suspense
+keywords: [estados, loading, vacío, error, isPending, isFetching, placeholderData, suspense, useSuspenseQuery, máquina de estados]
+---
+
+## Introducción conceptual
+
+Toda pantalla con datos remotos tiene más estados de los que parece. Si solo contemplas "cargando" y "listo", aparecerán pantallas en blanco, spinners eternos y errores silenciosos.
+
+| Estado | Condición | Qué mostrar |
+| --- | --- | --- |
+| Cargando (primera vez) | `isPending` | Skeleton |
+| Error sin datos | `isError && !data` | `ErrorState` con reintentar |
+| Vacío | `data.length === 0` | `EmptyState` con acción |
+| Listo | `data.length > 0` | Contenido |
+| Refrescando | `isFetching && data` | Contenido + indicador discreto |
+| Error con datos (refresco fallido) | `isError && data` | Contenido + aviso |
+| Sin conexión | `onlineManager` / NetInfo | Contenido en caché + banner |
+
+<Overview
+  purpose="Definir qué ve el usuario en cada situación posible de una pantalla con datos remotos."
+  importance="Los estados intermedios son donde la mayoría de apps fallan en experiencia: parpadeos, pantallas vacías, errores sin salida."
+  when="En cada pantalla o sección que cargue datos."
+  problem="Evita combinar booleanos (loading, error, data) sin cubrir todos los casos ni establecer prioridades."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: '¿isPending?', desc: 'Skeleton' },
+    { title: '¿Error sin datos?', desc: 'ErrorState', tone: 'muted' },
+    { title: '¿Vacío?', desc: 'EmptyState' },
+    { title: 'Contenido', desc: '+ indicador si isFetching', tone: 'brand' },
+  ]}
+  caption="El orden importa: se evalúa de arriba a abajo."
+/>
+
+## Ejemplo práctico
+
+Un componente que resuelve los estados para cualquier consulta de lista, y la versión con Suspense:
+
+<CodeTabs>
+
+```tsx title="src/components/feedback/query-list-state.tsx"
+import type { UseQueryResult } from '@tanstack/react-query';
+import type { ReactNode } from 'react';
+import { View } from 'react-native';
+import { Text } from '@/components/ui';
+import { EmptyState } from './empty-state';
+import { ErrorState } from './error-state';
+import { ListSkeleton } from './skeleton';
+
+type Props<T> = {
+  query: UseQueryResult<T[]>;
+  empty: { title: string; description?: string; action?: { label: string; onPress: () => void } };
+  children: (items: T[]) => ReactNode;
+};
+
+/** Resuelve cargando / error / vacío / listo en un único lugar */
+export function QueryListState<T>({ query, empty, children }: Props<T>) {
+  if (query.isPending) return <ListSkeleton />;
+
+  if (query.isError && !query.data) {
+    return <ErrorState onRetry={() => query.refetch()} />;
+  }
+
+  const items = query.data ?? [];
+  if (items.length === 0) return <EmptyState {...empty} />;
+
+  return (
+    <View className="flex-1">
+      {query.isError ? (
+        <View className="bg-warning/15 px-4 py-2">
+          <Text variant="caption">No pudimos actualizar. Mostrando la última información disponible.</Text>
+        </View>
+      ) : null}
+      {children(items)}
+    </View>
+  );
+}
+```
+
+```tsx title="Uso"
+<QueryListState
+  query={useOrders()}
+  empty={{ title: 'Sin pedidos', description: 'Tus pedidos aparecerán aquí.' }}
+>
+  {(orders) => <OrderList orders={orders} />}
+</QueryListState>
+```
+
+```tsx title="Con Suspense"
+import { useSuspenseQuery } from '@tanstack/react-query';
+import { Suspense } from 'react';
+import { ErrorBoundary } from '@/components/feedback/error-boundary';
+import { ListSkeleton } from '@/components/feedback/skeleton';
+
+function OrdersContent() {
+  // Con Suspense, data nunca es undefined: la carga la gestiona el <Suspense> padre
+  const { data: orders } = useSuspenseQuery({ queryKey: ['orders'], queryFn: ordersService.list });
+  return orders.length === 0 ? <EmptyOrders /> : <OrderList orders={orders} />;
+}
+
+export function OrdersSection() {
+  return (
+    <ErrorBoundary fallback={({ reset }) => <ErrorState onRetry={reset} />}>
+      <Suspense fallback={<ListSkeleton />}>
+        <OrdersContent />
+      </Suspense>
+    </ErrorBoundary>
+  );
+}
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **El orden de las comprobaciones** define las prioridades: primero la carga inicial, después el error sin datos, después el vacío y por último el contenido.
+- **`isError && !query.data`**: si un refresco falla pero teníamos datos en caché, no los ocultamos; mostramos el contenido con un aviso discreto. Solo cuando no hay nada que mostrar sustituimos la pantalla por el error.
+- **`children` como función** (*render prop*) recibe la lista ya garantizada como no vacía: el componente hijo no necesita volver a comprobarlo.
+- **`useSuspenseQuery`** garantiza que `data` existe: la carga se delega en el `Suspense` más cercano y los errores en el *error boundary*. Es más declarativo, a cambio de estructurar la pantalla en límites de carga y error ([Manejo de errores en la app](/docs/calidad/manejo-de-errores) explica los error boundaries).
+
+## Buenas prácticas
+
+- **No muestres spinners en refrescos**: el usuario ya está leyendo el contenido.
+- **`placeholderData: keepPreviousData`** en búsquedas y filtros evita que la lista se vacíe con cada cambio.
+- **Pantallas con varias secciones**: cada sección con su propio estado de carga y error, para que un fallo parcial no tumbe toda la pantalla.
+
+### Errores comunes
+
+- Comprobar `data` antes que `isPending` y mostrar el estado vacío durante la carga.
+- Usar `isFetching` para el skeleton: parpadea en cada refresco.
+- Olvidar el estado de error y dejar un skeleton infinito.
+
+### Cuándo usar otra solución
+
+Para formularios y acciones (no lecturas), los estados vienen de la mutación (`isPending` de `useMutation`) y se muestran en el propio botón con `loading` ([Button](/docs/sistema-de-componentes/button)).

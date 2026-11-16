@@ -1,0 +1,156 @@
+---
+title: Consumo de APIs REST
+description: Recursos, verbos y códigos de estado; un servicio CRUD tipado y validado con Zod; transformación de DTOs al modelo de la app y parámetros de consulta.
+difficulty: intermedio
+time: 20
+prerequisites:
+  - datos/fetch-y-axios
+  - react-typescript/interfaces-y-tipos
+related:
+  - datos/tanstack-query
+  - arquitectura/servicios-y-repositorios
+  - datos/manejo-de-errores
+resources:
+  - title: MDN — Métodos de petición HTTP
+    url: https://developer.mozilla.org/es/docs/Web/HTTP/Methods
+  - title: MDN — Códigos de estado HTTP
+    url: https://developer.mozilla.org/es/docs/Web/HTTP/Status
+  - title: Zod — Documentación
+    url: https://zod.dev
+keywords: [api rest, crud, verbos http, códigos de estado, dto, zod, validación, query params, servicio]
+---
+
+## Introducción conceptual
+
+Una API REST organiza los datos en **recursos** (`/products`, `/orders/42`) y usa **verbos HTTP** para operar sobre ellos. Consumirla bien implica tres cosas: conocer la convención, **validar lo que llega** (el servidor puede cambiar o fallar) y **transformar** el formato de la API (DTO) al modelo que usa tu app.
+
+| Verbo | Ruta | Acción | Respuesta típica |
+| --- | --- | --- | --- |
+| `GET` | `/products?page=2` | Listar | 200 + array |
+| `GET` | `/products/42` | Obtener uno | 200 / 404 |
+| `POST` | `/products` | Crear | 201 + recurso |
+| `PATCH` | `/products/42` | Actualizar parcialmente | 200 + recurso |
+| `DELETE` | `/products/42` | Eliminar | 204 sin contenido |
+
+<Overview
+  purpose="Leer y modificar datos del servidor de forma tipada, validada y desacoplada de la interfaz."
+  importance="Los errores de forma de los datos son de los más frecuentes en producción; validarlos en el borde los hace visibles."
+  when="En cualquier integración con un backend HTTP."
+  problem="Evita que cambios en la API rompan pantallas al azar y que snake_case o fechas en texto se propaguen por la app."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'JSON de la API', desc: 'snake_case, fechas string' },
+    { title: 'Zod', desc: 'Valida el DTO', tone: 'brand' },
+    { title: 'Mapper', desc: 'DTO → modelo de dominio' },
+    { title: 'App', desc: 'camelCase, Date, tipos fiables' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+```ts title="src/features/products/api/products-service.ts"
+import { z } from 'zod';
+import { httpClient } from '@/lib/http-client';
+
+// 1. DTO: la forma exacta que devuelve la API
+const productDtoSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  price_cents: z.number().int(),
+  stock: z.number().int(),
+  category: z.string().nullable(),
+  updated_at: z.iso.datetime(),
+});
+const productPageDtoSchema = z.object({
+  data: z.array(productDtoSchema),
+  page: z.number(),
+  total_pages: z.number(),
+});
+
+// 2. Modelo de la app
+export type Product = {
+  id: string;
+  name: string;
+  price: number; // en unidades monetarias
+  stock: number;
+  category: string | null;
+  updatedAt: Date;
+};
+
+// 3. Mapper: único lugar que conoce ambos formatos
+function toProduct(dto: z.infer<typeof productDtoSchema>): Product {
+  return {
+    id: String(dto.id),
+    name: dto.name,
+    price: dto.price_cents / 100,
+    stock: dto.stock,
+    category: dto.category,
+    updatedAt: new Date(dto.updated_at),
+  };
+}
+
+export type ProductInput = Pick<Product, 'name' | 'price' | 'stock' | 'category'>;
+
+function toDto(input: Partial<ProductInput>) {
+  return {
+    name: input.name,
+    price_cents: input.price === undefined ? undefined : Math.round(input.price * 100),
+    stock: input.stock,
+    category: input.category,
+  };
+}
+
+// 4. Servicio CRUD
+export const productsService = {
+  async list(params: { page?: number; search?: string } = {}, signal?: AbortSignal) {
+    const query = new URLSearchParams();
+    if (params.page) query.set('page', String(params.page));
+    if (params.search) query.set('search', params.search);
+    const json = await httpClient.get(`/products?${query}`, signal);
+    const page = productPageDtoSchema.parse(json);
+    return { items: page.data.map(toProduct), page: page.page, totalPages: page.total_pages };
+  },
+  async get(id: string, signal?: AbortSignal) {
+    return toProduct(productDtoSchema.parse(await httpClient.get(`/products/${id}`, signal)));
+  },
+  async create(input: ProductInput) {
+    return toProduct(productDtoSchema.parse(await httpClient.post('/products', toDto(input))));
+  },
+  async update(id: string, input: Partial<ProductInput>) {
+    return toProduct(productDtoSchema.parse(await httpClient.patch(`/products/${id}`, toDto(input))));
+  },
+  async remove(id: string) {
+    await httpClient.delete(`/products/${id}`);
+  },
+};
+```
+
+## Explicación del código
+
+- **Dos tipos distintos**: el DTO describe la API (`price_cents`, `updated_at`) y `Product` describe tu app (`price`, `updatedAt: Date`). Si la API cambia, solo tocas el esquema y el mapper.
+- **`parse` lanza un `ZodError`** si la respuesta no tiene la forma esperada: el error aparece en el servicio, con el campo exacto, en lugar de un `undefined` en mitad de una pantalla.
+- **`URLSearchParams`** construye la query string y codifica correctamente espacios y acentos.
+- **Dinero en céntimos**: la API usa enteros para evitar errores de coma flotante; convertimos solo en el borde.
+- **`signal`** opcional en las lecturas para que TanStack Query pueda cancelarlas.
+- **`toDto` con `Partial`**: en un `PATCH` solo enviamos los campos que cambian (los `undefined` desaparecen al serializar a JSON).
+
+## Buenas prácticas
+
+- **Valida siempre las respuestas** de servicios que no controlas, y al menos en desarrollo las del tuyo.
+- **Genera los tipos** si el backend publica OpenAPI, y valida igualmente en tiempo de ejecución.
+- **Respeta la semántica HTTP**: GET no modifica datos; PUT/DELETE son idempotentes (repetirlos tiene el mismo efecto), POST no.
+- **Pagina en el servidor** las colecciones grandes ([Paginación](/docs/datos/paginacion)).
+
+### Errores comunes
+
+- `as Product` sobre el JSON: no valida nada.
+- Formatear fechas o importes en el servicio: es responsabilidad de la presentación.
+- Concatenar parámetros sin codificar (`?search=${texto}`): rompe con espacios, `&` o `#`.
+
+### Cuándo usar otra solución
+
+Si controlas backend y frontend en TypeScript, valora soluciones con tipos de extremo a extremo (tRPC, o Expo API Routes con esquemas compartidos). Para la caché y la sincronización de estos servicios con la UI, usa [TanStack Query](/docs/datos/tanstack-query).

@@ -1,0 +1,195 @@
+---
+title: TanStack Query
+description: Estado del servidor con caché. Configuración en React Native (foco y conexión), useQuery, useMutation, invalidación, actualizaciones optimistas y staleTime.
+difficulty: intermedio
+time: 30
+prerequisites:
+  - datos/apis-rest
+  - react-typescript/hooks-personalizados
+related:
+  - arquitectura/custom-hooks
+  - datos/paginacion
+  - datos/manejo-de-errores
+resources:
+  - title: TanStack Query — Visión general
+    url: https://tanstack.com/query/latest/docs/framework/react/overview
+  - title: TanStack Query — React Native
+    url: https://tanstack.com/query/latest/docs/framework/react/react-native
+  - title: TanStack Query — Actualizaciones optimistas
+    url: https://tanstack.com/query/latest/docs/framework/react/guides/optimistic-updates
+keywords: [tanstack query, react query, useQuery, useMutation, QueryClient, invalidateQueries, staleTime, gcTime, focusManager, onlineManager, optimistic update]
+---
+
+## Introducción conceptual
+
+Los datos del servidor son distintos del estado local: **no te pertenecen**, pueden cambiar sin que lo sepas, necesitan caché, reintentos, refresco y deduplicación. Gestionarlos con `useState` + `useEffect` lleva a cientos de líneas repetidas y errores sutiles (condiciones de carrera, datos obsoletos).
+
+**TanStack Query** (antes React Query, versión 5) es la herramienta estándar para el **estado del servidor**: describes **qué** datos necesitas (`queryKey` + `queryFn`) y la librería se encarga de **cuándo** pedirlos, cachearlos y mantenerlos frescos.
+
+<Overview
+  purpose="Obtener, cachear, sincronizar y actualizar datos del servidor con muy poco código."
+  importance="Elimina la mayor fuente de complejidad de las apps conectadas y mejora la experiencia (datos instantáneos desde caché)."
+  when="En cualquier dato que venga de una API. No para estado puramente local (formularios, UI)."
+  problem="Evita useEffect para pedir datos, cachés manuales, peticiones duplicadas y datos desactualizados."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'useQuery', desc: "queryKey: ['products']" },
+    { title: '¿En caché?', desc: 'Devuelve al instante', tone: 'brand' },
+    { title: '¿Obsoleto?', desc: 'Según staleTime' },
+    { title: 'Refetch en segundo plano', desc: 'Actualiza sin spinner' },
+  ]}
+/>
+
+| Concepto | Qué significa |
+| --- | --- |
+| `queryKey` | Identidad del dato en la caché |
+| `staleTime` | Cuánto tiempo un dato se considera fresco (por defecto 0) |
+| `gcTime` | Cuánto se conserva en memoria sin usarse (por defecto 5 min) |
+| `isPending` | Aún no hay datos |
+| `isFetching` | Hay una petición en curso (también en segundo plano) |
+| `invalidateQueries` | Marca datos como obsoletos y los vuelve a pedir si están en uso |
+
+## Ejemplo práctico
+
+```bash
+npm install @tanstack/react-query
+npx expo install @react-native-community/netinfo
+```
+
+<CodeTabs>
+
+```tsx title="src/providers/query-provider.tsx"
+import NetInfo from '@react-native-community/netinfo';
+import { QueryClient, QueryClientProvider, focusManager, onlineManager } from '@tanstack/react-query';
+import { useEffect, useState, type ReactNode } from 'react';
+import { AppState, Platform } from 'react-native';
+
+// En móvil no hay "foco de ventana": usamos AppState
+function useAppFocusManager() {
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (status) => {
+      if (Platform.OS !== 'web') focusManager.setFocused(status === 'active');
+    });
+    return () => sub.remove();
+  }, []);
+}
+
+// Pausa las consultas sin conexión y las reanuda al volver la red
+onlineManager.setEventListener((setOnline) =>
+  NetInfo.addEventListener((state) => setOnline(Boolean(state.isConnected))),
+);
+
+export function QueryProvider({ children }: { children: ReactNode }) {
+  useAppFocusManager();
+  const [client] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: { staleTime: 30_000, retry: 2 },
+        },
+      }),
+  );
+  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+}
+```
+
+```ts title="src/features/tasks/hooks/use-tasks.ts"
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { tasksService, type Task } from '../api/tasks-service';
+
+export const taskKeys = { all: ['tasks'] as const };
+
+export function useTasks() {
+  return useQuery({
+    queryKey: taskKeys.all,
+    queryFn: ({ signal }) => tasksService.list(signal),
+  });
+}
+
+export function useToggleTask() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (task: Task) => tasksService.update(task.id, { done: !task.done }),
+
+    // 1. Actualización optimista: la UI cambia antes de que responda el servidor
+    onMutate: async (task) => {
+      await queryClient.cancelQueries({ queryKey: taskKeys.all });
+      const previous = queryClient.getQueryData<Task[]>(taskKeys.all);
+      queryClient.setQueryData<Task[]>(taskKeys.all, (old = []) =>
+        old.map((t) => (t.id === task.id ? { ...t, done: !t.done } : t)),
+      );
+      return { previous }; // se recibe en onError como onMutateResult
+    },
+
+    // 2. Si falla, restauramos el estado anterior
+    onError: (_error, _task, onMutateResult) => {
+      if (onMutateResult?.previous) queryClient.setQueryData(taskKeys.all, onMutateResult.previous);
+    },
+
+    // 3. Siempre sincronizamos con el servidor al terminar
+    onSettled: () => queryClient.invalidateQueries({ queryKey: taskKeys.all }),
+  });
+}
+```
+
+```tsx title="src/app/tareas.tsx"
+import { FlatList, Pressable, RefreshControl, Text } from 'react-native';
+import { ErrorState, LoadingState } from '@/components/feedback';
+import { useTasks, useToggleTask } from '@/features/tasks/hooks/use-tasks';
+
+export default function TasksScreen() {
+  const { data: tasks, isPending, isError, refetch, isRefetching } = useTasks();
+  const toggle = useToggleTask();
+
+  if (isPending) return <LoadingState />;
+  if (isError) return <ErrorState onRetry={refetch} />;
+
+  return (
+    <FlatList
+      data={tasks}
+      keyExtractor={(t) => t.id}
+      refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} />}
+      renderItem={({ item }) => (
+        <Pressable onPress={() => toggle.mutate(item)} className="px-4 py-3" accessibilityRole="checkbox" accessibilityState={{ checked: item.done }}>
+          <Text className={item.done ? 'text-muted-foreground line-through' : 'text-foreground'}>{item.title}</Text>
+        </Pressable>
+      )}
+    />
+  );
+}
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`focusManager` + `AppState`**: en la web, TanStack Query refresca al volver a la pestaña. En móvil lo equivalente es volver a primer plano; así, al reabrir la app los datos obsoletos se actualizan solos.
+- **`onlineManager` + NetInfo**: sin conexión, las consultas se pausan en lugar de fallar; al recuperar la red, se reanudan.
+- **`useState(() => new QueryClient())`** crea el cliente una sola vez por instancia del proveedor.
+- **`staleTime: 30_000`**: durante 30 segundos los datos se consideran frescos y no se vuelven a pedir al montar otra pantalla que los use. Ajústalo según lo rápido que cambien tus datos.
+- **`queryFn` recibe `signal`**: la petición se cancela si deja de ser necesaria.
+- **Actualización optimista** en tres pasos: cancelar consultas en curso (para que no sobrescriban), guardar el estado previo y aplicar el cambio; restaurar en `onError`; invalidar en `onSettled`. En TanStack Query v5 lo que devuelve `onMutate` llega como `onMutateResult`.
+- **`isPending` vs `isRefetching`**: la primera carga muestra la pantalla de carga; los refrescos posteriores, solo el indicador de `RefreshControl`.
+
+## Buenas prácticas
+
+- **Centraliza las query keys** en factorías por funcionalidad ([Custom Hooks](/docs/arquitectura/custom-hooks)).
+- **Envuelve cada consulta en un hook** con nombre del dominio (`useTasks`), no uses `useQuery` directamente en pantallas.
+- **Invalida en lugar de actualizar a mano** salvo cuando la respuesta de la mutación ya trae el dato actualizado (`setQueryData`).
+- **Usa las DevTools**: en Expo, el plugin de TanStack Query para las herramientas de desarrollo permite inspeccionar la caché.
+
+### Errores comunes
+
+- Copiar `data` a un `useState` o a un store: duplicas la fuente de verdad.
+- `staleTime: Infinity` por defecto sin entender las consecuencias: los datos nunca se refrescan solos.
+- Query keys que no incluyen todas las variables de la consulta (por ejemplo, el filtro): distintos filtros comparten caché.
+- Olvidar limpiar la caché al cerrar sesión: el siguiente usuario vería datos del anterior (`queryClient.clear()`).
+
+### Cuándo usar otra solución
+
+Para estado del cliente (carrito, preferencias) usa [Zustand](/docs/arquitectura/estado-global-zustand) o Context. Si usas Supabase o Firebase con suscripciones en tiempo real, puedes combinarlas con TanStack Query actualizando la caché desde los eventos ([WebSockets](/docs/datos/websockets)). Para persistir la caché entre arranques, existe `@tanstack/query-async-storage-persister`.

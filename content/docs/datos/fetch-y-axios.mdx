@@ -1,0 +1,158 @@
+---
+title: Fetch y Axios
+description: Hacer peticiones HTTP en React Native. fetch (expo/fetch en SDK 58), timeouts y cancelación con AbortController, y cuándo conviene Axios con interceptores.
+difficulty: intermedio
+time: 18
+prerequisites:
+  - react-typescript/useeffect
+related:
+  - datos/apis-rest
+  - datos/tanstack-query
+  - arquitectura/servicios-y-repositorios
+resources:
+  - title: MDN — Usar Fetch
+    url: https://developer.mozilla.org/es/docs/Web/API/Fetch_API/Using_Fetch
+  - title: Expo — expo/fetch
+    url: https://docs.expo.dev/versions/latest/sdk/expo/#expofetch-api
+  - title: Axios — Documentación
+    url: https://axios-http.com/es/docs/intro
+keywords: [fetch, axios, http, AbortController, timeout, interceptores, expo/fetch, streaming, peticiones]
+---
+
+## Introducción conceptual
+
+React Native incluye la API **`fetch`**, la misma de los navegadores. Desde Expo SDK 56, el `fetch` global es **`expo/fetch`**: una implementación nativa que cumple mejor el estándar (incluye *streaming* de respuestas y `AbortSignal` fiable). Para la mayoría de apps, `fetch` con un pequeño cliente propio es suficiente.
+
+**Axios** es una alternativa popular que añade interceptores, transformación automática de JSON, timeouts integrados y un manejo de errores más cómodo (rechaza la promesa con códigos 4xx/5xx). Es útil sobre todo cuando necesitas **interceptores** (por ejemplo, para refrescar tokens).
+
+<Overview
+  purpose="Comunicar la app con servidores: pedir datos, enviar formularios, subir archivos."
+  importance="Casi toda app de producto depende de una API; un cliente HTTP robusto evita errores silenciosos y peticiones colgadas."
+  when="En la capa de servicios, nunca directamente en componentes. Combínalo con TanStack Query para la caché."
+  problem="Unifica URL base, cabeceras, timeouts, cancelación y errores en un solo lugar."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="fetch">
+    - Incluido (expo/fetch en SDK 58).
+    - No rechaza con 4xx/5xx: revisa `response.ok`.
+    - Timeout con `AbortController` o `AbortSignal.timeout`.
+    - Streaming de respuestas.
+  </Column>
+  <Column title="Axios">
+    - Dependencia extra.
+    - Rechaza con 4xx/5xx (`AxiosError`).
+    - Opción `timeout` integrada.
+    - Interceptores de petición y respuesta.
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+<CodeTabs>
+
+```ts title="src/lib/fetch-json.ts"
+export class HttpError extends Error {
+  constructor(public status: number, public body: unknown) {
+    super(`HTTP ${status}`);
+    this.name = 'HttpError';
+  }
+}
+
+type Options = Omit<RequestInit, 'body'> & { body?: unknown; timeoutMs?: number };
+
+export async function fetchJson<T>(url: string, { body, timeoutMs = 15_000, signal, headers, ...init }: Options = {}) {
+  // Combina la cancelación externa (por ejemplo, de TanStack Query) con un timeout
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+
+  const response = await fetch(url, {
+    ...init,
+    signal: combined,
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...headers },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
+  const data = response.status === 204 ? null : await response.json().catch(() => null);
+  if (!response.ok) throw new HttpError(response.status, data); // fetch NO lanza con 4xx/5xx
+  return data as T;
+}
+```
+
+```ts title="src/lib/api.ts (Axios)"
+import axios from 'axios';
+import { env } from '@/config/env';
+import { getTokens } from '@/lib/secure-session';
+
+export const api = axios.create({
+  baseURL: env.EXPO_PUBLIC_API_URL,
+  timeout: 15_000,
+  headers: { Accept: 'application/json' },
+});
+
+// Interceptor de petición: añade el token a cada llamada
+api.interceptors.request.use(async (config) => {
+  const tokens = await getTokens();
+  if (tokens) config.headers.Authorization = `Bearer ${tokens.accessToken}`;
+  return config;
+});
+
+// Interceptor de respuesta: normaliza los errores
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (axios.isAxiosError(error) && !error.response) {
+      return Promise.reject(new Error('Sin conexión con el servidor'));
+    }
+    return Promise.reject(error);
+  },
+);
+```
+
+```ts title="Uso"
+import { fetchJson } from '@/lib/fetch-json';
+import { api } from '@/lib/api';
+
+type Product = { id: string; name: string };
+
+// Con fetch
+const products = await fetchJson<Product[]>(`${process.env.EXPO_PUBLIC_API_URL}/products`);
+
+// Con Axios: data ya viene parseada
+const { data } = await api.get<Product[]>('/products', { params: { page: 1 } });
+
+// Subir un archivo con fetch y FormData
+const form = new FormData();
+form.append('file', { uri: fileUri, name: 'recibo.jpg', type: 'image/jpeg' } as unknown as Blob);
+await fetch(`${process.env.EXPO_PUBLIC_API_URL}/receipts`, { method: 'POST', body: form });
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`response.ok`**: `fetch` solo rechaza la promesa ante errores de red. Un 404 o un 500 se resuelve normalmente, por eso lanzamos `HttpError` cuando `ok` es `false`.
+- **`AbortSignal.timeout` + `AbortSignal.any`** combinan un timeout con una señal de cancelación externa. TanStack Query pasa una `signal` a cada `queryFn` y la aborta si el componente se desmonta o la consulta deja de ser necesaria.
+- **`status === 204`**: las respuestas sin contenido no tienen JSON; intentar parsearlas lanzaría un error.
+- **`axios.create`** crea una instancia con URL base y timeout. Los **interceptores** se ejecutan en cada petición (añadir token) y respuesta (normalizar errores) sin repetir código.
+- **`FormData` con `{ uri, name, type }`** es la forma de subir archivos locales en React Native. No fijes `Content-Type` a mano en ese caso: el cliente añade el `boundary` correcto.
+
+## Buenas prácticas
+
+- **Un único cliente** (función o instancia) por API, usado solo desde servicios.
+- **Siempre con timeout**: en redes móviles, una petición puede quedarse colgada indefinidamente.
+- **Pasa la `signal` de TanStack Query** a tus peticiones para cancelar trabajo innecesario.
+- **No pongas lógica de UI** (alertas, navegación) en el cliente HTTP.
+
+### Errores comunes
+
+- Asumir que `fetch` lanza con errores HTTP.
+- Llamar a `fetch` dentro de `useEffect` sin cancelar: condiciones de carrera y actualizaciones de estado tras desmontar.
+- Usar `http://localhost` desde un dispositivo físico: `localhost` es el propio teléfono. Usa la IP de tu ordenador en la red local o un túnel.
+- Peticiones HTTP sin TLS en producción: iOS las bloquea por defecto (App Transport Security).
+
+### Cuándo usar otra solución
+
+Si tu backend es GraphQL, usa un cliente específico (urql, Apollo). Para tiempo real, [WebSockets](/docs/datos/websockets). Si necesitas el comportamiento antiguo del `fetch` de React Native, Expo permite desactivar `expo/fetch` con `EXPO_PUBLIC_USE_RN_FETCH=1`.

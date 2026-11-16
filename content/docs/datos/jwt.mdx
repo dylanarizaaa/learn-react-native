@@ -1,0 +1,181 @@
+---
+title: JWT
+description: Access token y refresh token, leer la expiración, refrescar automáticamente con un interceptor de Axios que evita refrescos simultáneos, y cerrar sesión cuando el refresco falla.
+difficulty: avanzado
+time: 25
+prerequisites:
+  - datos/autenticacion
+  - datos/fetch-y-axios
+related:
+  - expo/expo-secure-store
+  - datos/almacenamiento-seguro
+  - calidad/seguridad
+resources:
+  - title: jwt.io — Introducción a JSON Web Tokens
+    url: https://jwt.io/introduction
+  - title: RFC 7519 — JSON Web Token
+    url: https://datatracker.ietf.org/doc/html/rfc7519
+  - title: Axios — Interceptores
+    url: https://axios-http.com/docs/interceptors
+keywords: [jwt, access token, refresh token, interceptor, axios, expiración, exp, rotación, 401, jwt-decode]
+---
+
+## Introducción conceptual
+
+Un <Term slug="jwt">JWT</Term> es un token firmado con tres partes en Base64 (cabecera, *payload* y firma). La app lo envía en cada petición (`Authorization: Bearer …`) y el servidor verifica la firma sin consultar una base de datos.
+
+El esquema habitual usa **dos tokens**:
+
+| Token | Duración típica | Uso | Dónde se guarda |
+| --- | --- | --- | --- |
+| **Access token** | 5–15 minutos | Se envía en cada petición | SecureStore (y memoria) |
+| <Term slug="refresh-token">Refresh token</Term> | Días o semanas | Solo para obtener un nuevo access token | SecureStore |
+
+Si roban un access token, caduca pronto. El refresh token es más valioso, por eso solo viaja al endpoint de refresco y el servidor puede **rotarlo** (emitir uno nuevo e invalidar el anterior en cada uso).
+
+<Callout type="warning" title="El payload no es secreto">
+El contenido de un JWT solo está codificado, no cifrado: cualquiera puede leerlo. No pongas datos sensibles en el payload y nunca confíes en él en el cliente para decisiones de seguridad; el servidor siempre verifica la firma.
+</Callout>
+
+<Overview
+  purpose="Mantener sesiones seguras con tokens de corta duración que se renuevan automáticamente."
+  importance="Permite sesiones largas para el usuario sin mantener credenciales de larga duración en cada petición."
+  when="Con backends propios basados en JWT o proveedores que los emiten (Supabase, Auth0, Cognito)."
+  problem="Evita que el usuario tenga que volver a iniciar sesión cada pocos minutos y que varias peticiones refresquen el token a la vez."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'Petición', desc: 'Bearer access token' },
+    { title: '401', desc: 'Token caducado', tone: 'muted' },
+    { title: 'Refresco único', desc: 'POST /auth/refresh', tone: 'brand' },
+    { title: 'Reintento', desc: 'Con el token nuevo' },
+    { title: 'Si falla', desc: 'Cerrar sesión' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+```bash
+npm install axios jwt-decode
+```
+
+<CodeTabs>
+
+```ts title="src/lib/api-client.ts"
+import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios';
+import { jwtDecode } from 'jwt-decode';
+import { env } from '@/config/env';
+import { clearTokens, getTokens, saveTokens } from '@/lib/secure-session';
+import { sessionEvents } from '@/lib/session-events';
+
+export const api = axios.create({ baseURL: env.EXPO_PUBLIC_API_URL, timeout: 15_000 });
+
+// Cliente sin interceptores para el refresco (evita bucles)
+const authApi = axios.create({ baseURL: env.EXPO_PUBLIC_API_URL, timeout: 15_000 });
+
+/** true si el token caduca en menos de 30 s */
+function isExpiringSoon(token: string) {
+  const { exp } = jwtDecode<{ exp?: number }>(token);
+  return !exp || exp * 1000 - Date.now() < 30_000;
+}
+
+// Una única promesa de refresco compartida por todas las peticiones concurrentes
+let refreshPromise: Promise<string> | null = null;
+
+async function refreshAccessToken(): Promise<string> {
+  refreshPromise ??= (async () => {
+    try {
+      const tokens = await getTokens();
+      if (!tokens) throw new Error('Sin refresh token');
+      const { data } = await authApi.post<{ accessToken: string; refreshToken: string }>('/auth/refresh', {
+        refreshToken: tokens.refreshToken,
+      });
+      await saveTokens(data); // el servidor rota el refresh token
+      return data.accessToken;
+    } catch (error) {
+      await clearTokens();
+      sessionEvents.emit('expired'); // el SessionProvider cierra la sesión
+      throw error;
+    } finally {
+      refreshPromise = null;
+    }
+  })();
+  return refreshPromise;
+}
+
+// Antes de cada petición: refresca de forma proactiva si está a punto de caducar
+api.interceptors.request.use(async (config) => {
+  const tokens = await getTokens();
+  if (!tokens) return config;
+  const accessToken = isExpiringSoon(tokens.accessToken) ? await refreshAccessToken() : tokens.accessToken;
+  config.headers.Authorization = `Bearer ${accessToken}`;
+  return config;
+});
+
+// Si aun así llega un 401, refresca una vez y reintenta la petición original
+api.interceptors.response.use(undefined, async (error: AxiosError) => {
+  const original = error.config as (InternalAxiosRequestConfig & { _retried?: boolean }) | undefined;
+  if (error.response?.status !== 401 || !original || original._retried) throw error;
+
+  original._retried = true;
+  const accessToken = await refreshAccessToken();
+  original.headers.Authorization = `Bearer ${accessToken}`;
+  return api(original);
+});
+```
+
+```ts title="src/lib/session-events.ts"
+type Listener = () => void;
+const listeners = new Set<Listener>();
+
+/** Bus mínimo para avisar a la UI de que la sesión caducó */
+export const sessionEvents = {
+  emit: (_event: 'expired') => listeners.forEach((l) => l()),
+  subscribe: (listener: Listener) => {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  },
+};
+```
+
+```tsx title="En el SessionProvider"
+useEffect(
+  () =>
+    sessionEvents.subscribe(() => {
+      queryClient.clear();
+      setSession({ status: 'signed-out' });
+    }),
+  [queryClient],
+);
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`refreshPromise` compartida**: si cinco peticiones descubren a la vez que el token caducó, solo se hace **un** refresco; las demás esperan la misma promesa. Sin esto, con rotación de refresh tokens, el segundo refresco usaría un token ya invalidado y cerraría la sesión.
+- **`authApi` separado**: la llamada de refresco no pasa por los interceptores, así no puede provocar un bucle infinito.
+- **Refresco proactivo** con `jwtDecode`: leemos `exp` (segundos desde 1970) y refrescamos si quedan menos de 30 segundos, evitando un 401 innecesario.
+- **Refresco reactivo**: si el servidor responde 401 igualmente (reloj del dispositivo desajustado, token revocado), refrescamos una vez y reintentamos. **`_retried`** impide reintentar indefinidamente.
+- **Si el refresco falla**, borramos los tokens y emitimos `expired`: el proveedor de sesión limpia la caché y `Stack.Protected` lleva al usuario al login.
+
+## Buenas prácticas
+
+- **Access tokens cortos** y refresh tokens con rotación y revocación en el servidor.
+- **Revoca el refresh token al cerrar sesión** (endpoint de logout), no solo lo borres del dispositivo.
+- **No uses el payload para permisos críticos** en el cliente; úsalo como mucho para la UX (mostrar u ocultar opciones).
+- **Sincroniza la hora**: si el reloj del dispositivo está mal, el refresco reactivo por 401 sigue funcionando.
+
+### Errores comunes
+
+- Refrescos concurrentes que se invalidan entre sí.
+- Guardar tokens en AsyncStorage (texto plano).
+- Bucles de 401 → refresco → 401 por no marcar la petición como reintentada.
+- Enviar el refresh token en cada petición.
+
+### Cuándo usar otra solución
+
+Proveedores como Supabase o Firebase gestionan el refresco automáticamente con sus SDK ([Firebase y Supabase](/docs/datos/firebase-y-supabase)). Para APIs propias con `fetch` en lugar de Axios, aplica la misma lógica (promesa compartida + reintento único) dentro de tu `httpClient`.

@@ -1,0 +1,160 @@
+---
+title: Paginación
+description: Paginación por offset y por cursor, scroll infinito con useInfiniteQuery y FlatList, pull-to-refresh, límite de páginas en memoria y errores al cargar más.
+difficulty: avanzado
+time: 22
+prerequisites:
+  - datos/tanstack-query
+  - fundamentos/scrollview-y-flatlist
+related:
+  - calidad/optimizacion-de-flatlist
+  - sistema-de-componentes/logica-y-presentacion
+  - datos/estados-de-carga-y-vacios
+resources:
+  - title: TanStack Query — Infinite queries
+    url: https://tanstack.com/query/latest/docs/framework/react/guides/infinite-queries
+  - title: React Native — FlatList onEndReached
+    url: https://reactnative.dev/docs/flatlist#onendreached
+keywords: [paginación, scroll infinito, cursor, offset, useInfiniteQuery, getNextPageParam, onEndReached, maxPages, FlatList]
+---
+
+## Introducción conceptual
+
+Las colecciones grandes (feeds, catálogos, historial de movimientos) no se piden enteras: se piden **por páginas**. En móvil, el patrón dominante es el **scroll infinito**: al acercarse al final de la lista se carga la siguiente página.
+
+Hay dos estrategias de paginación en el servidor:
+
+<Columns>
+  <Column title="Offset / página">
+    - `?page=3&limit=20`.
+    - Simple, permite saltar a la página N.
+    - Si se insertan elementos mientras paginas, puedes ver duplicados o saltarte alguno.
+  </Column>
+  <Column title="Cursor" tone="brand">
+    - `?cursor=eyJpZCI6...&limit=20`.
+    - Estable aunque cambien los datos.
+    - Ideal para feeds y listas que crecen.
+    - No permite saltar a una página arbitraria.
+  </Column>
+</Columns>
+
+<Overview
+  purpose="Mostrar colecciones de cualquier tamaño cargando solo lo necesario."
+  importance="Reduce el tiempo de la primera carga, el consumo de datos y la memoria."
+  when="En cualquier lista que pueda superar unas decenas de elementos."
+  problem="Evita descargar miles de registros de golpe y listas que bloquean la app al abrirse."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'Página 1', desc: 'initialPageParam' },
+    { title: 'Scroll al final', desc: 'onEndReached', tone: 'brand' },
+    { title: 'getNextPageParam', desc: 'cursor o página siguiente' },
+    { title: 'fetchNextPage', desc: 'Añade a data.pages' },
+    { title: 'Sin más', desc: 'undefined → hasNextPage false', tone: 'muted' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+Un historial de movimientos con paginación por cursor:
+
+<CodeTabs>
+
+```ts title="src/features/movements/hooks/use-movements.ts"
+import { useInfiniteQuery } from '@tanstack/react-query';
+import { httpClient } from '@/lib/http-client';
+
+export type Movement = { id: string; description: string; amount: number; date: string };
+type MovementsPage = { items: Movement[]; nextCursor: string | null };
+
+export function useMovements(accountId: string) {
+  return useInfiniteQuery({
+    queryKey: ['movements', accountId],
+    queryFn: ({ pageParam, signal }) =>
+      httpClient.get<MovementsPage>(
+        `/accounts/${accountId}/movements?limit=30${pageParam ? `&cursor=${encodeURIComponent(pageParam)}` : ''}`,
+        signal,
+      ),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.nextCursor, // null/undefined → no hay más
+    maxPages: 10, // como máximo 300 elementos en memoria
+  });
+}
+```
+
+```tsx title="src/features/movements/screens/movements-screen.tsx"
+import { useMemo } from 'react';
+import { FlatList, Pressable, RefreshControl, View } from 'react-native';
+import { EmptyState, ErrorState, ListSkeleton, Spinner } from '@/components/feedback';
+import { Text } from '@/components/ui';
+import { useMovements } from '../hooks/use-movements';
+import { MovementRow } from '../components/movement-row';
+
+export function MovementsScreen({ accountId }: { accountId: string }) {
+  const query = useMovements(accountId);
+  const movements = useMemo(() => query.data?.pages.flatMap((p) => p.items) ?? [], [query.data]);
+
+  if (query.isPending) return <ListSkeleton />;
+  if (query.isError && movements.length === 0) return <ErrorState onRetry={query.refetch} />;
+
+  function loadMore() {
+    if (query.hasNextPage && !query.isFetchingNextPage && !query.isFetchNextPageError) query.fetchNextPage();
+  }
+
+  return (
+    <FlatList
+      data={movements}
+      keyExtractor={(m) => m.id}
+      renderItem={({ item }) => <MovementRow movement={item} />}
+      onEndReached={loadMore}
+      onEndReachedThreshold={0.5} // cuando falte media pantalla
+      refreshControl={<RefreshControl refreshing={query.isRefetching && !query.isFetchingNextPage} onRefresh={query.refetch} />}
+      ListEmptyComponent={<EmptyState title="Sin movimientos" />}
+      ListFooterComponent={
+        query.isFetchingNextPage ? (
+          <Spinner className="my-6" />
+        ) : query.isFetchNextPageError ? (
+          <Pressable onPress={() => query.fetchNextPage()} className="items-center py-6" accessibilityRole="button">
+            <Text tone="danger">No se pudieron cargar más. Toca para reintentar.</Text>
+          </Pressable>
+        ) : !query.hasNextPage && movements.length > 0 ? (
+          <View className="items-center py-6">
+            <Text variant="caption">No hay más movimientos</Text>
+          </View>
+        ) : null
+      }
+    />
+  );
+}
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`initialPageParam`** y **`getNextPageParam`** son obligatorios en TanStack Query v5. Para cursores, la primera página no lleva cursor (`null`) y cada respuesta indica el siguiente.
+- **Devolver `null` o `undefined`** en `getNextPageParam` marca el final: `hasNextPage` pasa a `false`.
+- **`maxPages: 10`** limita las páginas guardadas en caché: en listas muy largas evita un consumo de memoria ilimitado (al volver hacia arriba, TanStack Query vuelve a pedir las páginas descartadas si es necesario, configurando también `getPreviousPageParam`).
+- **`flatMap`** convierte las páginas en una lista única para la `FlatList`; `useMemo` evita recalcularlo en cada render.
+- **`loadMore` con guardas**: `onEndReached` puede dispararse varias veces seguidas; comprobamos que haya más páginas, que no se esté cargando y que la última carga no haya fallado (para no reintentar en bucle).
+- **El pie de lista** cubre los tres estados: cargando más, error al cargar más (con reintento manual) y fin de la lista.
+
+## Buenas prácticas
+
+- **Prefiere cursores** para feeds y datos que cambian con frecuencia.
+- **Tamaño de página razonable** (20–50): suficiente para llenar la pantalla dos veces.
+- **Combina con las optimizaciones de listas** (`getItemLayout`, FlashList) cuando las filas son complejas ([Optimización de FlatList](/docs/calidad/optimizacion-de-flatlist)).
+- **Mantén el pull-to-refresh**: refetch de una consulta infinita vuelve a pedir las páginas cargadas en orden.
+
+### Errores comunes
+
+- Concatenar páginas en un `useState` propio: TanStack Query ya las guarda en `data.pages`.
+- Usar `onEndReached` sin guardas y lanzar decenas de peticiones.
+- Paginación por offset en un feed que recibe elementos nuevos: duplicados al cargar más.
+
+### Cuándo usar otra solución
+
+Para listas cortas, carga todo y filtra en el cliente. Para tablas de administración con salto a la página N, usa paginación clásica con `useQuery` por página y `placeholderData: keepPreviousData`.

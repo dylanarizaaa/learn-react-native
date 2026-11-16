@@ -1,0 +1,156 @@
+---
+title: Manejo de errores en peticiones
+sidebarTitle: Manejo de errores
+description: Clasificar errores de red, timeout, cliente y servidor; convertirlos en mensajes útiles; reintentos con backoff y manejo global con TanStack Query.
+difficulty: intermedio
+time: 20
+prerequisites:
+  - datos/fetch-y-axios
+  - datos/tanstack-query
+related:
+  - calidad/manejo-de-errores
+  - datos/estados-de-carga-y-vacios
+  - sistema-de-componentes/estado-vacio
+resources:
+  - title: TanStack Query — Reintentos
+    url: https://tanstack.com/query/latest/docs/framework/react/guides/query-retries
+  - title: TanStack Query — QueryCache (callbacks globales)
+    url: https://tanstack.com/query/latest/docs/reference/QueryCache
+  - title: MDN — Códigos de estado HTTP
+    url: https://developer.mozilla.org/es/docs/Web/HTTP/Status
+keywords: [errores, manejo de errores, reintentos, backoff, timeout, 401, 422, 500, mensajes de error, QueryCache, toast]
+---
+
+## Introducción conceptual
+
+En una app móvil **los errores de red son normales**: túneles, ascensores, Wi-Fi saturadas. La pregunta no es si fallará una petición, sino qué verá el usuario cuando falle. Un buen manejo de errores tiene tres partes:
+
+1. **Clasificar** el error: no es lo mismo "sin conexión" que "contraseña incorrecta" o "el servidor está caído".
+2. **Decidir la reacción**: reintentar automáticamente, pedir una acción al usuario, cerrar sesión o mostrar un mensaje.
+3. **Comunicar** con lenguaje humano, sin detalles técnicos.
+
+<Overview
+  purpose="Convertir fallos técnicos en reacciones correctas y mensajes comprensibles."
+  importance="La percepción de calidad de una app depende mucho de cómo se comporta cuando las cosas van mal."
+  when="En todas las operaciones de red, de forma centralizada, con excepciones puntuales por pantalla."
+  problem="Evita mensajes como 'Network request failed', reintentos infinitos y pantallas en blanco tras un error."
+/>
+
+## Explicación visual
+
+| Tipo | Señal | Reacción recomendada |
+| --- | --- | --- |
+| Sin conexión | Error de red, NetInfo offline | No reintentar en bucle; avisar y reanudar al volver la red |
+| Timeout | `AbortError` por timeout | Reintentar con backoff |
+| 400 / 422 | Datos inválidos | Mostrar errores en el formulario (`setError`) |
+| 401 | Token caducado | Refrescar token o cerrar sesión |
+| 403 | Sin permiso | Mensaje y ocultar la acción |
+| 404 | No existe | Estado vacío o volver atrás |
+| 409 | Conflicto (ya existe) | Mensaje específico |
+| 5xx | Error del servidor | Reintentar con backoff; si persiste, mensaje genérico |
+
+## Ejemplo práctico
+
+<CodeTabs>
+
+```ts title="src/lib/errors.ts"
+import { ApiError } from '@/lib/http-client';
+
+export type AppErrorKind = 'offline' | 'timeout' | 'unauthorized' | 'forbidden' | 'not-found' | 'validation' | 'conflict' | 'server' | 'unknown';
+
+export function classifyError(error: unknown): AppErrorKind {
+  if (error instanceof ApiError) {
+    if (error.status === 401) return 'unauthorized';
+    if (error.status === 403) return 'forbidden';
+    if (error.status === 404) return 'not-found';
+    if (error.status === 409) return 'conflict';
+    if (error.status === 400 || error.status === 422) return 'validation';
+    if (error.status >= 500) return 'server';
+  }
+  if (error instanceof Error) {
+    if (error.name === 'AbortError' || error.name === 'TimeoutError') return 'timeout';
+    if (/network|failed to fetch|internet/i.test(error.message)) return 'offline';
+  }
+  return 'unknown';
+}
+
+const MESSAGES: Record<AppErrorKind, string> = {
+  offline: 'Parece que no tienes conexión. Lo intentaremos de nuevo cuando vuelva.',
+  timeout: 'El servidor tardó demasiado en responder. Inténtalo de nuevo.',
+  unauthorized: 'Tu sesión ha caducado. Vuelve a iniciar sesión.',
+  forbidden: 'No tienes permiso para realizar esta acción.',
+  'not-found': 'No encontramos lo que buscas. Puede que se haya eliminado.',
+  validation: 'Revisa los datos e inténtalo de nuevo.',
+  conflict: 'Este elemento ya existe o fue modificado por otra persona.',
+  server: 'Tuvimos un problema en nuestros servidores. Inténtalo en unos minutos.',
+  unknown: 'Algo salió mal. Inténtalo de nuevo.',
+};
+
+export function userMessage(error: unknown) {
+  return MESSAGES[classifyError(error)];
+}
+
+/** Solo reintentamos errores transitorios */
+export function shouldRetry(failureCount: number, error: unknown) {
+  const kind = classifyError(error);
+  return (kind === 'timeout' || kind === 'server' || kind === 'unknown') && failureCount < 3;
+}
+```
+
+```tsx title="src/providers/query-provider.tsx (fragmento)"
+import { MutationCache, QueryCache, QueryClient } from '@tanstack/react-query';
+import { classifyError, shouldRetry, userMessage } from '@/lib/errors';
+import { showToast } from '@/lib/toast';
+import { sessionEvents } from '@/lib/session-events';
+
+export const queryClient = new QueryClient({
+  queryCache: new QueryCache({
+    onError: (error, query) => {
+      if (classifyError(error) === 'unauthorized') sessionEvents.emit('expired');
+      // Solo avisamos si la consulta ya tenía datos (refresco fallido en segundo plano);
+      // los errores de carga inicial los muestra la propia pantalla.
+      if (query.state.data !== undefined) showToast(userMessage(error));
+    },
+  }),
+  mutationCache: new MutationCache({
+    onError: (error, _variables, _onMutateResult, mutation) => {
+      // Las mutaciones con su propio onError (por ejemplo, formularios) no muestran toast global
+      if (!mutation.options.onError) showToast(userMessage(error));
+    },
+  }),
+  defaultOptions: {
+    queries: {
+      retry: shouldRetry,
+      retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 10_000), // 2 s, 4 s, 8 s…
+    },
+  },
+});
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`classifyError`** traduce errores de distinto origen (HTTP, red, timeout) a un vocabulario propio de la app. El resto del código solo trabaja con esos tipos.
+- **`MESSAGES` con `Record<AppErrorKind, string>`** obliga a tener un mensaje para cada tipo: si añades uno nuevo, TypeScript te avisa.
+- **`shouldRetry`** reintenta solo errores transitorios: reintentar un 404 o un 422 no los arregla y retrasa el feedback.
+- **`retryDelay` exponencial** (*backoff*) espera cada vez más entre intentos para no saturar un servidor con problemas.
+- **`QueryCache.onError`** es un manejador global: detecta sesiones caducadas y avisa de refrescos fallidos cuando ya había datos en pantalla.
+- **`MutationCache.onError`** muestra un aviso genérico salvo que la mutación tenga su propio manejo (como los formularios, que muestran errores por campo).
+
+## Buenas prácticas
+
+- **Muestra el error donde ocurre**: en el campo (validación), en la pantalla (carga inicial) o como aviso (acción en segundo plano).
+- **Ofrece siempre una salida**: reintentar, volver, contactar soporte.
+- **Registra los errores inesperados** en un servicio de monitorización ([Manejo de errores en la app](/docs/calidad/manejo-de-errores)).
+- **No ocultes errores** con `catch` vacíos.
+
+### Errores comunes
+
+- Mostrar `error.message` directamente al usuario.
+- Reintentar automáticamente mutaciones no idempotentes (un `POST` de pago podría duplicarse).
+- Tratar "sin conexión" como un fallo del servidor.
+
+### Cuándo usar otra solución
+
+Para apps que deben funcionar sin conexión, en lugar de mostrar errores, guarda las operaciones en una cola local y sincronízalas después ([Offline-first](/docs/proyectos/offline-first)).
