@@ -1,0 +1,129 @@
+---
+title: ¿Qué es React Native?
+description: El framework de Meta para crear aplicaciones nativas de Android e iOS con React y TypeScript, compartiendo la mayor parte del código.
+difficulty: principiante
+time: 10
+related:
+  - introduccion/como-funciona-react-native
+  - introduccion/que-es-expo
+  - introduccion/react-native-vs-nativo
+resources:
+  - title: React Native — Introducción
+    url: https://reactnative.dev/docs/getting-started
+  - title: Componentes nativos y principales
+    url: https://reactnative.dev/docs/intro-react-native-components
+  - title: Expo — Crear un proyecto
+    url: https://docs.expo.dev/get-started/create-a-project/
+keywords: [react native, multiplataforma, android, ios, meta]
+---
+
+## Introducción conceptual
+
+React Native es un framework de código abierto, creado por Meta, que te permite construir **aplicaciones móviles nativas** usando **React** y **JavaScript/TypeScript**. Escribes componentes como `<View>` o `<Text>` y React Native los convierte en vistas reales de cada plataforma: `UIView` en iOS y `android.view.View` en Android.
+
+La diferencia con una app "híbrida" clásica (una web dentro de un `WebView`) es fundamental: en React Native **no hay HTML ni DOM**. Los botones, listas y campos de texto que ve el usuario son controles nativos, con su rendimiento, accesibilidad y comportamiento del sistema operativo.
+
+<Overview
+  purpose="Crear apps para Android e iOS (y opcionalmente web) desde una sola base de código en React y TypeScript."
+  importance="Un equipo pequeño puede publicar en ambas tiendas sin duplicar el trabajo, reutilizando conocimiento de React y del ecosistema npm."
+  when="En apps de negocio, productos SaaS, e-commerce, apps de contenido o herramientas internas donde importa la velocidad de desarrollo y una experiencia nativa."
+  problem="Evita mantener dos aplicaciones separadas (Swift/Kotlin) con lógica duplicada, equipos distintos y ciclos de publicación desincronizados."
+/>
+
+Hoy React Native se usa en producción en apps de Meta, Microsoft, Shopify, Discord o Coinbase. En este curso trabajaremos con **React Native 0.88** a través de **Expo SDK 58**, que es la forma recomendada por el propio equipo de React Native para empezar un proyecto nuevo.
+
+## Explicación visual
+
+Tu código vive en la capa de JavaScript. React calcula qué debe mostrarse y React Native traduce ese resultado a vistas nativas en cada plataforma:
+
+<Flow
+  steps={[
+    { title: 'Tu código', desc: 'Componentes en TSX', tone: 'brand' },
+    { title: 'React', desc: 'Calcula el árbol de UI' },
+    { title: 'React Native', desc: 'Renderer Fabric + JSI' },
+    { title: 'Vistas nativas', desc: 'UIView / android.view.View' },
+  ]}
+  caption="Una sola base de código produce interfaces nativas en Android e iOS."
+/>
+
+Comparado con otras aproximaciones:
+
+<Columns cols={3}>
+  <Column title="App nativa pura">
+    - Swift (iOS) y Kotlin (Android).
+    - Máximo control del sistema.
+    - Dos bases de código y dos equipos.
+  </Column>
+  <Column title="React Native" tone="brand">
+    - React + TypeScript.
+    - Componentes **nativos reales**.
+    - Una base de código, acceso nativo cuando lo necesitas.
+  </Column>
+  <Column title="Web en WebView">
+    - HTML, CSS y JS dentro de un navegador embebido.
+    - Rápido de crear.
+    - Rendimiento y sensación menos nativos.
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+Este es un componente completo de React Native. Si creas un proyecto con Expo (lo veremos en [Preparación del entorno](/docs/introduccion/preparacion-del-entorno)), puedes pegarlo en `src/app/index.tsx` y verlo en tu teléfono:
+
+```tsx title="src/app/index.tsx"
+import { useState } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+
+export default function HomeScreen() {
+  const [likes, setLikes] = useState(0);
+
+  return (
+    <View style={styles.container}>
+      <Text style={styles.title}>Hola, React Native 👋</Text>
+      <Text style={styles.subtitle}>Esta interfaz usa vistas nativas reales.</Text>
+
+      <Pressable
+        accessibilityRole="button"
+        onPress={() => setLikes((value) => value + 1)}
+        style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
+      >
+        <Text style={styles.buttonText}>Me gusta · {likes}</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24 },
+  title: { fontSize: 28, fontWeight: '700' },
+  subtitle: { fontSize: 16, color: '#6b7280', textAlign: 'center' },
+  button: { marginTop: 8, backgroundColor: '#0ea5e9', paddingHorizontal: 20, paddingVertical: 12, borderRadius: 12 },
+  buttonPressed: { opacity: 0.8 },
+  buttonText: { color: '#ffffff', fontWeight: '600', fontSize: 16 },
+});
+```
+
+## Explicación del código
+
+- **`View`** es el contenedor básico (equivale a un `div`, pero se convierte en una vista nativa). **`Text`** es el único componente que puede mostrar texto: en React Native no puedes escribir texto suelto dentro de un `View`.
+- **`useState`** es el mismo hook de React que usarías en la web. Cada vez que cambia `likes`, React vuelve a renderizar el componente y React Native actualiza solo el texto que cambió.
+- **`Pressable`** detecta toques. Su prop `style` puede ser una función que recibe `{ pressed }`, ideal para dar feedback visual sin estado extra.
+- **`StyleSheet.create`** define estilos con propiedades parecidas a CSS pero escritas en camelCase y con números en lugar de `px`. El layout usa Flexbox por defecto, con `flexDirection: 'column'`.
+- **`accessibilityRole="button"`** indica a los lectores de pantalla que el elemento es un botón. La accesibilidad es parte del diseño desde el primer componente.
+
+## Buenas prácticas
+
+- **Empieza con Expo.** La documentación oficial de React Native recomienda usar un framework, y Expo es el estándar: incluye navegación, módulos nativos y herramientas de compilación.
+- **Usa TypeScript desde el primer día.** La plantilla por defecto de Expo ya está en TypeScript (versión 6.0 en SDK 58) y te ahorrará errores en props y respuestas de API.
+- **Piensa en "móvil primero".** No traslades patrones web sin más: los toques, el teclado, las áreas seguras y las listas largas funcionan distinto en un teléfono.
+- **Prueba en dispositivos reales**, no solo en el simulador: el rendimiento y los gestos se sienten diferente.
+
+### Errores comunes
+
+- Escribir texto fuera de `<Text>`: provoca el error *"Text strings must be rendered within a &lt;Text&gt; component"*.
+- Esperar que funcione CSS web: no hay cascada, ni selectores, ni unidades como `rem` o `vh` en `StyleSheet`.
+- Instalar librerías con `npm install` en vez de `npx expo install`: Expo elige la versión compatible con tu SDK.
+
+### Cuándo usar otra solución
+
+React Native no es la mejor opción si tu app depende casi por completo de una sola API nativa muy específica (por ejemplo, un editor de vídeo de alto rendimiento o un juego 3D). En esos casos conviene desarrollo nativo o un motor de juegos. Para la gran mayoría de apps de producto, React Native ofrece el mejor equilibrio entre velocidad y calidad. Lo comparamos en detalle en [React Native vs desarrollo nativo](/docs/introduccion/react-native-vs-nativo) y [React Native vs Flutter](/docs/introduccion/react-native-vs-flutter).
