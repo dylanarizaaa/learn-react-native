@@ -1,0 +1,136 @@
+---
+title: Dimensiones
+description: Puntos independientes de la densidad, useWindowDimensions, PixelRatio, escala de fuente, onLayout y cuándo (no) escalar tamaños manualmente.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - fundamentos/flexbox-y-responsive
+related:
+  - estilos/diseno-adaptable
+  - estilos/flexbox
+  - calidad/accesibilidad
+resources:
+  - title: React Native — useWindowDimensions
+    url: https://reactnative.dev/docs/usewindowdimensions
+  - title: React Native — PixelRatio
+    url: https://reactnative.dev/docs/pixelratio
+  - title: React Native — Dimensions
+    url: https://reactnative.dev/docs/dimensions
+keywords: [dimensiones, useWindowDimensions, Dimensions, PixelRatio, fontScale, dp, pt, onLayout, densidad, escalado]
+---
+
+## Introducción conceptual
+
+En React Native los tamaños se expresan en **puntos independientes de la densidad** (dp en Android, pt en iOS). Un `width: 100` ocupa aproximadamente el mismo espacio físico en un teléfono de gama baja y en uno de alta densidad: el sistema multiplica por la densidad de píxeles (`PixelRatio`) al dibujar.
+
+Por eso, **no necesitas escalar todos tus tamaños** según la pantalla. Lo que sí necesitas es: conocer el espacio disponible (`useWindowDimensions`), respetar la escala de fuente del usuario (`fontScale`) y medir contenedores concretos (`onLayout`) cuando el diseño lo requiera.
+
+<Overview
+  purpose="Conocer el espacio disponible y la densidad de la pantalla para adaptar el layout y los recursos."
+  importance="Decisiones de layout basadas en medidas incorrectas (o fijas) producen interfaces cortadas en tablets, plegables o con texto grande."
+  when="Al calcular columnas, adaptar el layout a tablets, elegir resoluciones de imágenes o medir componentes."
+  problem="Evita depender de tamaños de un único dispositivo y de valores que no se actualizan al rotar."
+/>
+
+## Explicación visual
+
+| API | Qué devuelve | ¿Se actualiza? |
+| --- | --- | --- |
+| `useWindowDimensions()` | `width`, `height`, `scale`, `fontScale` de la ventana | Sí (rotación, multiventana, plegables) |
+| `Dimensions.get('window')` | Lo mismo, una sola vez | No, salvo que te suscribas |
+| `Dimensions.get('screen')` | Pantalla física completa | No |
+| `onLayout` | Tamaño real de una vista concreta | Sí, en cada cambio de layout |
+| `PixelRatio.get()` | Densidad (2, 3…) | — |
+| `PixelRatio.getFontScale()` | Escala de texto del usuario | — |
+
+## Ejemplo práctico
+
+Un hook que reúne la información útil y un componente que se adapta a su contenedor:
+
+```tsx title="src/hooks/use-device-metrics.ts"
+import { PixelRatio, useWindowDimensions } from 'react-native';
+
+export function useDeviceMetrics() {
+  const { width, height, fontScale, scale } = useWindowDimensions();
+  const shortSide = Math.min(width, height);
+
+  return {
+    width,
+    height,
+    isLandscape: width > height,
+    isTablet: shortSide >= 600, // criterio habitual: lado corto ≥ 600 dp
+    fontScale, // 1 = normal; > 1.3 = el usuario usa texto grande
+    largeText: fontScale >= 1.3,
+    // Tamaño en píxeles reales para pedir una imagen nítida del servidor
+    imagePixels: (size: number) => PixelRatio.getPixelSizeForLayoutSize(size),
+    scale,
+  };
+}
+```
+
+```tsx title="src/components/responsive-stats.tsx"
+import { useState } from 'react';
+import { StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
+import { useDeviceMetrics } from '@/hooks/use-device-metrics';
+
+const STATS = [
+  { label: 'Ventas', value: '128' },
+  { label: 'Clientes', value: '54' },
+  { label: 'Ticket medio', value: '$12.400' },
+];
+
+export function ResponsiveStats() {
+  const { largeText } = useDeviceMetrics();
+  const [containerWidth, setContainerWidth] = useState(0);
+
+  // Decidimos según el ancho REAL del contenedor, no el de la pantalla
+  const stacked = largeText || (containerWidth > 0 && containerWidth < 360);
+
+  return (
+    <View
+      onLayout={(e: LayoutChangeEvent) => setContainerWidth(e.nativeEvent.layout.width)}
+      style={[styles.container, stacked ? styles.column : styles.row]}
+    >
+      {STATS.map((s) => (
+        <View key={s.label} style={[styles.stat, !stacked && { flex: 1 }]}>
+          <Text style={styles.value}>{s.value}</Text>
+          <Text style={styles.label}>{s.label}</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { gap: 10 },
+  row: { flexDirection: 'row' },
+  column: { flexDirection: 'column' },
+  stat: { padding: 14, borderRadius: 14, backgroundColor: '#f1f5f9' },
+  value: { fontSize: 20, fontWeight: '700' },
+  label: { color: '#64748b' },
+});
+```
+
+## Explicación del código
+
+- **`useWindowDimensions`** se vuelve a ejecutar cuando cambia la ventana (rotar, pantalla dividida en Android/iPad, desplegar un plegable). Por eso es preferible a `Dimensions.get`.
+- **`isTablet`** usa el **lado corto** de la ventana, así no cambia al rotar el dispositivo.
+- **`fontScale`** refleja el tamaño de texto que el usuario eligió en los ajustes del sistema. Con texto grande, apilar las tarjetas evita que los números se corten.
+- **`PixelRatio.getPixelSizeForLayoutSize(120)`** convierte 120 dp a píxeles reales (360 en una pantalla 3x): útil para pedir al servidor una imagen del tamaño exacto.
+- **`onLayout`** mide el **contenedor**, no la pantalla. Así el componente funciona igual en un teléfono, en una columna de una tablet o dentro de un modal.
+
+## Buenas prácticas
+
+- **Diseña con Flexbox y porcentajes**, y usa medidas solo para decisiones discretas (número de columnas, apilar o no).
+- **No escales tipografías con el ancho de la pantalla**: el sistema ya ofrece `fontScale` al usuario, y escalar además rompe la accesibilidad.
+- **Mide contenedores, no pantallas**, en componentes reutilizables.
+
+### Errores comunes
+
+- Calcular estilos con `Dimensions.get('window')` al cargar el módulo: se quedan fijos aunque el usuario rote el dispositivo.
+- Usar librerías de "escalado" que multiplican todos los tamaños por el ancho: los elementos se ven gigantes en tablets.
+- Desactivar `allowFontScaling` para "proteger el diseño": perjudica a usuarios con baja visión.
+
+### Cuándo usar otra solución
+
+Para layouts que cambian por completo entre teléfono y tablet (por ejemplo, lista + detalle en dos columnas), usa *breakpoints* como se explica en [Diseño adaptable](/docs/estilos/diseno-adaptable). Con NativeWind puedes expresar esos breakpoints con prefijos (`md:flex-row`).

@@ -1,0 +1,182 @@
+---
+title: Dark Mode
+description: Modo oscuro que sigue al sistema o elige el usuario. useColorScheme, variantes dark: de NativeWind, tema de navegación, barra de estado y persistencia de la preferencia.
+difficulty: intermedio
+time: 18
+prerequisites:
+  - estilos/configuracion-de-nativewind
+related:
+  - estilos/temas-personalizados
+  - sistema-de-componentes/temas-y-variantes
+  - calidad/accesibilidad
+resources:
+  - title: React Native — useColorScheme
+    url: https://reactnative.dev/docs/usecolorscheme
+  - title: NativeWind — Dark mode
+    url: https://www.nativewind.dev/docs/core-concepts/dark-mode
+  - title: Expo — Modo claro y oscuro
+    url: https://docs.expo.dev/develop/user-interface/color-themes/
+keywords: [dark mode, modo oscuro, useColorScheme, userInterfaceStyle, dark:, colorScheme, setColorScheme, ThemeProvider, StatusBar]
+---
+
+## Introducción conceptual
+
+El modo oscuro ya no es opcional: la mayoría de usuarios lo activa en el sistema, al menos de noche. Una implementación completa tiene cuatro piezas:
+
+1. **Permitir que la app siga al sistema** (`userInterfaceStyle: "automatic"` en `app.json`).
+2. **Colores para cada modo** en tus componentes (`dark:` en NativeWind o un tema en StyleSheet).
+3. **Tema de navegación**: cabeceras, fondos y tabs de Expo Router también deben cambiar.
+4. **Preferencia del usuario** opcional: claro, oscuro o "como el sistema", guardada en el dispositivo.
+
+<Overview
+  purpose="Adaptar toda la interfaz al modo claro u oscuro, según el sistema o la elección del usuario."
+  importance="Reduce la fatiga visual, ahorra batería en pantallas OLED y es una expectativa básica de calidad."
+  when="Desde el principio del proyecto: añadir modo oscuro al final obliga a revisar cada pantalla."
+  problem="Evita interfaces con fondos blancos brillantes en modo oscuro, textos ilegibles o cabeceras que no cambian."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'Sistema', desc: 'Claro / oscuro' },
+    { title: 'Preferencia', desc: 'system | light | dark (guardada)', tone: 'muted' },
+    { title: 'colorScheme', desc: 'NativeWind / useColorScheme', tone: 'brand' },
+    { title: 'UI', desc: 'dark: + tema de navegación + StatusBar' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+Habilita el modo automático y el modo oscuro por clase (para poder forzarlo manualmente):
+
+```json title="app.json (fragmento)"
+{
+  "expo": {
+    "userInterfaceStyle": "automatic"
+  }
+}
+```
+
+```js title="tailwind.config.js"
+module.exports = {
+  content: ['./src/**/*.{js,jsx,ts,tsx}'],
+  presets: [require('nativewind/preset')],
+  darkMode: 'class', // permite cambiar el esquema desde la app
+  theme: { extend: {} },
+};
+```
+
+Un hook que persiste la preferencia y la aplica al arrancar:
+
+```ts title="src/hooks/use-theme-preference.ts"
+import { useEffect } from 'react';
+import { useColorScheme } from 'nativewind';
+import Storage from 'expo-sqlite/kv-store';
+
+export type ThemePreference = 'system' | 'light' | 'dark';
+const KEY = 'theme-preference';
+
+export function useThemePreference() {
+  const { colorScheme, setColorScheme } = useColorScheme();
+  const stored = (Storage.getItemSync(KEY) as ThemePreference | null) ?? 'system';
+
+  // Aplica la preferencia guardada al montar
+  useEffect(() => {
+    setColorScheme(stored);
+  }, [stored, setColorScheme]);
+
+  function setPreference(preference: ThemePreference) {
+    Storage.setItemSync(KEY, preference);
+    setColorScheme(preference);
+  }
+
+  return { colorScheme: colorScheme ?? 'light', preference: stored, setPreference };
+}
+```
+
+El layout raíz sincroniza la navegación y la barra de estado:
+
+```tsx title="src/app/_layout.tsx"
+import '../../global.css';
+import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
+import { useThemePreference } from '@/hooks/use-theme-preference';
+
+const darkNavTheme = { ...DarkTheme, colors: { ...DarkTheme.colors, background: '#09090b', card: '#18181b' } };
+
+export default function RootLayout() {
+  const { colorScheme } = useThemePreference();
+
+  return (
+    <ThemeProvider value={colorScheme === 'dark' ? darkNavTheme : DefaultTheme}>
+      <Stack />
+      <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
+    </ThemeProvider>
+  );
+}
+```
+
+Y el selector en la pantalla de ajustes:
+
+```tsx title="src/components/theme-selector.tsx"
+import { Pressable, Text, View } from 'react-native';
+import { useThemePreference, type ThemePreference } from '@/hooks/use-theme-preference';
+
+const OPTIONS: { value: ThemePreference; label: string }[] = [
+  { value: 'system', label: 'Sistema' },
+  { value: 'light', label: 'Claro' },
+  { value: 'dark', label: 'Oscuro' },
+];
+
+export function ThemeSelector() {
+  const { preference, setPreference } = useThemePreference();
+  return (
+    <View className="flex-row rounded-xl bg-zinc-100 p-1 dark:bg-zinc-800" accessibilityRole="radiogroup">
+      {OPTIONS.map((option) => {
+        const selected = preference === option.value;
+        return (
+          <Pressable
+            key={option.value}
+            onPress={() => setPreference(option.value)}
+            accessibilityRole="radio"
+            accessibilityState={{ checked: selected }}
+            className={`flex-1 items-center rounded-lg py-2 ${selected ? 'bg-white shadow-sm dark:bg-zinc-950' : ''}`}
+          >
+            <Text className={`text-sm ${selected ? 'font-semibold text-zinc-900 dark:text-white' : 'text-zinc-500'}`}>
+              {option.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+```
+
+## Explicación del código
+
+- **`userInterfaceStyle: "automatic"`** permite que la app reciba el esquema del sistema. Con `"light"` la app quedaría siempre en claro.
+- **`darkMode: 'class'`** hace que las variantes `dark:` dependan del esquema que controla NativeWind, en lugar de solo del sistema. Así podemos forzar claro u oscuro.
+- **`useColorScheme` de `nativewind`** devuelve `colorScheme` y `setColorScheme('light' | 'dark' | 'system')`. No lo confundas con el `useColorScheme` de `react-native`, que solo lee el esquema del sistema.
+- **`expo-sqlite/kv-store`** ofrece lectura síncrona (`getItemSync`): aplicamos la preferencia en el primer render sin parpadeo de un tema a otro.
+- **`ThemeProvider` de Expo Router** cambia los colores de cabeceras y fondos de los navegadores; partimos de `DarkTheme` y ajustamos `background` y `card` a nuestra paleta.
+- **`StatusBar style`**: con fondo oscuro necesitas iconos claros (`light`) y viceversa.
+- **Las clases del selector** son strings completos condicionados (no construidos por partes), así Tailwind puede detectarlas.
+
+## Buenas prácticas
+
+- **No uses negro puro** (`#000`) para fondos grandes: grises muy oscuros (`zinc-950`) cansan menos y permiten mostrar elevación.
+- **Revisa el contraste** de textos secundarios en ambos modos (mínimo 4.5:1 para texto normal).
+- **Usa tokens semánticos** (`bg-background`, `text-foreground`) en lugar de `bg-white dark:bg-zinc-950` repetido: lo vemos en [Temas personalizados](/docs/estilos/temas-personalizados).
+- **Prueba imágenes y logotipos** en modo oscuro; a veces necesitas versiones alternativas.
+
+### Errores comunes
+
+- Cambiar los colores de tus componentes pero no el tema de navegación: cabeceras blancas sobre pantallas oscuras.
+- Olvidar `userInterfaceStyle` y no entender por qué la app nunca cambia.
+- Colores fijos en `StyleSheet` que no consultan el tema.
+
+### Cuándo usar otra solución
+
+Si no usas NativeWind, el `useColorScheme` de React Native más una fábrica de estilos con tema ([StyleSheet en profundidad](/docs/estilos/stylesheet-avanzado)) resuelve lo mismo. Para colores que siguen exactamente al sistema (incluido el modo de alto contraste en iOS), existen `PlatformColor` y `DynamicColorIOS`.

@@ -1,0 +1,152 @@
+---
+title: Animaciones
+description: Panorama de las animaciones en React Native. Cuándo usar transiciones CSS de Reanimated, animaciones de layout, Animated o Lottie, y principios de movimiento.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - fundamentos/stylesheet
+related:
+  - estilos/reanimated
+  - estilos/gesture-handler
+  - calidad/accesibilidad
+resources:
+  - title: Reanimated — Documentación
+    url: https://docs.swmansion.com/react-native-reanimated/
+  - title: Reanimated — Animaciones CSS
+    url: https://docs.swmansion.com/react-native-reanimated/docs/css-animations/
+  - title: React Native — Animated
+    url: https://reactnative.dev/docs/animated
+keywords: [animaciones, transiciones, reanimated, layout animations, entering, exiting, Animated, Lottie, reduce motion, easing]
+---
+
+## Introducción conceptual
+
+Las animaciones bien usadas **explican cambios**: de dónde viene un elemento, qué se ha borrado, qué está cargando. En React Native hay varias herramientas, y elegir bien depende de qué quieres animar:
+
+| Necesidad | Herramienta recomendada |
+| --- | --- |
+| Cambiar una propiedad suavemente (ancho, color, opacidad) | **Transiciones CSS de Reanimated 4** |
+| Animar la aparición o desaparición de elementos de una lista | **Layout animations** (`entering`, `exiting`, `layout`) |
+| Animaciones guiadas por gestos o scroll | **Shared values de Reanimated** + Gesture Handler |
+| Ilustraciones animadas diseñadas en After Effects | **Lottie** (`lottie-react-native`) |
+| Algo muy simple sin dependencias | API `Animated` del núcleo |
+
+**Reanimated** viene incluido en la plantilla de Expo SDK 58 (versión 4.7) y ejecuta las animaciones en el **hilo de UI**: siguen fluidas aunque el hilo de JavaScript esté ocupado.
+
+<Overview
+  purpose="Comunicar cambios de estado y dar sensación de calidad con movimiento fluido."
+  importance="Una animación a tirones se nota más que no tener animación; elegir la herramienta correcta garantiza 60–120 fps."
+  when="Transiciones de estado, feedback de interacciones, aparición de elementos, gestos y estados de carga."
+  problem="Evita animaciones que bloquean el hilo de JavaScript o que se implementan con setState en cada frame."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="Declarativas (CSS)" tone="brand">
+    Describes el estado final y la duración; Reanimated interpola. Ideales para la mayoría de transiciones de UI.
+  </Column>
+  <Column title="Imperativas (shared values)">
+    Controlas cada valor animado con `withTiming`, `withSpring` y gestos. Para interacciones complejas.
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+Tres animaciones habituales con muy poco código, usando Reanimated 4:
+
+```tsx title="src/components/animated-examples.tsx"
+import { useState } from 'react';
+import { Pressable, Text, View } from 'react-native';
+import Animated, { FadeInDown, FadeOut, LinearTransition, useReducedMotion } from 'react-native-reanimated';
+
+/** 1. Transición CSS: el panel cambia de altura y color suavemente */
+export function ExpandablePanel() {
+  const [open, setOpen] = useState(false);
+  return (
+    <Pressable onPress={() => setOpen((o) => !o)}>
+      <Animated.View
+        style={{
+          height: open ? 160 : 64,
+          backgroundColor: open ? '#e0f2fe' : '#f1f5f9',
+          borderRadius: 16,
+          padding: 16,
+          transitionProperty: ['height', 'backgroundColor'],
+          transitionDuration: 300,
+          transitionTimingFunction: 'ease-in-out',
+        }}
+      >
+        <Text style={{ fontWeight: '600' }}>{open ? 'Toca para cerrar' : 'Toca para ver más'}</Text>
+      </Animated.View>
+    </Pressable>
+  );
+}
+
+/** 2. Animación CSS con keyframes: indicador "en vivo" que late */
+const pulse = {
+  from: { opacity: 1, transform: [{ scale: 1 }] },
+  to: { opacity: 0.4, transform: [{ scale: 1.6 }] },
+};
+
+export function LiveDot() {
+  return (
+    <Animated.View
+      style={{
+        width: 10,
+        height: 10,
+        borderRadius: 5,
+        backgroundColor: '#ef4444',
+        animationName: pulse,
+        animationDuration: '900ms',
+        animationIterationCount: 'infinite',
+        animationDirection: 'alternate',
+      }}
+    />
+  );
+}
+
+/** 3. Layout animations: elementos que entran, salen y se reordenan */
+export function AnimatedList({ items, onRemove }: { items: { id: string; label: string }[]; onRemove: (id: string) => void }) {
+  const reduceMotion = useReducedMotion();
+  return (
+    <View style={{ gap: 8 }}>
+      {items.map((item, index) => (
+        <Animated.View
+          key={item.id}
+          entering={reduceMotion ? undefined : FadeInDown.delay(index * 40)}
+          exiting={FadeOut}
+          layout={LinearTransition}
+          style={{ padding: 14, borderRadius: 12, backgroundColor: '#fff' }}
+        >
+          <Pressable onPress={() => onRemove(item.id)}>
+            <Text>{item.label}</Text>
+          </Pressable>
+        </Animated.View>
+      ))}
+    </View>
+  );
+}
+```
+
+## Explicación del código
+
+- **`Animated.View`** de Reanimated acepta estilos animables. En Reanimated 4, basta con declarar **`transitionProperty`** y **`transitionDuration`**: cada vez que cambian `height` o `backgroundColor`, el cambio se anima automáticamente, como una transición CSS.
+- **`animationName`** recibe un objeto de *keyframes* (`from`/`to` o porcentajes). Con `animationIterationCount: 'infinite'` y `animationDirection: 'alternate'` el punto late indefinidamente.
+- **`entering`, `exiting` y `layout`** animan el montaje, el desmontaje y los cambios de posición. `FadeInDown.delay(index * 40)` escalona la entrada de cada elemento.
+- **`useReducedMotion()`** devuelve `true` si el usuario activó "reducir movimiento" en el sistema; respetarlo es una práctica de accesibilidad.
+
+## Buenas prácticas
+
+- **Duraciones cortas**: 150–300 ms para la mayoría de transiciones de UI.
+- **Anima transform y opacity** siempre que puedas: son las propiedades más baratas de animar.
+- **Una animación debe tener un propósito**: guiar la atención, dar feedback o mostrar relación espacial.
+- **Respeta "reducir movimiento"** y evita animaciones infinitas innecesarias.
+
+### Errores comunes
+
+- Animar con `setInterval` + `setState`: cada frame provoca un render de React y la animación se entrecorta.
+- Usar `LayoutAnimation` del núcleo esperando el mismo control que Reanimated: es limitada y global.
+
+### Cuándo usar otra solución
+
+Para animaciones interactivas (arrastrar, deslizar, scroll) usa shared values de [Reanimated](/docs/estilos/reanimated) con [Gesture Handler](/docs/estilos/gesture-handler). Para ilustraciones complejas diseñadas por un equipo de diseño, Lottie es más productivo que animar a mano.

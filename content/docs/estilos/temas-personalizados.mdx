@@ -1,0 +1,183 @@
+---
+title: Temas personalizados
+description: Tokens de diseño semánticos con variables CSS en NativeWind (vars), múltiples marcas o temas y la alternativa con Context y StyleSheet.
+difficulty: avanzado
+time: 22
+prerequisites:
+  - estilos/dark-mode
+related:
+  - arquitectura/design-system
+  - sistema-de-componentes/temas-y-variantes
+  - estilos/stylesheet-avanzado
+resources:
+  - title: NativeWind — Temas
+    url: https://www.nativewind.dev/docs/guides/themes
+  - title: NativeWind — vars()
+    url: https://www.nativewind.dev/docs/api/vars
+  - title: Tailwind CSS v3 — Personalizar colores
+    url: https://v3.tailwindcss.com/docs/customizing-colors
+keywords: [temas, tokens, design tokens, variables css, vars, colores semánticos, multimarca, white label, tailwind.config]
+---
+
+## Introducción conceptual
+
+Un tema es un conjunto de **tokens de diseño** con nombre semántico: `primary`, `background`, `foreground`, `muted`, `border`, `danger`. Los componentes usan esos nombres, nunca colores literales. Así, cambiar el aspecto de toda la app (modo oscuro, una segunda marca, un tema de alto contraste) es cambiar **los valores de los tokens**, no cada componente.
+
+En NativeWind esto se implementa con **variables CSS**: los colores de Tailwind apuntan a variables (`rgb(var(--color-primary) / <alpha-value>)`) y la función `vars()` asigna sus valores en un `View` contenedor.
+
+<Overview
+  purpose="Definir la identidad visual en un único lugar y poder cambiarla en tiempo de ejecución."
+  importance="Es la base de un design system escalable: modo oscuro, multimarca y rediseños se vuelven cambios de configuración."
+  when="En cualquier app con más de unas pocas pantallas, y siempre que haya modo oscuro o varias marcas."
+  problem="Evita buscar y reemplazar colores por todo el código y los componentes que olvidan su versión oscura."
+/>
+
+## Explicación visual
+
+<Layers
+  layers={[
+    { title: 'Componentes', desc: 'Usan nombres semánticos', items: ['bg-primary', 'text-foreground', 'border-border'], tone: 'brand' },
+    { title: 'tailwind.config.js', desc: 'Colores → variables', items: ['primary: rgb(var(--color-primary) / <alpha-value>)'] },
+    { title: 'vars()', desc: 'Valores por tema', items: ['light', 'dark', 'marca B'] },
+    { title: 'Tokens base', desc: 'Paleta de marca', items: ['sky-600 = 2 132 199', 'zinc-950 = 9 9 11'], tone: 'muted' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+<CodeTabs>
+
+```js title="tailwind.config.js"
+/** Los colores leen variables CSS: el valor real lo decide el tema activo */
+const withVar = (name) => `rgb(var(--color-${name}) / <alpha-value>)`;
+
+module.exports = {
+  content: ['./src/**/*.{js,jsx,ts,tsx}'],
+  presets: [require('nativewind/preset')],
+  darkMode: 'class',
+  theme: {
+    extend: {
+      colors: {
+        background: withVar('background'),
+        foreground: withVar('foreground'),
+        card: withVar('card'),
+        muted: { DEFAULT: withVar('muted'), foreground: withVar('muted-foreground') },
+        border: withVar('border'),
+        primary: { DEFAULT: withVar('primary'), foreground: withVar('primary-foreground') },
+        danger: withVar('danger'),
+      },
+      borderRadius: { card: '16px' },
+    },
+  },
+};
+```
+
+```ts title="src/theme/themes.ts"
+import { vars } from 'nativewind';
+
+// Valores en formato "R G B" para poder aplicar opacidad (bg-primary/10)
+const base = {
+  light: {
+    '--color-background': '255 255 255',
+    '--color-foreground': '9 9 11',
+    '--color-card': '250 250 250',
+    '--color-muted': '244 244 245',
+    '--color-muted-foreground': '113 113 122',
+    '--color-border': '228 228 231',
+    '--color-danger': '220 38 38',
+  },
+  dark: {
+    '--color-background': '9 9 11',
+    '--color-foreground': '250 250 250',
+    '--color-card': '24 24 27',
+    '--color-muted': '39 39 42',
+    '--color-muted-foreground': '161 161 170',
+    '--color-border': '39 39 42',
+    '--color-danger': '248 113 113',
+  },
+};
+
+const brands = {
+  ocean: { light: { '--color-primary': '2 132 199', '--color-primary-foreground': '255 255 255' }, dark: { '--color-primary': '56 189 248', '--color-primary-foreground': '8 47 73' } },
+  forest: { light: { '--color-primary': '22 163 74', '--color-primary-foreground': '255 255 255' }, dark: { '--color-primary': '74 222 128', '--color-primary-foreground': '5 46 22' } },
+} as const;
+
+export type Brand = keyof typeof brands;
+export type Scheme = 'light' | 'dark';
+
+export function getThemeStyle(brand: Brand, scheme: Scheme) {
+  return vars({ ...base[scheme], ...brands[brand][scheme] });
+}
+```
+
+```tsx title="src/theme/theme-provider.tsx"
+import { createContext, use, useState, type ReactNode } from 'react';
+import { View } from 'react-native';
+import { useColorScheme } from 'nativewind';
+import { getThemeStyle, type Brand } from './themes';
+
+const BrandContext = createContext<{ brand: Brand; setBrand: (b: Brand) => void } | null>(null);
+
+export function AppThemeProvider({ children, initialBrand = 'ocean' }: { children: ReactNode; initialBrand?: Brand }) {
+  const { colorScheme } = useColorScheme();
+  const [brand, setBrand] = useState<Brand>(initialBrand);
+
+  return (
+    <BrandContext value={{ brand, setBrand }}>
+      {/* Las variables se aplican a este View y a todos sus descendientes */}
+      <View style={getThemeStyle(brand, colorScheme === 'dark' ? 'dark' : 'light')} className="flex-1 bg-background">
+        {children}
+      </View>
+    </BrandContext>
+  );
+}
+
+export function useBrand() {
+  const ctx = use(BrandContext);
+  if (!ctx) throw new Error('useBrand debe usarse dentro de AppThemeProvider');
+  return ctx;
+}
+```
+
+```tsx title="src/components/balance-card.tsx"
+import { Text, View } from 'react-native';
+
+export function BalanceCard({ amount }: { amount: string }) {
+  return (
+    <View className="gap-1 rounded-card border border-border bg-card p-5">
+      <Text className="text-sm text-muted-foreground">Saldo disponible</Text>
+      <Text className="text-3xl font-bold text-foreground">{amount}</Text>
+      <View className="mt-2 self-start rounded-full bg-primary/10 px-3 py-1">
+        <Text className="text-xs font-semibold text-primary">+4,2 % este mes</Text>
+      </View>
+    </View>
+  );
+}
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`rgb(var(--color-x) / <alpha-value>)`** hace que el color dependa de una variable y siga admitiendo modificadores de opacidad como `bg-primary/10`. Por eso los valores se guardan como `"R G B"` sin `rgb()`.
+- **`vars()`** convierte un objeto de variables en un estilo que NativeWind entiende. Aplicado a un `View`, las variables están disponibles para **todos sus descendientes**, como en CSS.
+- **Combinar `base[scheme]` con `brands[brand][scheme]`** permite dos dimensiones independientes: modo (claro/oscuro) y marca. Añadir una tercera marca es añadir un objeto.
+- **`BalanceCard`** no sabe nada de marcas ni de modos: usa `bg-card`, `text-foreground`, `bg-primary/10`. Funciona igual con cualquier tema.
+- **`rounded-card`** es un token de radio propio definido en `extend.borderRadius`.
+
+## Buenas prácticas
+
+- **Nombra por función, no por color**: `danger` en lugar de `red`, `primary` en lugar de `blue`.
+- **Mantén pocos tokens** y bien definidos: fondo, superficie, texto, texto secundario, borde, primario, peligro, éxito. Un design system crece cuando hace falta, no antes.
+- **Documenta los tokens** en una pantalla interna de la app (un "catálogo") para revisar contraste y consistencia.
+- **Comprueba el contraste** de cada combinación texto/fondo en ambos modos.
+
+### Errores comunes
+
+- Mezclar tokens semánticos con colores literales de Tailwind (`bg-sky-600`) en los mismos componentes: el tema deja de aplicarse de forma uniforme.
+- Escribir los valores de las variables con `rgb()` o hex: el modificador de opacidad deja de funcionar.
+- Aplicar `vars()` en un componente que no envuelve a los que usan esas clases.
+
+### Cuándo usar otra solución
+
+Si no usas NativeWind, implementa el mismo patrón con un contexto que expone un objeto `theme` y una fábrica de estilos ([StyleSheet en profundidad](/docs/estilos/stylesheet-avanzado)). Para colores que deben seguir al sistema operativo (incluidos modos de accesibilidad), considera `PlatformColor`.

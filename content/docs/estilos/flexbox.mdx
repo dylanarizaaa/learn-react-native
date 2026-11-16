@@ -1,0 +1,163 @@
+---
+title: Flexbox en profundidad
+sidebarTitle: Flexbox
+description: flexGrow, flexShrink y flexBasis, alignContent, posicionamiento absoluto, zIndex, overflow y patrones de layout frecuentes en apps móviles.
+difficulty: intermedio
+time: 18
+prerequisites:
+  - fundamentos/flexbox-y-responsive
+related:
+  - estilos/dimensiones
+  - estilos/diseno-adaptable
+  - fundamentos/safe-area
+resources:
+  - title: React Native — Layout con Flexbox
+    url: https://reactnative.dev/docs/flexbox
+  - title: React Native — Layout props
+    url: https://reactnative.dev/docs/layout-props
+  - title: Yoga — Playground
+    url: https://www.yogalayout.dev/playground
+keywords: [flexGrow, flexShrink, flexBasis, alignContent, position absolute, zIndex, overflow, aspectRatio, layout, patrones]
+---
+
+## Introducción conceptual
+
+Con `flexDirection`, `justifyContent`, `alignItems` y `gap` resuelves la mayoría de layouts. Pero hay casos que requieren entender **cómo Yoga reparte el espacio** (`flexGrow`, `flexShrink`, `flexBasis`), cómo **sacar un elemento del flujo** (`position: 'absolute'`) y cómo controlar el **orden de dibujado** (`zIndex`).
+
+<Overview
+  purpose="Construir layouts complejos y robustos: textos que se ajustan, pies fijos, insignias superpuestas, columnas proporcionales."
+  importance="Los errores de layout más difíciles (textos cortados, elementos que desbordan) se explican con flexShrink y flexBasis."
+  when="Cuando el layout básico no basta: contenido de tamaño variable, superposiciones o proporciones."
+  problem="Evita soluciones frágiles con anchos fijos o márgenes negativos que fallan con textos largos o fuentes grandes."
+/>
+
+## Explicación visual
+
+| Propiedad | Por defecto (RN) | Qué hace |
+| --- | --- | --- |
+| `flexGrow` | `0` | Cuánto crece para ocupar espacio libre |
+| `flexShrink` | `0` | Cuánto se encoge si no cabe (en la web es `1`) |
+| `flexBasis` | `auto` | Tamaño inicial antes de repartir el espacio |
+| `flex: 1` | — | Atajo: `flexGrow: 1, flexShrink: 1, flexBasis: 0` |
+| `position` | `relative` | `absolute` saca del flujo; `static` ignora offsets |
+
+<Flow
+  steps={[
+    { title: 'flexBasis', desc: 'Tamaño inicial de cada hijo' },
+    { title: '¿Sobra espacio?', desc: 'Se reparte según flexGrow', tone: 'brand' },
+    { title: '¿Falta espacio?', desc: 'Se quita según flexShrink', tone: 'muted' },
+    { title: 'Tamaño final', desc: 'Respetando min/max' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+Cuatro patrones que usarás constantemente:
+
+```tsx title="src/components/layout-patterns.tsx"
+import type { ReactNode } from 'react';
+import { Image } from 'expo-image';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
+
+/** 1. Fila con texto largo que se ajusta y un valor que nunca se corta */
+export function SummaryRow({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.row}>
+      <Text style={styles.label} numberOfLines={2}>
+        {label}
+      </Text>
+      <Text style={styles.value}>{value}</Text>
+    </View>
+  );
+}
+
+/** 2. Avatar con insignia superpuesta (position absolute) */
+export function AvatarWithBadge({ uri, count }: { uri: string; count: number }) {
+  return (
+    <View style={styles.avatarWrapper}>
+      <Image source={{ uri }} style={styles.avatar} />
+      {count > 0 && (
+        <View style={styles.badge}>
+          <Text style={styles.badgeText}>{count > 99 ? '99+' : count}</Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+/** 3. Columnas proporcionales 2:1 */
+export function SplitStats() {
+  return (
+    <View style={styles.split}>
+      <View style={[styles.box, { flex: 2 }]}>
+        <Text>Ingresos</Text>
+      </View>
+      <View style={[styles.box, { flex: 1 }]}>
+        <Text>Gastos</Text>
+      </View>
+    </View>
+  );
+}
+
+/** 4. Pantalla con contenido desplazable y pie fijo */
+export function ScreenWithFooter({ children, footer }: { children: ReactNode; footer: ReactNode }) {
+  return (
+    <View style={styles.screen}>
+      <ScrollView contentContainerStyle={styles.content}>{children}</ScrollView>
+      <View style={styles.footer}>{footer}</View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 },
+  label: { flexShrink: 1, fontSize: 15 }, // se encoge y hace salto de línea
+  value: { marginLeft: 'auto', fontWeight: '600' }, // empujado a la derecha, nunca se encoge
+  avatarWrapper: { width: 56, height: 56 }, // contenedor de referencia del badge
+  avatar: { width: 56, height: 56, borderRadius: 28 },
+  badge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    minWidth: 22,
+    height: 22,
+    paddingHorizontal: 6,
+    borderRadius: 11,
+    backgroundColor: '#ef4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
+  badgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
+  split: { flexDirection: 'row', gap: 12 },
+  box: { padding: 16, borderRadius: 12, backgroundColor: '#f1f5f9' },
+  screen: { flex: 1 },
+  content: { padding: 16, gap: 12 },
+  footer: { padding: 16, borderTopWidth: StyleSheet.hairlineWidth, borderColor: '#e2e8f0' },
+});
+```
+
+## Explicación del código
+
+- **Patrón 1**: en React Native `flexShrink` es `0` por defecto, así que un texto largo empujaría el valor fuera de la pantalla. Con **`flexShrink: 1`** en la etiqueta, solo ella se encoge y salta de línea. **`marginLeft: 'auto'`** empuja el valor al extremo derecho.
+- **Patrón 2**: un elemento con **`position: 'absolute'`** se posiciona respecto a su padre. El contenedor tiene tamaño fijo y sirve de referencia; `top`/`right` negativos hacen que la insignia sobresalga.
+- **Patrón 3**: **`flex: 2`** y **`flex: 1`** reparten el espacio en proporción 2:1 porque `flexBasis` es 0 con el atajo `flex`.
+- **Patrón 4**: el `ScrollView` se expande (por defecto ocupa el espacio disponible en el eje principal) y el pie mantiene su altura natural al final.
+
+## Buenas prácticas
+
+- **Piensa primero en el flujo normal** y usa `position: 'absolute'` solo para superposiciones reales.
+- **`minWidth` / `maxWidth`** protegen el layout frente a contenido muy corto o muy largo.
+- **Prueba con fuentes grandes** (accesibilidad) y textos largos en otros idiomas: es donde fallan los layouts rígidos.
+- **Usa `overflow: 'hidden'`** en contenedores con `borderRadius` que contienen imágenes.
+
+### Errores comunes
+
+- Esperar el comportamiento de la web (`flexShrink: 1` por defecto) y ver textos que desbordan.
+- `position: 'absolute'` sin un padre de tamaño definido: el elemento se posiciona respecto a un ancestro inesperado.
+- Abusar de `zIndex`: en Android, además, las sombras y la elevación influyen en el orden de dibujado.
+
+### Cuándo usar otra solución
+
+Para cuadrículas de datos usa `FlatList` con `numColumns` o FlashList con `masonry`. Para adaptar el layout a tablets o pantallas plegables, combina Flexbox con [diseño adaptable](/docs/estilos/diseno-adaptable).

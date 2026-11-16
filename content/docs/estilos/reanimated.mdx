@@ -1,0 +1,175 @@
+---
+title: Reanimated
+description: Shared values, worklets, useAnimatedStyle, withTiming, withSpring, interpolate y animaciones ligadas al scroll con Reanimated 4.
+difficulty: avanzado
+time: 30
+prerequisites:
+  - estilos/animaciones
+  - introduccion/como-funciona-react-native
+related:
+  - estilos/gesture-handler
+  - calidad/rendimiento
+  - sistema-de-componentes/modal
+resources:
+  - title: Reanimated — Fundamentos
+    url: https://docs.swmansion.com/react-native-reanimated/docs/fundamentals/getting-started/
+  - title: Reanimated — useAnimatedStyle
+    url: https://docs.swmansion.com/react-native-reanimated/docs/core/useAnimatedStyle/
+  - title: React Native Worklets
+    url: https://docs.swmansion.com/react-native-worklets/
+keywords: [reanimated, useSharedValue, useAnimatedStyle, withTiming, withSpring, interpolate, worklet, useAnimatedScrollHandler, scheduleOnRN, hilo de UI]
+---
+
+## Introducción conceptual
+
+Reanimated ejecuta animaciones en el **hilo de UI** mediante <Term slug="worklet">worklets</Term>: funciones de JavaScript que se copian y ejecutan en un runtime separado, junto al renderizado nativo. Así, la animación no depende del hilo de JavaScript y se mantiene fluida aunque React esté ocupado.
+
+Sus piezas fundamentales:
+
+- **`useSharedValue`**: un valor animable que vive en el hilo de UI. Cambiarlo **no** provoca renders de React.
+- **`useAnimatedStyle`**: un estilo que se recalcula (como worklet) cuando cambian los shared values que lee.
+- **Funciones de animación**: `withTiming` (duración y curva), `withSpring` (física de muelle), `withDelay`, `withSequence`, `withRepeat`.
+
+En Reanimated 4 los worklets viven en el paquete **`react-native-worklets`** (incluido en la plantilla de Expo) y el plugin de Babel se configura automáticamente con `babel-preset-expo`.
+
+<Overview
+  purpose="Crear animaciones e interacciones fluidas controladas con precisión: gestos, scroll, físicas y secuencias."
+  importance="Es el estándar de la comunidad para animaciones de calidad nativa y la base de librerías de bottom sheets, carruseles o gestos."
+  when="Animaciones ligadas a gestos o al scroll, secuencias encadenadas y cualquier caso que las transiciones CSS no cubran."
+  problem="Evita animaciones a tirones causadas por actualizar estado de React en cada frame desde el hilo de JavaScript."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'Evento', desc: 'Toque, gesto o scroll' },
+    { title: 'Shared value', desc: 'progress.value = withSpring(1)', tone: 'brand' },
+    { title: 'useAnimatedStyle', desc: 'Worklet en el hilo de UI' },
+    { title: 'Vista nativa', desc: 'Se actualiza sin pasar por React' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+Una cabecera que se compacta al hacer scroll y un botón "me gusta" con efecto de rebote:
+
+```tsx title="src/app/articulo.tsx"
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import Animated, {
+  Extrapolation,
+  interpolate,
+  useAnimatedScrollHandler,
+  useAnimatedStyle,
+  useSharedValue,
+  withSequence,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
+import { scheduleOnRN } from 'react-native-worklets';
+import * as Haptics from 'expo-haptics';
+
+const HEADER_MAX = 180;
+const HEADER_MIN = 72;
+
+export default function ArticleScreen() {
+  const scrollY = useSharedValue(0);
+
+  // Se ejecuta en el hilo de UI en cada evento de scroll
+  const onScroll = useAnimatedScrollHandler((event) => {
+    scrollY.value = event.contentOffset.y;
+  });
+
+  const headerStyle = useAnimatedStyle(() => ({
+    height: interpolate(scrollY.value, [0, HEADER_MAX - HEADER_MIN], [HEADER_MAX, HEADER_MIN], Extrapolation.CLAMP),
+  }));
+
+  const titleStyle = useAnimatedStyle(() => ({
+    fontSize: interpolate(scrollY.value, [0, 100], [30, 20], Extrapolation.CLAMP),
+  }));
+
+  return (
+    <View style={{ flex: 1 }}>
+      <Animated.View style={[styles.header, headerStyle]}>
+        <Animated.Text style={[styles.title, titleStyle]}>Diario de viaje</Animated.Text>
+      </Animated.View>
+      <Animated.ScrollView onScroll={onScroll} scrollEventThrottle={16} contentContainerStyle={{ padding: 20, gap: 16 }}>
+        {Array.from({ length: 20 }, (_, i) => (
+          <Text key={i} style={{ fontSize: 16, lineHeight: 24 }}>
+            Párrafo {i + 1}. Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+          </Text>
+        ))}
+        <LikeButton />
+      </Animated.ScrollView>
+    </View>
+  );
+}
+
+function LikeButton() {
+  const scale = useSharedValue(1);
+  const liked = useSharedValue(0);
+
+  const style = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+    backgroundColor: liked.value ? '#e11d48' : '#f1f5f9',
+  }));
+
+  function vibrate() {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  }
+
+  function handlePress() {
+    liked.value = liked.value ? 0 : 1;
+    // Secuencia: encoger rápido y rebotar con un muelle
+    scale.value = withSequence(withTiming(0.85, { duration: 80 }), withSpring(1, { damping: 6, stiffness: 220 }));
+  }
+
+  return (
+    <Pressable onPress={handlePress} onPressIn={vibrate}>
+      <Animated.View style={[styles.like, style]}>
+        <Text style={{ fontSize: 22 }}>♥</Text>
+      </Animated.View>
+    </Pressable>
+  );
+}
+
+const styles = StyleSheet.create({
+  header: { backgroundColor: '#0f172a', justifyContent: 'flex-end', padding: 20 },
+  title: { color: '#fff', fontWeight: '800' },
+  like: { width: 64, height: 64, borderRadius: 32, alignItems: 'center', justifyContent: 'center', alignSelf: 'center' },
+});
+```
+
+Para llamar a código de React (por ejemplo, `setState`) desde un worklet, usa `scheduleOnRN`:
+
+```ts
+const onScroll = useAnimatedScrollHandler((event) => {
+  scrollY.value = event.contentOffset.y;
+  if (event.contentOffset.y > 600) scheduleOnRN(setShowBackToTop, true);
+});
+```
+
+## Explicación del código
+
+- **`useAnimatedScrollHandler`** recibe los eventos de scroll directamente en el hilo de UI y actualiza `scrollY` sin pasar por React. `scrollEventThrottle={16}` envía un evento por frame (≈ 60 fps).
+- **`interpolate`** traduce un rango de entrada (0 a 108 px de scroll) a un rango de salida (180 a 72 de altura). **`Extrapolation.CLAMP`** evita valores fuera del rango.
+- **Las funciones dentro de `useAnimatedStyle` y del scroll handler** se convierten automáticamente en worklets: pueden leer `.value` pero no deben llamar directamente a funciones de React.
+- **`withSequence`** encadena animaciones; **`withSpring`** con `damping` bajo produce el rebote.
+- **`scheduleOnRN`** (de `react-native-worklets`) programa una función en el hilo de JavaScript; es el reemplazo moderno de `runOnJS`.
+
+## Buenas prácticas
+
+- **Lee y escribe `.value`** solo dentro de worklets o manejadores; no lo leas durante el render de React para decidir qué mostrar.
+- **Anima `transform` y `opacity`** siempre que sea posible.
+- **Respeta "reducir movimiento"** con `useReducedMotion()` o la configuración `reduceMotion` de cada animación.
+- **Prefiere transiciones CSS** (más simples) cuando no necesitas control frame a frame ([Animaciones](/docs/estilos/animaciones)).
+
+### Errores comunes
+
+- Llamar a `setState` en cada frame desde un worklet: anula la ventaja de Reanimated.
+- Usar `Animated` del núcleo y de Reanimated en el mismo componente sin darte cuenta: `Animated.View` debe importarse de `react-native-reanimated`.
+- Reanimated 4 requiere la Nueva Arquitectura (siempre activa en SDK 55+): no hay que hacer nada, pero algunas librerías antiguas basadas en Reanimated 2 pueden no ser compatibles.
+
+### Cuándo usar otra solución
+
+Para arrastrar, deslizar o pellizcar, combina Reanimated con [Gesture Handler](/docs/estilos/gesture-handler). Para transiciones simples entre estados, las transiciones CSS de Reanimated 4 son suficientes y más legibles.

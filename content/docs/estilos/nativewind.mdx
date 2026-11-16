@@ -1,0 +1,151 @@
+---
+title: NativeWind
+description: Estilos con clases de Tailwind CSS en React Native. Cómo funciona, la prop className, variantes de estado, modo oscuro, breakpoints y plataformas.
+difficulty: intermedio
+time: 20
+prerequisites:
+  - fundamentos/stylesheet
+related:
+  - estilos/configuracion-de-nativewind
+  - sistema-de-componentes/vision-general
+  - sistema-de-componentes/nativewind-vs-stylesheet
+resources:
+  - title: NativeWind — Documentación
+    url: https://www.nativewind.dev/
+  - title: Tailwind CSS v3 — Documentación
+    url: https://v3.tailwindcss.com/docs
+  - title: Expo — Tailwind CSS
+    url: https://docs.expo.dev/guides/tailwind/
+keywords: [nativewind, tailwind, className, utilidades, active:, dark:, ios:, android:, md:, variantes, cssInterop]
+---
+
+## Introducción conceptual
+
+<Term slug="nativewind">NativeWind</Term> permite estilizar componentes de React Native con **clases de Tailwind CSS** usando la prop `className`. En lugar de escribir un objeto de estilos y darle un nombre, describes el estilo directamente en el componente:
+
+```tsx
+<View className="flex-1 items-center justify-center bg-white dark:bg-zinc-950">
+```
+
+NativeWind **compila las clases en tiempo de build** a objetos de estilo nativos y usa un runtime pequeño solo para lo reactivo (modo oscuro, estados de pulsación, breakpoints). No es una librería de componentes: es un **sistema de estilos**.
+
+<Callout type="info" title="Versiones">
+La versión estable actual es **NativeWind v4** (4.2.x), basada en Tailwind CSS v3. **NativeWind v5** (basada en Tailwind CSS v4 y `react-native-css`) está en fase *release candidate*. En este curso usamos v4; las clases que aprenderás son las mismas en ambas.
+</Callout>
+
+<Overview
+  purpose="Escribir estilos rápido y de forma consistente con un sistema de diseño basado en tokens (espaciados, colores, tipografía)."
+  importance="Comparte el vocabulario de Tailwind con la web, acelera el desarrollo y facilita modo oscuro, estados y breakpoints."
+  when="En apps con un sistema de diseño propio y equipos familiarizados con Tailwind, o cuando quieres compartir convenciones con un proyecto web."
+  problem="Evita hojas de estilo enormes con nombres arbitrarios, valores mágicos repetidos y lógica manual para dark mode y estados."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'className', desc: '"p-4 bg-sky-600 active:opacity-80"', tone: 'brand' },
+    { title: 'Tailwind', desc: 'Genera el CSS de las clases usadas' },
+    { title: 'NativeWind', desc: 'CSS → estilos nativos en build' },
+    { title: 'Runtime', desc: 'Aplica dark:, active:, md:' },
+    { title: 'style', desc: 'Objeto de estilos de RN' },
+  ]}
+/>
+
+| Variante | Ejemplo | Cuándo se aplica |
+| --- | --- | --- |
+| `dark:` | `dark:bg-zinc-900` | Modo oscuro activo |
+| `active:` | `active:opacity-80` | Mientras se pulsa (Pressable) |
+| `focus:` | `focus:border-sky-500` | Input con foco |
+| `disabled:` | `disabled:opacity-50` | Componente con `disabled` |
+| `ios:` / `android:` / `web:` | `ios:pt-2` | Solo en esa plataforma |
+| `sm:` `md:` `lg:` | `md:flex-row` | Ancho de ventana mínimo |
+
+## Ejemplo práctico
+
+Una tarjeta de producto completa con NativeWind:
+
+```tsx title="src/components/product-tile.tsx"
+import { Image } from 'expo-image';
+import { Pressable, Text, View } from 'react-native';
+
+type ProductTileProps = {
+  name: string;
+  price: number;
+  imageUrl: string;
+  inStock: boolean;
+  onAdd: () => void;
+};
+
+export function ProductTile({ name, price, imageUrl, inStock, onAdd }: ProductTileProps) {
+  return (
+    <View className="flex-1 gap-3 rounded-2xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
+      <Image source={{ uri: imageUrl }} className="aspect-square w-full rounded-xl bg-zinc-100" contentFit="cover" />
+
+      <View className="gap-1">
+        <Text className="text-base font-semibold text-zinc-900 dark:text-zinc-50" numberOfLines={1}>
+          {name}
+        </Text>
+        <Text className="text-sm text-zinc-500 dark:text-zinc-400">${price.toFixed(2)}</Text>
+      </View>
+
+      <Pressable
+        onPress={onAdd}
+        disabled={!inStock}
+        accessibilityRole="button"
+        className="items-center rounded-xl bg-sky-600 py-2.5 active:opacity-80 disabled:bg-zinc-300 dark:disabled:bg-zinc-700"
+      >
+        <Text className="font-semibold text-white">{inStock ? 'Añadir' : 'Agotado'}</Text>
+      </Pressable>
+    </View>
+  );
+}
+```
+
+Una cuadrícula que cambia de columnas según el ancho:
+
+```tsx title="src/app/tienda.tsx"
+import { ScrollView, View } from 'react-native';
+import { ProductTile } from '@/components/product-tile';
+
+export default function StoreScreen() {
+  return (
+    <ScrollView className="flex-1 bg-zinc-50 dark:bg-zinc-950" contentContainerClassName="p-4">
+      {/* 2 columnas en teléfonos, 3 en md y 4 en lg */}
+      <View className="flex-row flex-wrap gap-3">
+        {[1, 2, 3, 4, 5, 6].map((n) => (
+          <View key={n} className="w-[47%] md:w-[31%] lg:w-[23%]">
+            <ProductTile name={`Producto ${n}`} price={n * 9.9} imageUrl={`https://picsum.photos/seed/${n}/400`} inStock={n % 3 !== 0} onAdd={() => {}} />
+          </View>
+        ))}
+      </View>
+    </ScrollView>
+  );
+}
+```
+
+## Explicación del código
+
+- **`className`** funciona en los componentes del núcleo (`View`, `Text`, `Pressable`, `ScrollView`…) gracias a la transformación JSX de NativeWind. También en componentes que reenvían `style`, como `Image` de `expo-image`.
+- **`dark:`** aplica clases cuando el esquema de color es oscuro (el del sistema por defecto, o el que fijes manualmente).
+- **`active:`** y **`disabled:`** leen el estado de `Pressable` sin escribir un `style` en forma de función ni `useState`.
+- **`contentContainerClassName`** es la versión con clases de `contentContainerStyle` en `ScrollView` y `FlatList`.
+- **`w-[47%]`** usa un valor arbitrario entre corchetes. **`md:` y `lg:`** son breakpoints por ancho de ventana (768 y 1024 dp por defecto).
+- **`aspect-square`** equivale a `aspectRatio: 1`.
+
+## Buenas prácticas
+
+- **Define tus tokens en `tailwind.config.js`** (colores de marca, radios, fuentes) y usa nombres semánticos (`bg-primary`, `text-muted`) en lugar de `bg-sky-600` repetido por toda la app ([Temas personalizados](/docs/estilos/temas-personalizados)).
+- **Extrae componentes**, no cadenas de clases: si repites la misma combinación, es un componente `Button` o `Card`.
+- **Gestiona variantes con `class-variance-authority`** o `tailwind-variants` en componentes reutilizables ([Temas y variantes](/docs/sistema-de-componentes/temas-y-variantes)).
+- **Instala la extensión Tailwind CSS IntelliSense** y el plugin de Prettier para ordenar las clases.
+
+### Errores comunes
+
+- Construir clases dinámicamente (`` `bg-${color}-500` ``): Tailwind solo genera las clases que encuentra escritas literalmente en el código. Usa un mapa de clases completas.
+- Olvidar añadir una carpeta a `content` en `tailwind.config.js`: las clases de esos archivos no se generan.
+- Usar propiedades CSS que React Native no soporta (por ejemplo, `grid`): NativeWind no puede inventarlas.
+
+### Cuándo usar otra solución
+
+Para animaciones complejas o estilos calculados en cada frame, usa estilos de Reanimated. Para componentes de terceros que no aceptan `className`, envuélvelos con `cssInterop` o `remapProps` de NativeWind. Comparamos en detalle ambos enfoques en [NativeWind vs StyleSheet](/docs/sistema-de-componentes/nativewind-vs-stylesheet).

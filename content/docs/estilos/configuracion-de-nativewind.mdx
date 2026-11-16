@@ -1,0 +1,191 @@
+---
+title: Configuración de NativeWind
+description: Instalación paso a paso de NativeWind v4 en un proyecto Expo SDK 58 con TypeScript, verificación, Prettier y notas sobre NativeWind v5.
+difficulty: intermedio
+time: 20
+prerequisites:
+  - estilos/nativewind
+  - expo/configuracion-inicial
+related:
+  - sistema-de-componentes/configuracion-del-proyecto
+  - estilos/dark-mode
+  - estilos/temas-personalizados
+resources:
+  - title: NativeWind — Instalación
+    url: https://www.nativewind.dev/docs/getting-started/installation
+  - title: NativeWind — Solución de problemas
+    url: https://www.nativewind.dev/docs/getting-started/troubleshooting
+  - title: Expo — Babel y Metro
+    url: https://docs.expo.dev/versions/latest/config/babel/
+keywords: [instalar nativewind, tailwind.config.js, global.css, babel.config.js, metro.config.js, withNativeWind, nativewind-env.d.ts, jsxImportSource, verifyInstallation]
+---
+
+## Introducción conceptual
+
+NativeWind se integra en tres puntos del proceso de compilación de Expo:
+
+1. **Tailwind** genera el CSS de las clases que usas (configurado en `tailwind.config.js` y `global.css`).
+2. **Metro** pasa ese CSS por NativeWind para convertirlo en estilos nativos (`withNativeWind` en `metro.config.js`).
+3. **Babel** transforma el JSX para que los componentes acepten `className` (`jsxImportSource: 'nativewind'`).
+
+Instalarlo son seis archivos. Si algo falla, casi siempre es uno de ellos.
+
+<Overview
+  purpose="Dejar NativeWind funcionando en un proyecto Expo con TypeScript, autocompletado y orden automático de clases."
+  importance="Una configuración incorrecta produce el síntoma más confuso: las clases simplemente no hacen nada, sin errores."
+  when="Al iniciar un proyecto con NativeWind o al añadirlo a un proyecto existente."
+  problem="Reúne en un solo lugar los pasos exactos y cómo verificar que todo funciona."
+/>
+
+## Explicación visual
+
+```tree title="Archivos implicados"
+mi-app/
+  global.css * # Directivas de Tailwind
+  tailwind.config.js * # Rutas de contenido, preset y tema
+  babel.config.js * # jsxImportSource + plugin de NativeWind
+  metro.config.js * # withNativeWind(config, { input })
+  nativewind-env.d.ts * # Tipos de className
+  src/
+    app/
+      _layout.tsx * # import '../../global.css'
+```
+
+## Ejemplo práctico
+
+<Steps>
+<Step title="Instala las dependencias">
+
+```bash
+npx expo install nativewind react-native-reanimated react-native-safe-area-context
+npx expo install tailwindcss@^3.4.17 prettier-plugin-tailwindcss --dev
+```
+
+</Step>
+<Step title="Crea la configuración de Tailwind">
+
+```bash
+npx tailwindcss init
+```
+
+```js title="tailwind.config.js"
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  // Todas las carpetas que contienen clases
+  content: ['./src/**/*.{js,jsx,ts,tsx}'],
+  presets: [require('nativewind/preset')],
+  theme: {
+    extend: {},
+  },
+  plugins: [],
+};
+```
+
+```css title="global.css"
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+```
+
+</Step>
+<Step title="Configura Babel y Metro">
+
+```js title="babel.config.js"
+module.exports = function (api) {
+  api.cache(true);
+  return {
+    presets: [['babel-preset-expo', { jsxImportSource: 'nativewind' }], 'nativewind/babel'],
+  };
+};
+```
+
+```js title="metro.config.js"
+const { getDefaultConfig } = require('expo/metro-config');
+const { withNativeWind } = require('nativewind/metro');
+
+const config = getDefaultConfig(__dirname);
+
+module.exports = withNativeWind(config, { input: './global.css' });
+```
+
+</Step>
+<Step title="Importa el CSS y añade los tipos">
+
+```tsx title="src/app/_layout.tsx"
+import '../../global.css';
+import { Stack } from 'expo-router';
+
+export default function RootLayout() {
+  return <Stack />;
+}
+```
+
+```ts title="nativewind-env.d.ts"
+/// <reference types="nativewind/types" />
+```
+
+</Step>
+<Step title="Verifica la instalación">
+
+```tsx title="src/app/index.tsx"
+import { verifyInstallation } from 'nativewind';
+import { Text, View } from 'react-native';
+
+export default function Home() {
+  // Solo en desarrollo: avisa en consola si falta algún paso
+  if (__DEV__) verifyInstallation();
+
+  return (
+    <View className="flex-1 items-center justify-center bg-sky-50">
+      <Text className="text-2xl font-bold text-sky-700">NativeWind funciona ✅</Text>
+    </View>
+  );
+}
+```
+
+```bash
+# Reinicia Metro limpiando la caché tras cambiar Babel o Metro
+npx expo start --clear
+```
+
+</Step>
+</Steps>
+
+Prettier ordenará las clases automáticamente con su plugin:
+
+```json title=".prettierrc"
+{
+  "singleQuote": true,
+  "plugins": ["prettier-plugin-tailwindcss"]
+}
+```
+
+## Explicación del código
+
+- **`content`** le dice a Tailwind dónde buscar clases. Si un archivo con clases queda fuera, esas clases no existirán. Con la estructura `src/`, una sola ruta cubre todo.
+- **`presets: [require('nativewind/preset')]`** adapta Tailwind a React Native (unidades, propiedades soportadas, variantes como `ios:` y `android:`).
+- **`jsxImportSource: 'nativewind'`** cambia el runtime de JSX para que cualquier componente nativo acepte `className`. **`nativewind/babel`** añade las transformaciones necesarias.
+- **`withNativeWind(config, { input })`** procesa `global.css` con Tailwind y NativeWind durante el empaquetado.
+- **El `import` de `global.css`** debe hacerse en el layout raíz; la documentación de Expo recomienda no importarlo en layouts anidados para mantener el orden correcto de estilos.
+- **`nativewind-env.d.ts`** amplía los tipos de React Native para que TypeScript acepte `className` en `View`, `Text`, etc.
+- **`react-native-reanimated`** es una dependencia de NativeWind para animaciones y transiciones; en SDK 58 ya viene en la plantilla por defecto.
+
+### NativeWind v5 (release candidate)
+
+La v5 adopta Tailwind CSS v4: la configuración se hace en CSS (`@import "tailwindcss"` y `@theme`) en lugar de `tailwind.config.js`, usa `@tailwindcss/postcss` y el motor `react-native-css`, y ya no necesita el preset de Babel. Si empiezas hoy un proyecto de producción, la v4 estable es la opción segura; revisa la guía de migración oficial cuando la v5 sea estable.
+
+## Buenas prácticas
+
+- **Commitea los seis archivos** y documenta en el README que tras cambios en Babel o Metro hay que ejecutar `npx expo start --clear`.
+- **Mantén `content` amplio pero preciso** (`./src/**/*`), y añade rutas de paquetes internos si usas un monorepo.
+- **Usa `verifyInstallation()`** cuando algo no funcione, y quítalo después.
+
+### Errores comunes
+
+- Las clases no hacen nada: falta el `import` de `global.css`, la ruta en `content` o la caché de Metro está desactualizada.
+- `className` da error de TypeScript: falta `nativewind-env.d.ts` (o no está incluido por `tsconfig.json`).
+- Instalar Tailwind CSS v4 con NativeWind v4: la v4 de NativeWind requiere **Tailwind v3** (`tailwindcss@^3.4`).
+
+### Cuándo usar otra solución
+
+Si prefieres una alternativa con configuración en CSS y compatible con Tailwind v4 desde ya, valora NativeWind v5 (RC) o **Uniwind**, ambas mencionadas en la guía de Tailwind de Expo. Para el kit de componentes de este curso, sigue con [la configuración del proyecto](/docs/sistema-de-componentes/configuracion-del-proyecto).

@@ -1,0 +1,176 @@
+---
+title: Gestos con Gesture Handler
+sidebarTitle: Gesture Handler
+description: Gestos nativos con React Native Gesture Handler 3. API de hooks (usePanGesture, useTapGesture), composición de gestos y un deslizar para borrar con Reanimated.
+difficulty: avanzado
+time: 30
+prerequisites:
+  - estilos/reanimated
+related:
+  - estilos/animaciones
+  - proyectos/lista-de-tareas
+  - fundamentos/pressable-y-touchableopacity
+resources:
+  - title: React Native Gesture Handler — Documentación
+    url: https://docs.swmansion.com/react-native-gesture-handler/
+  - title: Expo — Gesture Handler
+    url: https://docs.expo.dev/versions/latest/sdk/gesture-handler/
+keywords: [gesture handler, gestos, usePanGesture, useTapGesture, GestureDetector, GestureHandlerRootView, swipe, arrastrar, pinch, composición]
+---
+
+## Introducción conceptual
+
+Los gestos del sistema de respuesta táctil de React Native (`onPress`, `onTouchMove`) se procesan en el hilo de JavaScript. Para gestos continuos como **arrastrar, deslizar, pellizcar o rotar**, **React Native Gesture Handler** reconoce los gestos con los sistemas nativos de cada plataforma y, combinado con Reanimated, actualiza la interfaz en el hilo de UI.
+
+En la versión **3** (incluida en Expo SDK 58), la API principal son **hooks**: `usePanGesture`, `useTapGesture`, `usePinchGesture`, `useLongPressGesture`… cada uno devuelve un gesto que se asigna a un `GestureDetector`. La API anterior basada en `Gesture.Pan()` sigue disponible por compatibilidad.
+
+<Overview
+  purpose="Implementar interacciones táctiles ricas y fluidas: arrastrar tarjetas, deslizar para borrar, zoom con dos dedos."
+  importance="Los gestos nativos se sienten como los del sistema y no compiten con el hilo de JavaScript."
+  when="Cuando un simple toque no basta: carruseles, bottom sheets, listas con acciones al deslizar, editores, mapas."
+  problem="Evita conflictos entre gestos (scroll vs arrastre) y la latencia de procesar cada movimiento en JavaScript."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'onBegin', desc: 'El dedo toca' },
+    { title: 'onActivate', desc: 'El gesto se reconoce' },
+    { title: 'onUpdate', desc: 'translationX, velocityX…', tone: 'brand' },
+    { title: 'onDeactivate', desc: 'El dedo se levanta' },
+    { title: 'onFinalize', desc: 'Siempre al terminar' },
+  ]}
+/>
+
+| Hook | Gesto |
+| --- | --- |
+| `useTapGesture` | Toque (con número de toques configurable) |
+| `usePanGesture` | Arrastre |
+| `usePinchGesture` / `useRotationGesture` | Zoom y rotación con dos dedos |
+| `useLongPressGesture` | Pulsación larga |
+| `useSimultaneousGestures` / `useExclusiveGestures` | Composición |
+
+## Ejemplo práctico
+
+La raíz de la app debe estar dentro de `GestureHandlerRootView`:
+
+```tsx title="src/app/_layout.tsx"
+import { Stack } from 'expo-router';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+
+export default function RootLayout() {
+  return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <Stack />
+    </GestureHandlerRootView>
+  );
+}
+```
+
+Una fila que se desliza hacia la izquierda para borrarse, con umbral y velocidad:
+
+```tsx title="src/components/swipeable-row.tsx"
+import type { ReactNode } from 'react';
+import { StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { GestureDetector, usePanGesture } from 'react-native-gesture-handler';
+import Animated, { useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
+import { scheduleOnRN } from 'react-native-worklets';
+
+type SwipeableRowProps = { children: ReactNode; onDelete: () => void };
+
+export function SwipeableRow({ children, onDelete }: SwipeableRowProps) {
+  const { width } = useWindowDimensions();
+  const translateX = useSharedValue(0);
+  const threshold = -width * 0.35;
+
+  const pan = usePanGesture({
+    activeOffsetX: [-10, 10], // solo se activa con movimiento horizontal: no bloquea el scroll vertical
+    onUpdate: (event) => {
+      'worklet';
+      translateX.value = Math.min(0, event.translationX); // solo hacia la izquierda
+    },
+    onDeactivate: (event) => {
+      'worklet';
+      const shouldDelete = translateX.value < threshold || event.velocityX < -1200;
+      if (shouldDelete) {
+        translateX.value = withTiming(-width, { duration: 180 }, () => scheduleOnRN(onDelete));
+      } else {
+        translateX.value = withSpring(0);
+      }
+    },
+  });
+
+  const rowStyle = useAnimatedStyle(() => ({ transform: [{ translateX: translateX.value }] }));
+  const backgroundStyle = useAnimatedStyle(() => ({ opacity: Math.min(1, -translateX.value / 80) }));
+
+  return (
+    <View style={styles.container}>
+      <Animated.View style={[StyleSheet.absoluteFill, styles.deleteBackground, backgroundStyle]}>
+        <Text style={styles.deleteText}>Eliminar</Text>
+      </Animated.View>
+      <GestureDetector gesture={pan}>
+        <Animated.View style={[styles.row, rowStyle]}>{children}</Animated.View>
+      </GestureDetector>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { overflow: 'hidden', borderRadius: 12 },
+  deleteBackground: { backgroundColor: '#dc2626', alignItems: 'flex-end', justifyContent: 'center', paddingRight: 20 },
+  deleteText: { color: '#fff', fontWeight: '700' },
+  row: { backgroundColor: '#fff', padding: 16 },
+});
+```
+
+Y la composición de gestos (doble toque + pellizco en una imagen):
+
+```tsx
+import { GestureDetector, usePinchGesture, useSimultaneousGestures, useTapGesture } from 'react-native-gesture-handler';
+
+const pinch = usePinchGesture({
+  onUpdate: (e) => {
+    'worklet';
+    scale.value = Math.max(1, e.scale);
+  },
+});
+const doubleTap = useTapGesture({
+  numberOfTaps: 2,
+  onActivate: () => {
+    'worklet';
+    scale.value = withTiming(scale.value > 1 ? 1 : 2);
+  },
+});
+const gestures = useSimultaneousGestures(pinch, doubleTap);
+
+<GestureDetector gesture={gestures}>
+  <Animated.Image source={{ uri }} style={[{ width: '100%', aspectRatio: 1 }, imageStyle]} />
+</GestureDetector>;
+```
+
+## Explicación del código
+
+- **`GestureHandlerRootView`** debe envolver la app para que los gestos funcionen en todas las pantallas (también en modales).
+- **`usePanGesture`** recibe la configuración y los callbacks del ciclo de vida. El evento incluye `translationX/Y` (desplazamiento desde el inicio) y `velocityX/Y`.
+- **`activeOffsetX: [-10, 10]`** hace que el gesto solo se active tras moverse 10 puntos en horizontal. Así, un desplazamiento vertical sigue moviendo la lista.
+- **`'worklet'`** marca explícitamente los callbacks para que se ejecuten en el hilo de UI junto a Reanimated.
+- **El umbral combina distancia y velocidad**: un deslizamiento rápido y corto también cuenta, como en las apps del sistema.
+- **`withTiming(..., callback)`** ejecuta el callback al terminar la animación; desde ahí, `scheduleOnRN(onDelete)` llama a la función de React en el hilo de JavaScript.
+- **`useSimultaneousGestures`** permite que pellizco y doble toque se reconozcan a la vez.
+
+## Buenas prácticas
+
+- **Configura umbrales de activación** (`activeOffsetX`, `failOffsetY`) para no robar el scroll a la lista.
+- **Ofrece siempre una alternativa accesible** a un gesto (un botón o una acción de accesibilidad): no todos los usuarios pueden deslizar.
+- **Usa componentes ya construidos** cuando existan: `ReanimatedSwipeable` (de Gesture Handler) para filas deslizables o una librería de bottom sheets.
+
+### Errores comunes
+
+- Olvidar `GestureHandlerRootView`: los gestos no responden o fallan dentro de modales.
+- Llamar a funciones de React directamente desde un worklet sin `scheduleOnRN`.
+- Gestos que bloquean el scroll vertical por no definir offsets de activación.
+
+### Cuándo usar otra solución
+
+Para un simple toque usa `Pressable`. Para arrastrar y soltar en listas reordenables, existen librerías especializadas construidas sobre Gesture Handler y Reanimated.

@@ -1,0 +1,161 @@
+---
+title: Diseño adaptable
+description: Breakpoints para teléfonos, tablets y plegables, layouts de lista y detalle, orientación y navegación que cambia según el espacio disponible.
+difficulty: intermedio
+time: 18
+prerequisites:
+  - estilos/dimensiones
+related:
+  - estilos/nativewind
+  - expo/expo-router
+  - estilos/flexbox
+resources:
+  - title: Android — Diseño para pantallas grandes
+    url: https://developer.android.com/large-screens
+  - title: Apple HIG — Layout
+    url: https://developer.apple.com/design/human-interface-guidelines/layout
+  - title: Expo — ScreenOrientation
+    url: https://docs.expo.dev/versions/latest/sdk/screen-orientation/
+keywords: [responsive, adaptable, breakpoints, tablet, plegables, orientación, lista detalle, split view, useBreakpoint]
+---
+
+## Introducción conceptual
+
+"Responsive" en móvil no es solo que nada se corte: es que **la interfaz aproveche el espacio**. En un teléfono, una lista de pedidos abre el detalle en otra pantalla; en una tablet en horizontal, lista y detalle pueden convivir lado a lado. Android exige cada vez más soporte de pantallas grandes y plegables, y las apps para iPad se revisan con esos criterios.
+
+La técnica es la misma que en la web: **breakpoints** (umbrales de ancho) que activan variantes del layout.
+
+<Overview
+  purpose="Adaptar la estructura de la interfaz al espacio disponible: teléfono, tablet, plegable, horizontal."
+  importance="Las tablets y plegables muestran apps 'estiradas' si no se adaptan; Android y Apple valoran el soporte de pantallas grandes."
+  when="En apps de productividad, gestión, contenido o e-commerce que se usan también en tablets."
+  problem="Evita mantener apps separadas para teléfono y tablet o interfaces con enormes espacios vacíos."
+/>
+
+## Explicación visual
+
+| Breakpoint | Ancho de ventana | Layout típico |
+| --- | --- | --- |
+| `compact` | menos de 600 dp | Una columna, navegación por pestañas inferiores |
+| `medium` | 600–839 dp | Dos columnas de tarjetas, rail de navegación |
+| `expanded` | 840 dp o más | Lista + detalle lado a lado, barra lateral |
+
+<Columns>
+  <Column title="Teléfono">
+    Lista → toque → pantalla de detalle (Stack).
+  </Column>
+  <Column title="Tablet / plegable abierto" tone="brand">
+    Lista a la izquierda, detalle a la derecha, en la misma pantalla.
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+Un hook de breakpoints y una pantalla de pedidos que cambia de estructura:
+
+```ts title="src/hooks/use-breakpoint.ts"
+import { useWindowDimensions } from 'react-native';
+
+export type Breakpoint = 'compact' | 'medium' | 'expanded';
+
+export function useBreakpoint(): Breakpoint {
+  const { width } = useWindowDimensions();
+  if (width >= 840) return 'expanded';
+  if (width >= 600) return 'medium';
+  return 'compact';
+}
+```
+
+```tsx title="src/app/pedidos/index.tsx"
+import { useState } from 'react';
+import { useRouter } from 'expo-router';
+import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useBreakpoint } from '@/hooks/use-breakpoint';
+import { OrderDetail } from '@/components/order-detail';
+
+type Order = { id: string; customer: string; total: number };
+const ORDERS: Order[] = [
+  { id: '1001', customer: 'Ana Pérez', total: 45900 },
+  { id: '1002', customer: 'Luis Soto', total: 12500 },
+  { id: '1003', customer: 'Marta Díaz', total: 87300 },
+];
+
+export default function OrdersScreen() {
+  const breakpoint = useBreakpoint();
+  const router = useRouter();
+  const [selectedId, setSelectedId] = useState<string | null>(ORDERS[0]?.id ?? null);
+  const isSplit = breakpoint === 'expanded';
+
+  function handleSelect(id: string) {
+    if (isSplit) setSelectedId(id); // tablet: actualiza el panel derecho
+    else router.push({ pathname: '/pedidos/[id]', params: { id } }); // teléfono: navega
+  }
+
+  const list = (
+    <FlatList
+      data={ORDERS}
+      keyExtractor={(o) => o.id}
+      numColumns={breakpoint === 'medium' ? 2 : 1}
+      key={breakpoint === 'medium' ? 'grid' : 'list'} // numColumns no puede cambiar en caliente
+      contentContainerStyle={styles.listContent}
+      columnWrapperStyle={breakpoint === 'medium' ? { gap: 12 } : undefined}
+      renderItem={({ item }) => (
+        <Pressable
+          onPress={() => handleSelect(item.id)}
+          style={[styles.card, breakpoint === 'medium' && { flex: 1 }, isSplit && item.id === selectedId && styles.selected]}
+        >
+          <Text style={styles.customer}>{item.customer}</Text>
+          <Text style={styles.meta}>
+            #{item.id} · ${item.total.toLocaleString('es-CL')}
+          </Text>
+        </Pressable>
+      )}
+    />
+  );
+
+  if (!isSplit) return list;
+
+  return (
+    <View style={styles.split}>
+      <View style={styles.master}>{list}</View>
+      <View style={styles.detail}>
+        {selectedId ? <OrderDetail id={selectedId} /> : <Text>Selecciona un pedido</Text>}
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  listContent: { padding: 16, gap: 12 },
+  card: { padding: 16, borderRadius: 14, backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e8f0' },
+  selected: { borderColor: '#0284c7', backgroundColor: '#f0f9ff' },
+  customer: { fontSize: 16, fontWeight: '600' },
+  meta: { color: '#64748b', marginTop: 4 },
+  split: { flex: 1, flexDirection: 'row' },
+  master: { width: 360, borderRightWidth: 1, borderColor: '#e2e8f0' },
+  detail: { flex: 1, padding: 24 },
+});
+```
+
+## Explicación del código
+
+- **`useBreakpoint`** traduce el ancho de la ventana en tres categorías inspiradas en las *window size classes* de Android. Al basarse en `useWindowDimensions`, se actualiza al rotar o desplegar un plegable.
+- **Misma lógica, distinta navegación**: en teléfono, seleccionar un pedido navega con `router.push`; en pantallas expandidas, actualiza el estado y el detalle se muestra al lado.
+- **`numColumns`** pasa a 2 columnas en `medium`. Como `FlatList` no admite cambiar `numColumns` sin volver a montarse, cambiamos también la `key`.
+- **`OrderDetail`** es un componente reutilizado tanto en la pantalla `/pedidos/[id]` como en el panel derecho: la lógica de presentación no se duplica.
+
+## Buenas prácticas
+
+- **Activa la rotación** solo si tu app la soporta bien (`"orientation": "default"` en `app.json`); en tablets, los usuarios esperan poder girar.
+- **Limita el ancho de lectura** en pantallas grandes (`maxWidth: 720` y `alignSelf: 'center'`) para que los textos no ocupen toda la tablet.
+- **Prueba en emuladores de tablet y plegables** de Android Studio y en el simulador de iPad.
+- **Con NativeWind**, expresa breakpoints con prefijos (`md:flex-row`, `lg:w-1/3`).
+
+### Errores comunes
+
+- Bloquear la orientación vertical en tablets sin motivo: empeora la experiencia y Android lo penaliza en pantallas grandes.
+- Decidir el layout por el modelo de dispositivo en lugar de por el espacio disponible (la multiventana cambia el ancho real).
+
+### Cuándo usar otra solución
+
+Para controlar la orientación en pantallas concretas (por ejemplo, un reproductor de vídeo en horizontal) usa `expo-screen-orientation`. Para una navegación distinta en tablets (barra lateral en vez de pestañas), Expo Router permite elegir el layout en `_layout.tsx` según el breakpoint.

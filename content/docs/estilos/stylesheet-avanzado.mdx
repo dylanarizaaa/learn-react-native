@@ -1,0 +1,164 @@
+---
+title: StyleSheet en profundidad
+sidebarTitle: StyleSheet
+description: Estilos por plataforma, fábricas de estilos con tema, composición, colores del sistema y las propiedades modernas de la Nueva Arquitectura (boxShadow, filter, outline).
+difficulty: intermedio
+time: 20
+prerequisites:
+  - fundamentos/stylesheet
+related:
+  - estilos/temas-personalizados
+  - sistema-de-componentes/nativewind-vs-stylesheet
+  - estilos/dark-mode
+resources:
+  - title: React Native — StyleSheet
+    url: https://reactnative.dev/docs/stylesheet
+  - title: React Native — Código específico por plataforma
+    url: https://reactnative.dev/docs/platform-specific-code
+  - title: React Native 0.77 — Nuevas propiedades CSS
+    url: https://reactnative.dev/blog/2025/01/21/version-0.77
+keywords: [StyleSheet, Platform.select, flatten, compose, PlatformColor, boxShadow, filter, mixBlendMode, outline, makeStyles, tema]
+---
+
+## Introducción conceptual
+
+Más allá de `StyleSheet.create`, un proyecto profesional necesita resolver varias situaciones: **diferencias entre plataformas**, **estilos que dependen del tema**, **composición** de estilos recibidos por props y aprovechar las **nuevas propiedades visuales** que llegaron con la Nueva Arquitectura (sombras CSS, filtros, contornos, modos de fusión).
+
+<Overview
+  purpose="Escribir estilos mantenibles que se adapten a la plataforma y al tema sin duplicar código."
+  importance="En apps grandes, la forma de organizar los estilos determina lo fácil que es cambiar el diseño o añadir modo oscuro."
+  when="Cuando usas StyleSheet como sistema principal o en componentes de bajo nivel donde NativeWind no encaja."
+  problem="Evita estilos duplicados por plataforma, colores fijos imposibles de tematizar y combinaciones de estilos frágiles."
+/>
+
+## Explicación visual
+
+<Columns cols={3}>
+  <Column title="Por plataforma">
+    `Platform.select`, archivos `.ios.tsx` / `.android.tsx`, `PlatformColor`.
+  </Column>
+  <Column title="Con tema" tone="brand">
+    Fábrica `makeStyles(theme)` + `useMemo`: estilos creados una vez por tema.
+  </Column>
+  <Column title="Composición">
+    `style` como prop con `StyleProp`, arrays y `StyleSheet.flatten` cuando necesitas leer valores.
+  </Column>
+</Columns>
+
+| Propiedad moderna | Ejemplo | Disponible desde |
+| --- | --- | --- |
+| `boxShadow` | `'0 4px 12px rgba(0,0,0,0.1)'` | React Native 0.76 |
+| `filter` | `'grayscale(1) blur(2px)'` | React Native 0.76 |
+| `mixBlendMode` | `'multiply'` | React Native 0.77 |
+| `outlineWidth/Color/Offset` | Anillos de foco sin afectar al layout | React Native 0.77 |
+| `display: 'contents'` | El contenedor no genera caja propia | React Native 0.77 |
+
+## Ejemplo práctico
+
+Una fábrica de estilos tematizada, con detalles por plataforma y las propiedades modernas:
+
+```tsx title="src/theme/make-styles.ts"
+import { useMemo } from 'react';
+import { StyleSheet, useColorScheme } from 'react-native';
+
+export const palette = {
+  light: { background: '#ffffff', surface: '#f8fafc', text: '#0f172a', muted: '#64748b', primary: '#0284c7', border: '#e2e8f0' },
+  dark: { background: '#0b1120', surface: '#111827', text: '#f1f5f9', muted: '#94a3b8', primary: '#38bdf8', border: '#1f2937' },
+} as const;
+
+export type Theme = { colors: (typeof palette)['light']; dark: boolean };
+
+/** Crea un hook que genera estilos a partir del tema, memoizados por esquema de color. */
+export function makeStyles<T extends StyleSheet.NamedStyles<T>>(factory: (theme: Theme) => T) {
+  return function useStyles() {
+    const scheme = useColorScheme() === 'dark' ? 'dark' : 'light';
+    return useMemo(() => StyleSheet.create(factory({ colors: palette[scheme], dark: scheme === 'dark' })), [scheme]);
+  };
+}
+```
+
+```tsx title="src/components/feature-card.tsx"
+import { Platform, Pressable, Text, View, type StyleProp, type ViewStyle } from 'react-native';
+import { makeStyles } from '@/theme/make-styles';
+
+type FeatureCardProps = { title: string; description: string; disabled?: boolean; style?: StyleProp<ViewStyle> };
+
+export function FeatureCard({ title, description, disabled, style }: FeatureCardProps) {
+  const styles = useStyles();
+  return (
+    <Pressable
+      disabled={disabled}
+      style={({ pressed, focused }) => [
+        styles.card,
+        pressed && styles.pressed,
+        focused && styles.focused, // teclado/lector de pantalla
+        disabled && styles.disabled,
+        style, // los estilos del padre van al final: pueden sobrescribir
+      ]}
+    >
+      <View style={styles.badge} />
+      <Text style={styles.title}>{title}</Text>
+      <Text style={styles.description}>{description}</Text>
+    </Pressable>
+  );
+}
+
+const useStyles = makeStyles(({ colors, dark }) => ({
+  card: {
+    padding: 18,
+    gap: 6,
+    borderRadius: 18,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    boxShadow: dark ? 'none' : '0 6px 20px rgba(15, 23, 42, 0.08)',
+    ...Platform.select({
+      ios: { borderCurve: 'continuous' as const }, // esquinas "squircle" de iOS
+      default: {},
+    }),
+  },
+  pressed: { transform: [{ scale: 0.98 }] },
+  focused: { outlineWidth: 2, outlineColor: colors.primary, outlineOffset: 2 },
+  disabled: { filter: 'grayscale(1)', opacity: 0.6 },
+  badge: { width: 28, height: 4, borderRadius: 2, backgroundColor: colors.primary },
+  title: { fontSize: 17, fontWeight: '600', color: colors.text },
+  description: { fontSize: 14, lineHeight: 20, color: colors.muted },
+}));
+```
+
+## Explicación del código
+
+- **`makeStyles`** recibe una función que devuelve estilos a partir del tema y produce un hook. Gracias a `useMemo`, `StyleSheet.create` solo se ejecuta cuando cambia el esquema de color, no en cada render.
+- **`NamedStyles<T>`** mantiene el autocompletado y la validación de tipos de cada estilo.
+- **`Platform.select`** devuelve el valor de la plataforma actual (`ios`, `android`, `web` o `default`). **`borderCurve: 'continuous'`** solo existe en iOS y da esquinas más suaves.
+- **`focused`** en el estilo de `Pressable` permite dibujar un anillo de foco para navegación con teclado o lectores de pantalla; **`outline*`** no ocupa espacio en el layout.
+- **`filter: 'grayscale(1)'`** desatura el contenido de forma nativa (sin imágenes duplicadas).
+- **`style` del padre al final del array**: el consumidor del componente puede ajustar márgenes o anchos sin tocar el componente.
+
+### Archivos por plataforma
+
+Si un componente difiere mucho entre plataformas, separa la implementación. Metro elige el archivo según la plataforma:
+
+```tree
+src/components/
+  date-input.ios.tsx # Selector nativo de iOS
+  date-input.android.tsx # Diálogo de Android
+  date-input.tsx # Web (o implementación por defecto)
+```
+
+## Buenas prácticas
+
+- **Una fuente de tokens** (colores, radios, espaciados) y estilos que la consumen; nunca colores literales repetidos.
+- **Acepta `style` en tus componentes** reutilizables y aplícalo al final.
+- **Usa `StyleSheet.flatten` solo si necesitas leer un valor** (por ejemplo, el color de un estilo recibido); para aplicar estilos, los arrays bastan.
+- **Prefiere `boxShadow`** a la combinación antigua `shadow*` + `elevation`: un solo valor, igual en ambas plataformas.
+
+### Errores comunes
+
+- Crear estilos con `StyleSheet.create` dentro del cuerpo del componente sin memoizar: se recrean en cada render.
+- Usar `elevation` y `shadowColor` y obtener sombras distintas en cada plataforma.
+- Usar `zIndex` para corregir un orden de dibujado que se arregla reordenando los hijos.
+
+### Cuándo usar otra solución
+
+Si tu equipo prefiere clases utilitarias y quiere variantes y modo oscuro sin fábricas propias, usa [NativeWind](/docs/estilos/nativewind). Comparamos ambos enfoques en [NativeWind vs StyleSheet](/docs/sistema-de-componentes/nativewind-vs-stylesheet).
