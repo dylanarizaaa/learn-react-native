@@ -1,0 +1,120 @@
+---
+title: ActivityIndicator
+description: El indicador de carga nativo. Tamaños, colores, carga en botones, overlays y cuándo preferir skeletons.
+difficulty: principiante
+time: 8
+prerequisites:
+  - fundamentos/view-y-text
+related:
+  - sistema-de-componentes/carga
+  - datos/estados-de-carga-y-vacios
+  - sistema-de-componentes/button
+resources:
+  - title: React Native — ActivityIndicator
+    url: https://reactnative.dev/docs/activityindicator
+keywords: [activityindicator, spinner, loading, carga, skeleton, overlay]
+---
+
+## Introducción conceptual
+
+`ActivityIndicator` muestra el indicador de carga **nativo** de cada plataforma: la rueda de iOS y el círculo de Material en Android. Comunica que la app está trabajando cuando la duración es **indeterminada**: una petición de red, guardar un archivo o iniciar sesión.
+
+<Overview
+  purpose="Indicar que una operación está en curso y que la app no se ha bloqueado."
+  importance="Sin feedback, el usuario repite toques o abandona porque cree que la app no responde."
+  when="Operaciones de duración desconocida: peticiones, envíos de formularios, carga inicial de una pantalla."
+  problem="Ofrece un indicador consistente con cada plataforma, accesible y sin dependencias."
+/>
+
+## Explicación visual
+
+<Columns cols={3}>
+  <Column title="En línea">
+    Dentro de un botón mientras se envía. Mantiene el tamaño del botón.
+  </Column>
+  <Column title="Pantalla completa" tone="brand">
+    Centrado mientras llega la primera carga de datos.
+  </Column>
+  <Column title="Overlay">
+    Encima del contenido para bloquear interacciones durante una acción crítica.
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+Tres usos habituales: botón con carga, pantalla de carga y overlay bloqueante.
+
+```tsx title="src/components/loading.tsx"
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+
+export function LoadingScreen({ label = 'Cargando…' }: { label?: string }) {
+  return (
+    <View style={styles.center} accessibilityRole="progressbar" accessibilityLabel={label}>
+      <ActivityIndicator size="large" color="#0284c7" />
+      <Text style={styles.label}>{label}</Text>
+    </View>
+  );
+}
+
+export function LoadingOverlay({ visible }: { visible: boolean }) {
+  if (!visible) return null;
+  return (
+    <View style={[StyleSheet.absoluteFill, styles.overlay]} pointerEvents="auto">
+      <View style={styles.box}>
+        <ActivityIndicator size="large" color="#fff" />
+      </View>
+    </View>
+  );
+}
+
+type SubmitButtonProps = { title: string; loading: boolean; onPress: () => void };
+
+export function SubmitButton({ title, loading, onPress }: SubmitButtonProps) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={loading}
+      accessibilityRole="button"
+      accessibilityState={{ busy: loading, disabled: loading }}
+      style={[styles.button, loading && { opacity: 0.8 }]}
+    >
+      {/* Mantenemos el texto invisible para que el botón no cambie de ancho */}
+      <Text style={[styles.buttonText, loading && { opacity: 0 }]}>{title}</Text>
+      {loading && <ActivityIndicator color="#fff" style={StyleSheet.absoluteFill} />}
+    </Pressable>
+  );
+}
+
+const styles = StyleSheet.create({
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
+  label: { color: '#6b7280' },
+  overlay: { backgroundColor: 'rgba(0,0,0,0.3)', alignItems: 'center', justifyContent: 'center' },
+  box: { backgroundColor: 'rgba(17,24,39,0.9)', padding: 24, borderRadius: 16 },
+  button: { backgroundColor: '#111827', borderRadius: 12, paddingVertical: 14, alignItems: 'center', justifyContent: 'center' },
+  buttonText: { color: '#fff', fontWeight: '600', fontSize: 16 },
+});
+```
+
+## Explicación del código
+
+- **`size`** acepta `small` o `large` en ambas plataformas; en Android también un número en píxeles. **`color`** define el color del indicador.
+- **`accessibilityState={{ busy: true }}`** informa a los lectores de pantalla de que el botón está procesando.
+- En el botón, **ocultamos el texto con opacidad** en lugar de quitarlo: así el botón conserva su ancho y no "salta" al aparecer el spinner.
+- **`StyleSheet.absoluteFill`** centra el indicador sobre el contenido del botón y, en el overlay, cubre toda la pantalla.
+- **`pointerEvents="auto"`** en el overlay captura los toques para que el usuario no interactúe con lo que hay debajo.
+
+## Buenas prácticas
+
+- **Muestra el indicador solo si la espera es perceptible**: para operaciones de menos de ~300 ms, un spinner que parpadea molesta más de lo que ayuda.
+- **Prefiere skeletons** (siluetas del contenido) en listas y tarjetas: el usuario percibe la carga como más rápida ([Componentes de carga](/docs/sistema-de-componentes/carga)).
+- **Usa los estados de TanStack Query** (`isPending`, `isFetching`) en lugar de booleanos manuales ([Estados de carga y vacíos](/docs/datos/estados-de-carga-y-vacios)).
+- **No bloquees toda la pantalla** salvo que la acción lo exija (por ejemplo, un pago).
+
+### Errores comunes
+
+- Spinners infinitos: si la petición falla, muestra un error con opción de reintentar.
+- Cambiar el tamaño de un botón al mostrar el spinner (layout que "salta").
+
+### Cuándo usar otra solución
+
+Si conoces el progreso (subida de un archivo, descarga), usa una **barra de progreso determinada** con el porcentaje real. Para cargas de contenido, usa skeletons; para transiciones de pantalla, deja que la navegación muestre el contenido y carga los datos con Suspense o estados de consulta.

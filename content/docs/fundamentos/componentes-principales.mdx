@@ -1,0 +1,140 @@
+---
+title: Componentes principales
+description: El catálogo de componentes base de React Native, su equivalente nativo y cuándo usar cada uno.
+difficulty: principiante
+time: 12
+prerequisites:
+  - introduccion/que-es-react-native
+related:
+  - fundamentos/view-y-text
+  - fundamentos/scrollview-y-flatlist
+  - fundamentos/pressable-y-touchableopacity
+resources:
+  - title: React Native — Componentes principales y nativos
+    url: https://reactnative.dev/docs/intro-react-native-components
+  - title: React Native — Referencia de componentes
+    url: https://reactnative.dev/docs/components-and-apis
+keywords: [view, text, image, scrollview, flatlist, textinput, pressable, switch, modal, componentes base]
+---
+
+## Introducción conceptual
+
+React Native incluye un conjunto pequeño de **componentes principales** (*core components*). Cada uno se traduce a un control nativo de la plataforma. Todo lo que construyas, desde un botón hasta una pantalla completa, es una combinación de estas piezas.
+
+No hay `div`, `span`, `img` ni `button`. En su lugar usarás `View`, `Text`, `Image` y `Pressable`. Aprender bien este catálogo es más rentable que memorizar librerías de UI.
+
+<Overview
+  purpose="Conocer los bloques de construcción de cualquier interfaz en React Native y su comportamiento en cada plataforma."
+  importance="Elegir el componente correcto afecta al rendimiento (listas), a la accesibilidad (botones) y a la experiencia (teclado, áreas seguras)."
+  when="Siempre: cada pantalla se compone de estos componentes, directamente o a través de tus propios componentes reutilizables."
+  problem="Evita reinventar comportamientos que ya existen (scroll, listas virtualizadas, indicadores de carga) o usar el componente equivocado."
+/>
+
+## Explicación visual
+
+| Componente | Android | iOS | Equivalente web | Para qué |
+| --- | --- | --- | --- | --- |
+| `View` | `ViewGroup` | `UIView` | `div` | Contenedor y layout |
+| `Text` | `TextView` | `UITextView` | `p`, `span` | Mostrar texto (obligatorio) |
+| `Image` | `ImageView` | `UIImageView` | `img` | Imágenes |
+| `TextInput` | `EditText` | `UITextField` | `input` | Entrada de texto |
+| `ScrollView` | `ScrollView` | `UIScrollView` | `div` con overflow | Contenido desplazable corto |
+| `FlatList` | Lista virtualizada | Lista virtualizada | — | Listas largas |
+| `Pressable` | Vista táctil | Vista táctil | `button` | Detectar toques |
+| `Switch` | `Switch` | `UISwitch` | checkbox | Activar/desactivar |
+| `Modal` | `Dialog` | Controlador modal | `dialog` | Contenido superpuesto |
+| `ActivityIndicator` | `ProgressBar` | `UIActivityIndicatorView` | spinner | Carga indeterminada |
+
+<Callout type="info" title="Componentes de Expo que complementan el núcleo">
+`expo-image` (imágenes con caché), `expo-status-bar` (barra de estado), `react-native-safe-area-context` (áreas seguras) y los componentes de Expo Router (`Link`, `Stack`, `Tabs`) forman parte del día a día en un proyecto Expo.
+</Callout>
+
+## Ejemplo práctico
+
+Una tarjeta de perfil que combina los componentes principales más usados:
+
+```tsx title="src/components/profile-card.tsx"
+import { useState } from 'react';
+import { Image } from 'expo-image';
+import { Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+
+type ProfileCardProps = {
+  name: string;
+  role: string;
+  avatarUrl: string;
+  onMessage: () => void;
+};
+
+export function ProfileCard({ name, role, avatarUrl, onMessage }: ProfileCardProps) {
+  const [notifications, setNotifications] = useState(true);
+
+  return (
+    <View style={styles.card}>
+      <Image source={{ uri: avatarUrl }} style={styles.avatar} contentFit="cover" />
+
+      <View style={styles.info}>
+        <Text style={styles.name} numberOfLines={1}>
+          {name}
+        </Text>
+        <Text style={styles.role}>{role}</Text>
+      </View>
+
+      <View style={styles.row}>
+        <Text style={styles.label}>Notificaciones</Text>
+        <Switch value={notifications} onValueChange={setNotifications} />
+      </View>
+
+      <Pressable
+        accessibilityRole="button"
+        onPress={onMessage}
+        style={({ pressed }) => [styles.button, pressed && { opacity: 0.8 }]}
+      >
+        <Text style={styles.buttonText}>Enviar mensaje</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  card: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 20,
+    gap: 16,
+    boxShadow: '0 4px 14px rgba(0, 0, 0, 0.08)',
+  },
+  avatar: { width: 72, height: 72, borderRadius: 36 },
+  info: { gap: 2 },
+  name: { fontSize: 20, fontWeight: '700' },
+  role: { fontSize: 14, color: '#6b7280' },
+  row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  label: { fontSize: 16 },
+  button: { backgroundColor: '#0284c7', borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
+  buttonText: { color: '#fff', fontWeight: '600' },
+});
+```
+
+## Explicación del código
+
+- **`View`** agrupa y organiza: la tarjeta, el bloque de información y la fila del switch. Por defecto apila a sus hijos en columna.
+- **`Text`** muestra el nombre y el rol. `numberOfLines={1}` corta nombres largos con puntos suspensivos.
+- **`Image` de `expo-image`** sustituye al `Image` del núcleo: añade caché en disco, transiciones y `contentFit`. Para imágenes remotas siempre debes indicar ancho y alto.
+- **`Switch`** es un componente **controlado**: su valor vive en `useState` y se actualiza con `onValueChange`.
+- **`Pressable`** reacciona al toque; su estilo en forma de función recibe `pressed` para dar feedback.
+- **`boxShadow`** es la forma moderna de declarar sombras con sintaxis CSS. Está disponible en la Nueva Arquitectura en ambas plataformas.
+
+## Buenas prácticas
+
+- **Crea tus propios componentes sobre los del núcleo** (`Button`, `Card`, `Avatar`) para centralizar estilos y accesibilidad. Lo hacemos en la [sección especial del kit de componentes](/docs/sistema-de-componentes/vision-general).
+- **Usa `FlatList` para colecciones**: `ScrollView` + `map` solo para listas cortas y fijas.
+- **Prefiere `Pressable` a `Button`**: el `Button` del núcleo apenas se puede personalizar y se ve distinto en cada plataforma.
+
+### Errores comunes
+
+- Poner texto directamente dentro de `View`: todo texto debe ir dentro de `Text`.
+- Usar `Image` remoto sin dimensiones: no se mostrará, porque React Native no conoce su tamaño antes de descargarla.
+- Usar componentes obsoletos como `SafeAreaView` del núcleo o `ImageBackground`: en React Native 0.88 ambos están marcados como obsoletos. Veremos sus reemplazos en [Image](/docs/fundamentos/image-e-imagebackground) y [áreas seguras](/docs/fundamentos/safe-area).
+
+### Cuándo usar otra solución
+
+Para necesidades que el núcleo no cubre, busca primero en el SDK de Expo (`expo-image`, `expo-blur`, `expo-linear-gradient`, `@expo/ui`) y después en librerías mantenidas de la comunidad, comprobando en [reactnative.directory](https://reactnative.directory) que sean compatibles con la Nueva Arquitectura.

@@ -1,0 +1,127 @@
+---
+title: Expo Go vs Development Builds
+description: Cuándo basta con Expo Go para probar y cuándo necesitas tu propio development build con expo-dev-client.
+difficulty: principiante
+time: 12
+prerequisites:
+  - introduccion/que-es-expo
+related:
+  - introduccion/preparacion-del-entorno
+  - expo/eas-build
+  - expo/app-json
+resources:
+  - title: Expo — Introducción a development builds
+    url: https://docs.expo.dev/develop/development-builds/introduction/
+  - title: Expo — Usar un development build
+    url: https://docs.expo.dev/develop/development-builds/use-development-builds/
+  - title: Expo — Configuración de eas.json
+    url: https://docs.expo.dev/build/eas-json/
+keywords: [expo go, development build, expo-dev-client, run:android, run:ios, prebuild]
+---
+
+## Introducción conceptual
+
+Para ver tu app durante el desarrollo necesitas un binario instalado en el dispositivo que cargue tu JavaScript desde Metro. Hay dos opciones:
+
+- <Term slug="expo-go">Expo Go</Term>: una app de las tiendas que ya incluye **todos los módulos del SDK de Expo**. Escaneas el QR y listo. No compila nada.
+- **<Term slug="development-build">Development build</Term>**: **tu propia app** compilada en modo desarrollo con `expo-dev-client`. Incluye exactamente las librerías nativas que tu proyecto necesita, con tu nombre, icono y configuración.
+
+La regla práctica: **Expo Go para aprender y prototipar; development build para cualquier app que vayas a publicar.**
+
+<Overview
+  purpose="Elegir el entorno de ejecución adecuado durante el desarrollo de tu app."
+  importance="Algunas funciones (librerías nativas de terceros, notificaciones push en Android, configuración nativa personalizada) no funcionan en Expo Go."
+  when="Expo Go en tus primeras semanas y en prototipos; un development build en cuanto añadas librerías nativas o prepares la publicación."
+  problem="Evita sorpresas del tipo 'funciona en Expo Go pero no en producción' o librerías que fallan con un error de módulo nativo inexistente."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="Expo Go">
+    - App genérica descargada de la tienda.
+    - Solo módulos del SDK de Expo.
+    - Sin compilación: empiezas en segundos.
+    - Soporta un único SDK (el más reciente publicado en tiendas).
+    - No permite cambiar permisos, nombre ni código nativo.
+  </Column>
+  <Column title="Development build" tone="brand">
+    - Tu app, con `expo-dev-client`.
+    - Cualquier librería nativa.
+    - Requiere compilar (en la nube con EAS o en local).
+    - Mismo binario que llegará a producción, en modo debug.
+    - Recompilas solo cuando cambia la parte nativa.
+  </Column>
+</Columns>
+
+<Flow
+  steps={[
+    { title: 'Aprender / prototipo', desc: 'Expo Go + npx expo start' },
+    { title: '¿Librería nativa nueva?', desc: 'O config nativa propia', tone: 'muted' },
+    { title: 'Development build', desc: 'eas build --profile development', tone: 'brand' },
+    { title: 'Desarrollo diario', desc: 'Solo JS: no recompilas' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+Convertir un proyecto en development build en tres pasos:
+
+```bash
+# 1. Añade el cliente de desarrollo
+npx expo install expo-dev-client
+
+# 2a. Compila en la nube con EAS (no necesitas Xcode ni Android Studio)
+npm install -g eas-cli
+eas build:configure
+eas build --profile development --platform android
+
+# 2b. …o compila en local si tienes el entorno nativo instalado
+npx expo run:android
+npx expo run:ios
+
+# 3. Arranca Metro: el development build se conecta a él
+npx expo start
+```
+
+El perfil `development` de `eas.json` define cómo se compila esa versión:
+
+```json title="eas.json"
+{
+  "cli": { "version": ">= 27.0.0" },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "ios": { "simulator": true }
+    },
+    "preview": {
+      "distribution": "internal"
+    },
+    "production": {}
+  }
+}
+```
+
+## Explicación del código
+
+- `expo-dev-client` añade una pantalla de inicio (*launcher*) para elegir a qué servidor de Metro conectarse, un menú de desarrollo mejorado e inspección de red.
+- `developmentClient: true` indica que el binario es un development build. `distribution: "internal"` genera un archivo instalable directamente (APK en Android, o un build ad hoc o de simulador en iOS) sin pasar por la tienda.
+- `"ios": { "simulator": true }` produce un build para el simulador de iOS, útil si no tienes cuenta de Apple Developer todavía.
+- Una vez instalado, **solo recompilas cuando cambias dependencias nativas** o la configuración nativa (`app.json`, plugins). Los cambios de TypeScript se ven al instante con Fast Refresh.
+
+## Buenas prácticas
+
+- **Pasa a development build pronto** si sabes que publicarás la app: así pruebas desde el principio el mismo entorno que tendrás en producción.
+- **Comparte el development build con tu equipo** mediante distribución interna para que nadie tenga que compilar.
+- **Usa el fingerprint de Expo** (`npx expo-doctor` y el *fingerprint* de EAS) para saber si un cambio exige recompilar.
+
+### Errores comunes
+
+- Instalar una librería con código nativo (por ejemplo, un SDK de pagos) y probarla en Expo Go: fallará porque Expo Go no la incluye.
+- Probar notificaciones push remotas en Expo Go en Android: desde SDK 53 requieren un development build.
+- Crear un proyecto con el último SDK cuando Expo Go aún no lo soporta en las tiendas: durante la transición de SDK, la documentación oficial recomienda usar el SDK anterior si dependes de Expo Go en un dispositivo físico.
+
+### Cuándo usar otra solución
+
+Si solo quieres experimentar con un componente o compartir un ejemplo, [Expo Snack](https://snack.expo.dev) ejecuta código en el navegador y en Expo Go sin crear un proyecto local.

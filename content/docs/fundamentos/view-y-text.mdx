@@ -1,0 +1,161 @@
+---
+title: View y Text
+description: Los dos componentes más usados. Contenedores, anidación de texto, herencia de estilos, truncado, accesibilidad y fuentes personalizadas.
+difficulty: principiante
+time: 15
+prerequisites:
+  - fundamentos/componentes-principales
+related:
+  - fundamentos/stylesheet
+  - fundamentos/flexbox-y-responsive
+  - calidad/accesibilidad
+resources:
+  - title: React Native — View
+    url: https://reactnative.dev/docs/view
+  - title: React Native — Text
+    url: https://reactnative.dev/docs/text
+  - title: Expo — Fuentes
+    url: https://docs.expo.dev/develop/user-interface/fonts/
+keywords: [view, text, numberOfLines, ellipsizeMode, onLayout, fuentes, expo-font, useFonts]
+---
+
+## Introducción conceptual
+
+**`View`** es el contenedor universal: agrupa elementos, aplica layout con Flexbox, fondos, bordes y sombras. **`Text`** es el único componente capaz de mostrar texto. Entre los dos forman la mayor parte de cualquier interfaz.
+
+Dos reglas que diferencian React Native de la web:
+
+1. **El texto siempre va dentro de `Text`.** Un string suelto dentro de un `View` produce un error.
+2. **Los estilos no se heredan entre `View`s.** Solo un `Text` anidado dentro de otro `Text` hereda propiedades como el color o la fuente.
+
+<Overview
+  purpose="Estructurar la interfaz (View) y mostrar contenido textual con estilos, truncado y accesibilidad (Text)."
+  importance="Son la base de cada componente. Entender la herencia de estilos del texto evita repetir estilos y errores visuales."
+  when="En todas las pantallas. View para cualquier contenedor; Text para cualquier contenido textual, incluidos números y emojis."
+  problem="Resuelve el layout y la tipografía de forma nativa, con soporte de lectores de pantalla y tamaño de texto del sistema."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="View: contenedor">
+    - Layout con Flexbox (columna por defecto).
+    - Fondo, bordes, radio, sombra, opacidad.
+    - Eventos: `onLayout`, gestos, accesibilidad.
+    - No puede contener texto suelto.
+  </Column>
+  <Column title="Text: contenido">
+    - Fuente, tamaño, peso, color, alineación.
+    - Anidable: los `Text` hijos heredan estilos.
+    - Truncado con `numberOfLines`.
+    - Respeta el tamaño de fuente del sistema.
+  </Column>
+</Columns>
+
+<Flow
+  direction="vertical"
+  steps={[
+    { title: 'Text padre', desc: 'fontSize 16 · color gris' },
+    { title: 'Text hijo', desc: 'Hereda tamaño y color; añade fontWeight bold', tone: 'brand' },
+    { title: 'Resultado', desc: 'Un único párrafo nativo con estilos mixtos' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+Una tarjeta de artículo con texto anidado, truncado, medida del contenedor y una fuente personalizada:
+
+```tsx title="src/components/article-card.tsx"
+import { useState } from 'react';
+import { StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
+
+type ArticleCardProps = {
+  title: string;
+  author: string;
+  excerpt: string;
+  minutes: number;
+};
+
+export function ArticleCard({ title, author, excerpt, minutes }: ArticleCardProps) {
+  const [width, setWidth] = useState(0);
+  const compact = width > 0 && width < 320;
+
+  function handleLayout(event: LayoutChangeEvent) {
+    setWidth(event.nativeEvent.layout.width);
+  }
+
+  return (
+    <View style={styles.card} onLayout={handleLayout} accessible accessibilityLabel={`${title}, por ${author}`}>
+      <Text style={[styles.title, compact && styles.titleCompact]} numberOfLines={2}>
+        {title}
+      </Text>
+
+      {/* Texto anidado: "por" hereda el estilo de meta; el autor añade negrita */}
+      <Text style={styles.meta}>
+        por <Text style={styles.author}>{author}</Text> · {minutes} min de lectura
+      </Text>
+
+      <Text style={styles.excerpt} numberOfLines={3} ellipsizeMode="tail">
+        {excerpt}
+      </Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  card: { padding: 16, gap: 8, borderRadius: 14, borderWidth: 1, borderColor: '#e5e7eb', backgroundColor: '#fff' },
+  title: { fontFamily: 'Inter_700Bold', fontSize: 20, lineHeight: 26, color: '#111827' },
+  titleCompact: { fontSize: 17, lineHeight: 22 },
+  meta: { fontSize: 13, color: '#6b7280' },
+  author: { fontWeight: '600', color: '#111827' },
+  excerpt: { fontSize: 15, lineHeight: 22, color: '#374151' },
+});
+```
+
+Carga la fuente en el layout raíz con `expo-font`:
+
+```tsx title="src/app/_layout.tsx"
+import { Inter_400Regular, Inter_700Bold, useFonts } from '@expo-google-fonts/inter';
+import * as SplashScreen from 'expo-splash-screen';
+import { Stack } from 'expo-router';
+import { useEffect } from 'react';
+
+SplashScreen.preventAutoHideAsync();
+
+export default function RootLayout() {
+  const [loaded, error] = useFonts({ Inter_400Regular, Inter_700Bold });
+
+  useEffect(() => {
+    if (loaded || error) SplashScreen.hideAsync();
+  }, [loaded, error]);
+
+  if (!loaded && !error) return null;
+
+  return <Stack />;
+}
+```
+
+## Explicación del código
+
+- **`onLayout`** se ejecuta cuando el `View` se monta o cambia de tamaño y entrega sus dimensiones reales. Aquí adaptamos el título si la tarjeta es estrecha.
+- **Estilos en array** (`[styles.title, compact && styles.titleCompact]`): los últimos sobrescriben a los primeros, y los valores `false` se ignoran.
+- **Texto anidado**: el `Text` del autor hereda `fontSize` y `color` de `meta` y solo añade `fontWeight`. Esta herencia **solo funciona entre `Text`**.
+- **`numberOfLines` + `ellipsizeMode`** truncan el texto con "…" al final.
+- **`accessible` + `accessibilityLabel`** agrupan la tarjeta para que el lector de pantalla la lea como un único elemento con una descripción clara.
+- **`useFonts`** carga fuentes de forma asíncrona; mantenemos la *splash screen* visible hasta que están listas para evitar un parpadeo de fuente. Instala el paquete con `npx expo install expo-font @expo-google-fonts/inter`.
+
+## Buenas prácticas
+
+- **Define una escala tipográfica** (por ejemplo, 12/14/16/20/24/32) y reutilízala; en NativeWind se hace con las clases `text-sm`, `text-base`, etc.
+- **Respeta el tamaño de texto del sistema**: no desactives `allowFontScaling`; si un diseño se rompe, limita con `maxFontSizeMultiplier` en ese texto concreto.
+- **Usa `lineHeight`** explícito en párrafos para una lectura cómoda.
+- **Usa `selectable`** en textos que el usuario querría copiar (códigos, direcciones).
+
+### Errores comunes
+
+- `Text strings must be rendered within a <Text> component`: un string, un número o incluso un espacio (`{' '}`) fuera de un `Text`. Revisa también condicionales como `{count && <Badge />}`: si `count` es `0`, se renderiza el número 0 fuera de un `Text`. Usa `{count > 0 && <Badge />}`.
+- Esperar que un `View` con `color` cambie el color de sus textos: no hay herencia entre `View` y `Text`.
+
+### Cuándo usar otra solución
+
+Para texto enriquecido complejo (Markdown, HTML de un CMS) usa una librería de renderizado de Markdown en lugar de construir árboles de `Text` a mano. Para tipografía consistente en toda la app, crea un componente `AppText` con variantes (lo hacemos en [Componentes reutilizables](/docs/arquitectura/componentes-reutilizables)).

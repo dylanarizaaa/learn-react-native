@@ -1,0 +1,123 @@
+---
+title: ¿Qué es Expo?
+description: El framework recomendado para React Native. Plantilla, Expo Router, SDK de módulos nativos, CNG y servicios de compilación y actualización.
+difficulty: principiante
+time: 12
+prerequisites:
+  - introduccion/que-es-react-native
+related:
+  - introduccion/expo-go-vs-development-builds
+  - expo/configuracion-inicial
+  - expo/eas-build
+resources:
+  - title: Expo — Crear un proyecto
+    url: https://docs.expo.dev/get-started/create-a-project/
+  - title: Expo — Conceptos principales
+    url: https://docs.expo.dev/core-concepts/
+  - title: React Native — Usar un framework
+    url: https://reactnative.dev/docs/environment-setup
+keywords: [expo, sdk, framework, cng, prebuild, eas, expo services]
+---
+
+## Introducción conceptual
+
+**Expo** es un framework y una plataforma construidos sobre React Native. Si React Native es el motor, Expo es el coche completo: incluye la plantilla del proyecto, la navegación, decenas de módulos nativos mantenidos, herramientas de desarrollo y servicios para compilar y publicar.
+
+La documentación oficial de React Native recomienda empezar cualquier proyecto nuevo con un framework, y **Expo es el framework recomendado**. No es una versión "limitada" de React Native: puedes usar cualquier librería nativa y modificar el código nativo cuando lo necesites.
+
+<Overview
+  purpose="Crear, desarrollar, compilar y actualizar apps de React Native sin configurar a mano Xcode, Gradle ni el empaquetado."
+  importance="Reduce semanas de configuración a minutos y te da módulos nativos probados y versionados de forma coherente."
+  when="En prácticamente cualquier app nueva de React Native, desde un prototipo hasta una app de producción con millones de usuarios."
+  problem="Resuelve la fricción de configurar, mantener y actualizar la parte nativa de una app de React Native."
+/>
+
+## Explicación visual
+
+Expo se compone de varias piezas que puedes usar de forma independiente:
+
+<Layers
+  layers={[
+    { title: 'Expo CLI', desc: 'Desarrollo local', items: ['npx expo start', 'Fast Refresh', 'npx expo install', 'npx expo run:android'], tone: 'brand' },
+    { title: 'Expo Router', desc: 'Navegación', items: ['Rutas por archivos', 'Deep links', 'Tabs nativas', 'Rutas protegidas'] },
+    { title: 'Expo SDK', desc: 'Módulos nativos', items: ['expo-camera', 'expo-location', 'expo-sqlite', 'expo-notifications', 'expo-image'] },
+    { title: 'CNG + config plugins', desc: 'Proyecto nativo', items: ['app.json', 'npx expo prebuild', 'Permisos', 'Iconos y splash'] },
+    { title: 'EAS / Expo Services', desc: 'Nube', items: ['Build', 'Submit', 'Update (OTA)', 'Variables de entorno'], tone: 'muted' },
+  ]}
+  caption="El framework es gratuito y open source; los servicios en la nube tienen plan gratuito y planes de pago."
+/>
+
+### Versiones: el SDK de Expo
+
+Cada **SDK de Expo** fija un conjunto de versiones compatibles entre sí. En noviembre de 2026 la versión actual es **SDK 58**:
+
+| Pieza | Versión en SDK 58 |
+| --- | --- |
+| React Native | 0.88 |
+| React | 19.3 |
+| TypeScript | 6.0 |
+| Expo Router | 58.x (los paquetes `expo-*` usan el número del SDK) |
+| Reanimated | 4.7 |
+
+Por eso instalamos librerías con `npx expo install`: elige automáticamente la versión compatible con tu SDK.
+
+## Ejemplo práctico
+
+Crear un proyecto y arrancarlo:
+
+```bash
+# Crea un proyecto con la plantilla por defecto del SDK 58
+npx create-expo-app@latest mi-app --template default@sdk-58
+
+cd mi-app
+
+# Inicia el servidor de desarrollo
+npx expo start
+```
+
+Instalar un módulo del SDK con la versión correcta y usarlo:
+
+```bash
+npx expo install expo-haptics
+```
+
+```tsx title="src/app/index.tsx"
+import * as Haptics from 'expo-haptics';
+import { Pressable, Text, View } from 'react-native';
+
+export default function Home() {
+  return (
+    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+      <Pressable
+        onPress={() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)}
+        style={{ backgroundColor: '#111827', padding: 16, borderRadius: 12 }}
+      >
+        <Text style={{ color: 'white', fontWeight: '600' }}>Vibrar</Text>
+      </Pressable>
+    </View>
+  );
+}
+```
+
+## Explicación del código
+
+- `create-expo-app` genera un proyecto con **TypeScript, Expo Router y la carpeta `src/app`** ya configurados. Durante la transición entre SDK, `@latest` sin plantilla puede crear el SDK anterior; por eso indicamos `--template default@sdk-58`.
+- `npx expo start` levanta Metro y muestra un código QR para abrir la app en un dispositivo o simulador.
+- `npx expo install expo-haptics` instala la versión de `expo-haptics` que corresponde a tu SDK, evitando incompatibilidades.
+- `Haptics.impactAsync` llama a la API nativa de vibración háptica. No tuviste que tocar Xcode ni Android Studio.
+
+## Buenas prácticas
+
+- **Usa siempre `npx expo install`** para paquetes con código nativo, y `npx expo install --check` para detectar versiones desalineadas.
+- **Actualiza de SDK de forma regular** (Expo publica varias versiones al año). Saltar muchas versiones de golpe es más costoso.
+- **Ejecuta `npx expo-doctor`** cuando algo falle: detecta dependencias duplicadas o incompatibles.
+- **Mantén la configuración nativa en `app.json`** y config plugins en lugar de editar `android/` e `ios/` a mano (lo explicamos en [Configuración de app.json](/docs/expo/app-json)).
+
+### Errores comunes
+
+- Pensar que Expo no permite código nativo. Desde hace años, los *development builds* permiten cualquier librería nativa.
+- Instalar paquetes con versiones arbitrarias (`npm i react-native-reanimated@latest`) y romper la compatibilidad con el SDK.
+
+### Cuándo usar otra solución
+
+Si ya tienes una app nativa grande y quieres añadir algunas pantallas en React Native ("brownfield"), puedes integrar React Native directamente o usar Expo en modo brownfield. Para apps nuevas, Expo es casi siempre la mejor elección.

@@ -1,0 +1,126 @@
+---
+title: SafeAreaView y áreas seguras
+description: Notch, isla dinámica, barra de estado y gestos del sistema. Cómo usar react-native-safe-area-context en apps edge-to-edge.
+sidebarTitle: SafeAreaView y áreas seguras
+difficulty: principiante
+time: 12
+prerequisites:
+  - fundamentos/view-y-text
+related:
+  - fundamentos/flexbox-y-responsive
+  - expo/expo-router
+  - estilos/diseno-adaptable
+resources:
+  - title: Expo — Áreas seguras
+    url: https://docs.expo.dev/develop/user-interface/safe-areas/
+  - title: react-native-safe-area-context
+    url: https://appandflow.github.io/react-native-safe-area-context/
+  - title: Expo — Barra de estado
+    url: https://docs.expo.dev/versions/latest/sdk/status-bar/
+keywords: [safeareaview, useSafeAreaInsets, edge-to-edge, notch, insets, barra de estado, expo-status-bar]
+---
+
+## Introducción conceptual
+
+Los teléfonos modernos dibujan la app **de borde a borde** (<Term slug="edge-to-edge">edge-to-edge</Term>): detrás de la barra de estado, del notch o la isla dinámica, y de la barra de gestos. Esto se ve moderno, pero si colocas un botón en la esquina superior puede quedar debajo de la cámara.
+
+El **área segura** es la zona libre de esos elementos. React Native 0.88 marca como **obsoleto** su propio `SafeAreaView` (solo funcionaba en iOS); la solución estándar, incluida en las plantillas de Expo, es **`react-native-safe-area-context`**.
+
+<Overview
+  purpose="Mantener el contenido interactivo y legible fuera del notch, la barra de estado y la zona de gestos."
+  importance="En Android moderno el modo edge-to-edge es obligatorio: sin áreas seguras, los elementos quedan tapados en ambas plataformas."
+  when="En pantallas sin cabecera de navegación, barras inferiores propias, botones flotantes y contenido a pantalla completa."
+  problem="Calcula los márgenes exactos de cada dispositivo y orientación, en lugar de usar valores fijos que fallan en otros modelos."
+/>
+
+## Explicación visual
+
+<Layers
+  layers={[
+    { title: 'insets.top', desc: 'Barra de estado, notch, isla dinámica', items: ['≈ 47–62 pt en iPhone', '≈ 24–48 dp en Android'], tone: 'muted' },
+    { title: 'Área segura', desc: 'Tu contenido interactivo', items: ['Textos', 'Botones', 'Formularios', 'Listas'], tone: 'brand' },
+    { title: 'insets.bottom', desc: 'Indicador de inicio / barra de gestos', items: ['≈ 34 pt en iPhone sin botón', 'Variable en Android'], tone: 'muted' },
+  ]}
+  caption="También existen insets laterales (left/right) en orientación horizontal."
+/>
+
+<Callout type="tip" title="Las cabeceras de Expo Router ya lo resuelven">
+Cuando una pantalla tiene la cabecera del `Stack` o la barra de `Tabs`, el navegador aplica el inset superior o inferior por ti. Solo necesitas gestionarlo en pantallas con `headerShown: false` o en elementos posicionados de forma absoluta.
+</Callout>
+
+## Ejemplo práctico
+
+Expo Router ya envuelve la app en un `SafeAreaProvider`. En una pantalla sin cabecera puedes usar el componente o el hook:
+
+```tsx title="src/app/onboarding.tsx"
+import { StatusBar } from 'expo-status-bar';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+
+export default function OnboardingScreen() {
+  return (
+    // edges: solo aplicamos el margen superior y los laterales
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+      <StatusBar style="light" />
+      <Text style={styles.title}>Bienvenido</Text>
+      <Text style={styles.text}>Organiza tus finanzas en minutos.</Text>
+      <BottomBar />
+    </SafeAreaView>
+  );
+}
+
+function BottomBar() {
+  // El hook da control fino: sumamos el inset a nuestro propio padding
+  const insets = useSafeAreaInsets();
+  return (
+    <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+      <Pressable style={styles.button} accessibilityRole="button">
+        <Text style={styles.buttonText}>Empezar</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#0f172a', paddingHorizontal: 24 },
+  title: { color: '#fff', fontSize: 32, fontWeight: '800', marginTop: 48 },
+  text: { color: '#cbd5e1', fontSize: 17, marginTop: 8 },
+  bottomBar: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: 24, paddingTop: 12 },
+  button: { backgroundColor: '#38bdf8', borderRadius: 14, paddingVertical: 16, alignItems: 'center' },
+  buttonText: { color: '#0f172a', fontWeight: '700', fontSize: 16 },
+});
+```
+
+Si no usas Expo Router, añade el proveedor en la raíz:
+
+```tsx title="App.tsx"
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+
+export default function App() {
+  return <SafeAreaProvider>{/* tu navegación y pantallas */}</SafeAreaProvider>;
+}
+```
+
+## Explicación del código
+
+- **`SafeAreaView` de `react-native-safe-area-context`** funciona en iOS y Android (el del núcleo solo funcionaba en iOS y está obsoleto). Es un `View` que añade los insets como padding.
+- **`edges`** limita los bordes en los que se aplica el inset. Aquí omitimos `bottom` porque la barra inferior lo gestiona por su cuenta.
+- **`useSafeAreaInsets()`** devuelve `{ top, bottom, left, right }`. Úsalo cuando necesites combinar el inset con tus propios valores, por ejemplo `Math.max(insets.bottom, 16)` para que haya margen incluso en dispositivos sin barra de gestos.
+- **`StatusBar` de `expo-status-bar`** controla el color del contenido de la barra de estado (`light`/`dark`/`auto`). En SDK 58 se eliminaron las props obsoletas del `StatusBar`; con edge-to-edge el fondo de la barra es siempre transparente.
+
+## Buenas prácticas
+
+- **No uses valores fijos** como `paddingTop: 44`: cada dispositivo tiene insets distintos.
+- **Aplica insets en el nivel adecuado**: en la pantalla o en el elemento que toca el borde, no en cada componente.
+- **Deja que los fondos lleguen al borde** y protege solo el contenido: queda más moderno que un margen en blanco.
+- **En listas**, usa `contentContainerStyle={{ paddingBottom: insets.bottom }}` para que el último elemento no quede bajo la barra de gestos.
+
+### Errores comunes
+
+- Envolver toda la app en un `SafeAreaView`: duplicas márgenes en pantallas que ya tienen cabecera.
+- Usar el `SafeAreaView` de `react-native`: muestra un aviso de obsolescencia y no funciona en Android.
+- Olvidar la orientación horizontal: los insets laterales importan en iPhone con notch.
+
+### Cuándo usar otra solución
+
+En NativeWind puedes usar las utilidades de áreas seguras (`pt-safe`, `pb-safe`, etc.) que se basan en los mismos insets. Para gestionar el teclado junto con los insets inferiores, `react-native-keyboard-controller` ofrece componentes que combinan ambos.

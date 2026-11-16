@@ -1,0 +1,188 @@
+---
+title: Modal
+description: Superponer contenido sobre la pantalla actual. Props de Modal, botón atrás de Android, presentaciones nativas y rutas modales con Expo Router.
+difficulty: principiante
+time: 12
+prerequisites:
+  - fundamentos/pressable-y-touchableopacity
+related:
+  - sistema-de-componentes/modal
+  - expo/navegacion-por-archivos
+  - calidad/accesibilidad
+resources:
+  - title: React Native — Modal
+    url: https://reactnative.dev/docs/modal
+  - title: Expo Router — Modales
+    url: https://docs.expo.dev/router/advanced/modals/
+keywords: [modal, dialog, onRequestClose, animationType, presentationStyle, transparent, bottom sheet, confirmación]
+---
+
+## Introducción conceptual
+
+Un modal muestra contenido **por encima** de la pantalla actual y bloquea la interacción con lo que hay detrás hasta que se cierra. Se usa para confirmaciones, formularios breves, selectores o información puntual.
+
+En React Native hay dos maneras de presentar un modal:
+
+1. **El componente `Modal`**: se controla con estado (`visible`) dentro de la misma pantalla. Ideal para diálogos de confirmación y hojas pequeñas.
+2. **Una ruta modal de Expo Router**: una pantalla completa con su propia URL presentada como modal (`presentation: 'modal'`). Ideal para flujos con entidad propia, como "Nuevo gasto" o "Editar perfil".
+
+<Overview
+  purpose="Mostrar información o pedir una acción sin abandonar el contexto de la pantalla actual."
+  importance="Bien usados enfocan la atención; mal usados (modales encadenados, sin forma de cerrar) frustran al usuario."
+  when="Confirmaciones destructivas, formularios cortos, selección de opciones o detalles rápidos."
+  problem="Resuelve la superposición nativa de contenido con animación, gestión del botón atrás y foco de accesibilidad."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="Componente Modal">
+    - Estado local: `visible`.
+    - Sin URL propia.
+    - `transparent` para diálogos centrados.
+    - `presentationStyle="pageSheet"` en iOS para hojas nativas.
+  </Column>
+  <Column title="Ruta modal (Expo Router)" tone="brand">
+    - Archivo propio, p. ej. `src/app/nuevo-gasto.tsx`.
+    - Deep link y navegación estándar.
+    - Gesto de cierre nativo en iOS.
+    - Ideal para formularios completos.
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+Un diálogo de confirmación reutilizable con el componente `Modal`:
+
+```tsx title="src/components/confirm-dialog.tsx"
+import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+
+type ConfirmDialogProps = {
+  visible: boolean;
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  destructive?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+};
+
+export function ConfirmDialog({
+  visible,
+  title,
+  message,
+  confirmLabel = 'Confirmar',
+  destructive = false,
+  onConfirm,
+  onCancel,
+}: ConfirmDialogProps) {
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      statusBarTranslucent
+      navigationBarTranslucent
+      onRequestClose={onCancel} // Botón/gesto "atrás" en Android
+    >
+      {/* Fondo: tocar fuera cierra el diálogo */}
+      <Pressable style={styles.backdrop} onPress={onCancel} accessibilityLabel="Cerrar diálogo">
+        {/* Detenemos la propagación: tocar el panel no lo cierra */}
+        <Pressable style={styles.panel} onPress={() => {}} accessibilityViewIsModal>
+          <Text style={styles.title} accessibilityRole="header">
+            {title}
+          </Text>
+          <Text style={styles.message}>{message}</Text>
+          <View style={styles.actions}>
+            <Pressable onPress={onCancel} style={[styles.button, styles.secondary]} accessibilityRole="button">
+              <Text style={styles.secondaryText}>Cancelar</Text>
+            </Pressable>
+            <Pressable
+              onPress={onConfirm}
+              style={[styles.button, destructive ? styles.danger : styles.primary]}
+              accessibilityRole="button"
+            >
+              <Text style={styles.primaryText}>{confirmLabel}</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+const styles = StyleSheet.create({
+  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', padding: 24 },
+  panel: { backgroundColor: '#fff', borderRadius: 20, padding: 20, gap: 8 },
+  title: { fontSize: 18, fontWeight: '700' },
+  message: { fontSize: 15, color: '#4b5563', lineHeight: 22 },
+  actions: { flexDirection: 'row', gap: 12, marginTop: 12 },
+  button: { flex: 1, paddingVertical: 12, borderRadius: 12, alignItems: 'center' },
+  secondary: { backgroundColor: '#f3f4f6' },
+  secondaryText: { fontWeight: '600', color: '#111827' },
+  primary: { backgroundColor: '#111827' },
+  danger: { backgroundColor: '#dc2626' },
+  primaryText: { fontWeight: '600', color: '#fff' },
+});
+```
+
+Uso desde una pantalla:
+
+```tsx
+const [confirmVisible, setConfirmVisible] = useState(false);
+
+<ConfirmDialog
+  visible={confirmVisible}
+  title="¿Eliminar la nota?"
+  message="Esta acción no se puede deshacer."
+  confirmLabel="Eliminar"
+  destructive
+  onCancel={() => setConfirmVisible(false)}
+  onConfirm={() => {
+    deleteNote(id);
+    setConfirmVisible(false);
+  }}
+/>;
+```
+
+Y una ruta modal con Expo Router:
+
+```tsx title="src/app/_layout.tsx"
+import { Stack } from 'expo-router';
+
+export default function RootLayout() {
+  return (
+    <Stack>
+      <Stack.Screen name="index" options={{ title: 'Gastos' }} />
+      <Stack.Screen name="nuevo-gasto" options={{ presentation: 'modal', title: 'Nuevo gasto' }} />
+    </Stack>
+  );
+}
+```
+
+## Explicación del código
+
+- **`transparent`** hace que el modal no pinte un fondo propio, así podemos dibujar un velo semitransparente y centrar el panel.
+- **`animationType`** acepta `none`, `slide` o `fade`. En SDK 58 (React Native 0.88) se eliminó la antigua prop `animated`: usa siempre `animationType`.
+- **`onRequestClose`** es obligatorio para un buen comportamiento en Android: se ejecuta con el botón o gesto "atrás".
+- **`statusBarTranslucent` y `navigationBarTranslucent`** dibujan el velo detrás de las barras del sistema en Android (*edge-to-edge*).
+- **El `Pressable` interior con `onPress` vacío** evita que un toque dentro del panel llegue al fondo y cierre el diálogo.
+- **`accessibilityViewIsModal`** (iOS) indica a VoiceOver que ignore lo que hay detrás del panel.
+- **`presentation: 'modal'`** en una pantalla del `Stack` la presenta como hoja modal nativa, con gesto de cierre en iOS.
+
+## Buenas prácticas
+
+- **Usa modales con moderación**: si el contenido es largo o tiene varios pasos, probablemente debería ser una pantalla.
+- **Siempre ofrece una forma de cerrar** (botón, fondo, gesto atrás).
+- **Para acciones destructivas**, usa colores y textos claros ("Eliminar", no "Aceptar").
+- **Para diálogos sencillos del sistema**, `Alert.alert` ya muestra un diálogo nativo sin escribir UI.
+
+### Errores comunes
+
+- Olvidar `onRequestClose`: en Android, el botón atrás no cierra el modal.
+- Abrir un modal desde otro modal: en iOS no se puede presentar un segundo modal nativo encima del primero mientras está abierto. Cierra uno antes de abrir el siguiente o usa rutas.
+- Guardar en el estado global si un diálogo está abierto: casi siempre es estado local de la pantalla.
+
+### Cuándo usar otra solución
+
+Para hojas inferiores con gestos (bottom sheets) que se pueden arrastrar entre alturas, usa una librería basada en Reanimated o construye la tuya; lo hacemos en el [Modal del kit de componentes](/docs/sistema-de-componentes/modal). Para mensajes breves que no bloquean, usa un *toast* en lugar de un modal.

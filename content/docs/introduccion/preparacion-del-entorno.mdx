@@ -1,0 +1,140 @@
+---
+title: Preparación del entorno de desarrollo
+description: Instala Node.js, crea tu primer proyecto con Expo, ejecútalo en tu teléfono o en un emulador y configura tu editor.
+difficulty: principiante
+time: 25
+prerequisites:
+  - introduccion/que-es-expo
+related:
+  - introduccion/expo-go-vs-development-builds
+  - expo/configuracion-inicial
+  - expo/estructura-del-proyecto
+  - calidad/depuracion
+resources:
+  - title: Expo — Configurar el entorno
+    url: https://docs.expo.dev/get-started/set-up-your-environment/
+  - title: Expo — Crear un proyecto
+    url: https://docs.expo.dev/get-started/create-a-project/
+  - title: Node.js — Descargas (LTS)
+    url: https://nodejs.org/en/download
+keywords: [node, nvm, android studio, xcode, emulador, simulador, vscode, watchman, instalación]
+---
+
+## Introducción conceptual
+
+Para desarrollar con Expo solo necesitas **Node.js** y un editor. Para ver la app tienes tres opciones: tu **teléfono físico**, un **emulador de Android** o el **simulador de iOS** (solo en macOS). No es obligatorio instalar Android Studio ni Xcode para empezar.
+
+<Overview
+  purpose="Tener un entorno funcional para crear, ejecutar y depurar apps con Expo."
+  importance="Un entorno bien configurado evita errores difíciles de diagnosticar y acelera cada ciclo de cambio y prueba."
+  when="Antes de escribir tu primera línea de código, y cada vez que cambies de máquina o de versión del SDK."
+  problem="Evita perder horas con versiones incompatibles de Node, emuladores que no arrancan o dispositivos que no se conectan."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'Node.js LTS', desc: 'Runtime y npm' },
+    { title: 'create-expo-app', desc: 'Genera el proyecto' },
+    { title: 'npx expo start', desc: 'Metro + QR', tone: 'brand' },
+    { title: 'Dispositivo', desc: 'Teléfono, emulador o simulador' },
+  ]}
+/>
+
+| Sistema operativo | Android | iOS |
+| --- | --- | --- |
+| macOS | Teléfono o emulador (Android Studio) | Teléfono o simulador (Xcode) |
+| Windows | Teléfono o emulador (Android Studio) | Teléfono físico con Expo Go o un development build compilado con EAS |
+| Linux | Teléfono o emulador (Android Studio) | Teléfono físico con Expo Go o un development build compilado con EAS |
+
+## Ejemplo práctico
+
+<Steps>
+<Step title="Instala Node.js LTS">
+
+Descarga la versión LTS desde [nodejs.org](https://nodejs.org) o usa un gestor de versiones, que facilita cambiar de versión por proyecto:
+
+```bash
+# macOS / Linux con nvm
+nvm install --lts
+nvm use --lts
+node -v   # comprueba que es una versión LTS (por ejemplo, v24.x o v22.x)
+```
+
+</Step>
+<Step title="Crea el proyecto">
+
+```bash
+npx create-expo-app@latest mi-primera-app --template default@sdk-58
+cd mi-primera-app
+```
+
+</Step>
+<Step title="Arranca el servidor de desarrollo">
+
+```bash
+npx expo start
+```
+
+Verás un código QR y un menú en la terminal. Atajos útiles: `a` abre Android, `i` abre el simulador de iOS, `w` abre la versión web, `r` recarga la app y `j` abre React Native DevTools.
+
+</Step>
+<Step title="Ábrelo en un dispositivo">
+
+- **Teléfono físico:** instala Expo Go y escanea el QR (cámara en iOS, app Expo Go en Android). El teléfono y el ordenador deben estar en la misma red; si no es posible, usa `npx expo start --tunnel`.
+- **Emulador Android:** instala Android Studio, crea un dispositivo virtual en *Device Manager* y pulsa `a`.
+- **Simulador iOS (macOS):** instala Xcode desde la App Store, abre un simulador y pulsa `i`.
+
+</Step>
+<Step title="Haz tu primer cambio">
+
+Abre `src/app/index.tsx`, cambia un texto y guarda. Gracias a <Term slug="fast-refresh">Fast Refresh</Term>, el cambio aparece en segundos sin perder el estado de la pantalla.
+
+</Step>
+</Steps>
+
+### Configuración recomendada del editor
+
+Visual Studio Code (o Cursor) con estas extensiones: **Expo Tools** (autocompletado de `app.json`), **ESLint**, **Prettier** y, si usarás NativeWind, **Tailwind CSS IntelliSense**.
+
+```json title=".vscode/settings.json"
+{
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit"
+  },
+  "typescript.tsdk": "node_modules/typescript/lib"
+}
+```
+
+```bash
+# Configura ESLint con la configuración oficial de Expo
+npx expo lint
+```
+
+## Explicación del código
+
+- `nvm` instala y cambia versiones de Node sin permisos de administrador. Expo requiere una versión LTS activa.
+- `npx expo start` arranca **Metro**, que empaqueta tu código y lo sirve al dispositivo. Mantenlo abierto mientras desarrollas.
+- `--tunnel` expone el servidor a través de internet; es más lento, pero funciona en redes corporativas o con aislamiento de clientes.
+- `typescript.tsdk` hace que el editor use la versión de TypeScript del proyecto (6.0 en SDK 58) y no la integrada.
+- `npx expo lint` instala y configura `eslint-config-expo`, que en SDK 55+ ya incluye las reglas del React Compiler.
+
+## Buenas prácticas
+
+- **Usa la misma versión de Node en todo el equipo** (archivo `.nvmrc` con la versión LTS).
+- **Prueba pronto en un dispositivo físico**: el rendimiento, el teclado y los gestos se perciben distinto que en un emulador.
+- **No mezcles gestores de paquetes**: si usas npm, no ejecutes yarn o pnpm en el mismo proyecto (generan lockfiles distintos).
+- **Ejecuta `npx expo-doctor`** si algo extraño ocurre tras instalar dependencias.
+
+### Errores comunes
+
+- El teléfono no conecta con Metro: comprueba que ambos están en la misma red o usa `--tunnel`.
+- *"Project is incompatible with this version of Expo Go"*: tu proyecto usa un SDK distinto al de la app Expo Go. Usa un development build o crea el proyecto con el SDK que soporte Expo Go.
+- Errores de caché tras cambiar configuración: reinicia con `npx expo start --clear`.
+
+### Cuándo usar otra solución
+
+Si no puedes instalar nada en tu máquina, puedes empezar con [Expo Snack](https://snack.expo.dev) en el navegador. Cuando el proyecto necesite librerías nativas, pasa a un [development build](/docs/introduccion/expo-go-vs-development-builds) compilado en la nube con EAS.

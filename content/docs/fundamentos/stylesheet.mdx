@@ -1,0 +1,156 @@
+---
+title: StyleSheet
+description: Cómo funcionan los estilos en React Native. Objetos de estilo, unidades, arrays, estilos condicionales, sombras con boxShadow y diferencias con CSS.
+difficulty: principiante
+time: 15
+prerequisites:
+  - fundamentos/view-y-text
+related:
+  - fundamentos/flexbox-y-responsive
+  - estilos/stylesheet-avanzado
+  - estilos/nativewind
+resources:
+  - title: React Native — Style
+    url: https://reactnative.dev/docs/style
+  - title: React Native — StyleSheet
+    url: https://reactnative.dev/docs/stylesheet
+  - title: React Native — View style props
+    url: https://reactnative.dev/docs/view-style-props
+keywords: [stylesheet, estilos, style, boxShadow, camelCase, unidades, dp, estilos condicionales]
+---
+
+## Introducción conceptual
+
+En React Native no hay archivos CSS. Los estilos son **objetos de JavaScript** con nombres de propiedades parecidos a CSS, escritos en **camelCase** (`backgroundColor`, `fontSize`). Se aplican con la prop `style` y se organizan con `StyleSheet.create`.
+
+Diferencias clave con CSS web:
+
+- **Sin unidades**: los números son puntos independientes de la densidad (dp/pt). `width: 100` mide lo mismo físicamente en cualquier pantalla. También se admiten porcentajes como string (`'50%'`).
+- **Sin cascada ni selectores**: cada componente recibe sus estilos de forma explícita. Solo el texto anidado hereda estilos de su `Text` padre.
+- **Flexbox por defecto**, con `flexDirection: 'column'`.
+
+<Overview
+  purpose="Definir la apariencia de los componentes de forma explícita, tipada y predecible."
+  importance="Es el sistema de estilos nativo: todo lo demás (NativeWind, temas, librerías de UI) termina generando estos objetos."
+  when="Siempre que estilices componentes; incluso si usas NativeWind, conviene entender qué genera."
+  problem="Evita los conflictos de especificidad y cascada de CSS: cada estilo es local al componente."
+/>
+
+## Explicación visual
+
+<SplitView>
+<Panel title="Concepto">
+
+Los estilos se pueden **combinar en arrays**. React Native los aplica de izquierda a derecha: el último gana.
+
+Los valores **falsy** (`false`, `null`, `undefined`) se ignoran, lo que permite estilos condicionales sin `if`.
+
+`StyleSheet.create` valida las propiedades en desarrollo y permite a TypeScript autocompletarlas.
+
+</Panel>
+<Panel title="Código">
+
+```tsx
+<View
+  style={[
+    styles.base,          // 1. base
+    isActive && styles.active, // 2. condicional
+    { marginTop: offset },     // 3. dinámico
+  ]}
+/>
+```
+
+</Panel>
+</SplitView>
+
+| CSS web | React Native |
+| --- | --- |
+| `background-color: #fff` | `backgroundColor: '#fff'` |
+| `padding: 16px 24px` | `paddingVertical: 16, paddingHorizontal: 24` |
+| `font-weight: 700` | `fontWeight: '700'` (string) |
+| `box-shadow: 0 2px 8px …` | `boxShadow: '0 2px 8px …'` |
+| `display: flex` | Siempre activo |
+| `.card:hover` | No existe: usa el estado `pressed` |
+
+## Ejemplo práctico
+
+Una etiqueta de estado (*badge*) con variantes, estilos condicionales y sombra:
+
+```tsx title="src/components/status-badge.tsx"
+import { StyleSheet, Text, View } from 'react-native';
+
+type Status = 'paid' | 'pending' | 'overdue';
+
+const LABELS: Record<Status, string> = {
+  paid: 'Pagado',
+  pending: 'Pendiente',
+  overdue: 'Vencido',
+};
+
+export function StatusBadge({ status, compact = false }: { status: Status; compact?: boolean }) {
+  return (
+    <View style={[styles.badge, styles[status], compact && styles.compact]}>
+      <View style={[styles.dot, dotStyles[status]]} />
+      <Text style={[styles.text, textStyles[status]]}>{LABELS[status]}</Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  badge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    boxShadow: '0 1px 2px rgba(0, 0, 0, 0.06)',
+  },
+  compact: { paddingHorizontal: 6, paddingVertical: 2 },
+  paid: { backgroundColor: '#ecfdf5', borderColor: '#a7f3d0' },
+  pending: { backgroundColor: '#fffbeb', borderColor: '#fde68a' },
+  overdue: { backgroundColor: '#fef2f2', borderColor: '#fecaca' },
+  dot: { width: 6, height: 6, borderRadius: 3 },
+  text: { fontSize: 12, fontWeight: '600' },
+});
+
+const dotStyles = StyleSheet.create({
+  paid: { backgroundColor: '#10b981' },
+  pending: { backgroundColor: '#f59e0b' },
+  overdue: { backgroundColor: '#ef4444' },
+});
+
+const textStyles = StyleSheet.create({
+  paid: { color: '#047857' },
+  pending: { color: '#b45309' },
+  overdue: { color: '#b91c1c' },
+});
+```
+
+## Explicación del código
+
+- **`styles[status]`** usa la clave de la variante para elegir el estilo: TypeScript comprueba que `status` sea una clave válida.
+- **`compact && styles.compact`** es un estilo condicional; si `compact` es `false`, React Native lo ignora.
+- **`alignSelf: 'flex-start'`** hace que el badge ocupe solo el ancho de su contenido en lugar de estirarse a todo el ancho del padre (comportamiento por defecto de Flexbox en columna).
+- **`borderRadius: 999`** crea una forma de píldora sin conocer la altura exacta.
+- **`StyleSheet.hairlineWidth`** es el borde más fino que la pantalla puede dibujar (normalmente 1 píxel físico).
+- **`boxShadow`** acepta sintaxis CSS y funciona igual en iOS y Android con la Nueva Arquitectura. Sustituye a la combinación antigua de `shadowColor`/`shadowOffset` (iOS) y `elevation` (Android).
+
+## Buenas prácticas
+
+- **Define los estilos fuera del componente** con `StyleSheet.create`: no se recrean en cada render y quedan agrupados al final del archivo.
+- **Usa estilos inline solo para valores dinámicos** (por ejemplo, un ancho calculado).
+- **Centraliza colores, espaciados y tipografía** en tokens de diseño en lugar de repetir literales ([Temas personalizados](/docs/estilos/temas-personalizados)).
+- **Valora NativeWind** si prefieres clases utilitarias: escribe menos código y obtienes modo oscuro y variantes ([NativeWind](/docs/estilos/nativewind)).
+
+### Errores comunes
+
+- Escribir `'16px'` o `fontWeight: 700` (número): React Native espera `16` y `'700'`.
+- Esperar herencia de `color` desde un `View`.
+- Usar `margin` para separar elementos de una lista: `gap` en el contenedor es más simple y consistente.
+
+### Cuándo usar otra solución
+
+`StyleSheet` es suficiente para muchas apps. Si necesitas temas dinámicos complejos, variantes y modo oscuro en todo el proyecto, considera [NativeWind](/docs/estilos/nativewind) o una capa de tema propia. Profundizamos en composición, plataformas y rendimiento en [StyleSheet avanzado](/docs/estilos/stylesheet-avanzado).

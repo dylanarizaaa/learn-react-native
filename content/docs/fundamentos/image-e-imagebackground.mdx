@@ -1,0 +1,161 @@
+---
+title: Image e ImageBackground
+description: Imágenes locales y remotas, dimensiones, ajuste, caché con expo-image y el patrón que reemplaza a ImageBackground (obsoleto en React Native 0.88).
+sidebarTitle: Image y ImageBackground
+difficulty: principiante
+time: 15
+prerequisites:
+  - fundamentos/view-y-text
+related:
+  - fundamentos/stylesheet
+  - calidad/rendimiento
+  - expo/expo-image-picker
+resources:
+  - title: React Native — Image
+    url: https://reactnative.dev/docs/image
+  - title: React Native — ImageBackground (obsoleto)
+    url: https://reactnative.dev/docs/imagebackground
+  - title: Expo — expo-image
+    url: https://docs.expo.dev/versions/latest/sdk/image/
+keywords: [image, expo-image, imagebackground, contentFit, placeholder, blurhash, caché, require]
+---
+
+## Introducción conceptual
+
+Las imágenes son uno de los mayores consumidores de memoria y red en una app. React Native ofrece el componente `Image`, pero en proyectos Expo se recomienda **`expo-image`**: mismo concepto, con caché en disco y memoria, placeholders, transiciones y mejor soporte de formatos.
+
+Además, **`ImageBackground` está obsoleto en React Native 0.88** y se eliminará en una versión futura. El reemplazo recomendado es simple: un `View` con una imagen posicionada de forma absoluta detrás del contenido.
+
+<Overview
+  purpose="Mostrar imágenes locales y remotas de forma eficiente, con buen ajuste, caché y estados de carga."
+  importance="Imágenes mal gestionadas causan saltos de layout, consumo excesivo de datos y cierres por falta de memoria."
+  when="En avatares, catálogos de productos, banners, galerías o cualquier contenido visual."
+  problem="Resuelve la descarga, el cacheado y el ajuste de imágenes sin bloquear la interfaz."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="Imagen local">
+    - `source={require('@/assets/logo.png')}`
+    - Se incluye en el bundle.
+    - React Native conoce sus dimensiones.
+    - Usa sufijos `@2x` y `@3x` para densidades.
+  </Column>
+  <Column title="Imagen remota">
+    - `source={{ uri: 'https://…' }}`
+    - Se descarga en ejecución.
+    - **Debes indicar ancho y alto** (o `aspectRatio`).
+    - Con `expo-image` se cachea automáticamente.
+  </Column>
+</Columns>
+
+<Layers
+  caption="Patrón que reemplaza a ImageBackground: capas apiladas dentro de un View."
+  layers={[
+    { title: 'Contenido', desc: 'Texto y botones', items: ['position: relative', 'zIndex natural'], tone: 'brand' },
+    { title: 'Velo', desc: 'Mejora el contraste', items: ['StyleSheet.absoluteFill', "backgroundColor: 'rgba(0,0,0,0.4)'"] },
+    { title: 'Imagen', desc: 'Fondo', items: ['StyleSheet.absoluteFill', "contentFit='cover'"] },
+  ]}
+/>
+
+## Ejemplo práctico
+
+Instala `expo-image`:
+
+```bash
+npx expo install expo-image
+```
+
+Un banner con imagen de fondo (sin `ImageBackground`) y una tarjeta de producto con placeholder:
+
+```tsx title="src/components/promo-banner.tsx"
+import { Image } from 'expo-image';
+import { StyleSheet, Text, View } from 'react-native';
+
+const blurhash = 'L6PZfSi_.AyE_3t7t7R**0o#DgR4';
+
+export function PromoBanner({ imageUrl, title }: { imageUrl: string; title: string }) {
+  return (
+    <View style={styles.banner}>
+      {/* 1. Imagen de fondo ocupando todo el contenedor */}
+      <Image
+        source={{ uri: imageUrl }}
+        placeholder={{ blurhash }}
+        contentFit="cover"
+        transition={300}
+        style={StyleSheet.absoluteFill}
+        accessibilityIgnoresInvertColors
+      />
+      {/* 2. Velo oscuro para asegurar el contraste del texto */}
+      <View style={[StyleSheet.absoluteFill, styles.overlay]} />
+      {/* 3. Contenido */}
+      <Text style={styles.title}>{title}</Text>
+    </View>
+  );
+}
+
+export function ProductThumbnail({ uri, name }: { uri: string; name: string }) {
+  return (
+    <View style={{ gap: 6 }}>
+      <Image
+        source={{ uri }}
+        style={styles.thumbnail}
+        contentFit="cover"
+        placeholder={{ blurhash }}
+        cachePolicy="memory-disk"
+        recyclingKey={uri}
+        accessibilityLabel={name}
+      />
+      <Text numberOfLines={1}>{name}</Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  banner: {
+    height: 180,
+    borderRadius: 16,
+    overflow: 'hidden',
+    justifyContent: 'flex-end',
+    padding: 16,
+  },
+  overlay: { backgroundColor: 'rgba(0, 0, 0, 0.35)' },
+  title: { color: '#fff', fontSize: 22, fontWeight: '700' },
+  thumbnail: { width: '100%', aspectRatio: 1, borderRadius: 12, backgroundColor: '#f3f4f6' },
+});
+```
+
+Para una imagen local, `require` resuelve el archivo en tiempo de build:
+
+```tsx
+import { Image } from 'expo-image';
+
+<Image source={require('@/assets/images/logo.png')} style={{ width: 120, height: 40 }} contentFit="contain" />
+```
+
+## Explicación del código
+
+- **`StyleSheet.absoluteFill`** equivale a `position: 'absolute'` con `top/left/right/bottom: 0`: la imagen y el velo ocupan todo el banner, y el texto se dibuja encima porque viene después en el árbol.
+- **`overflow: 'hidden'`** recorta la imagen con el `borderRadius` del contenedor.
+- **`contentFit`** controla el ajuste (`cover`, `contain`, `fill`, `none`, `scale-down`), igual que `object-fit` en CSS.
+- **`placeholder` con blurhash** muestra una versión difuminada mientras se descarga la imagen, y **`transition`** hace un fundido al cargarla.
+- **`cachePolicy="memory-disk"`** guarda la imagen en memoria y disco. **`recyclingKey`** es importante dentro de listas: evita que una celda reciclada muestre brevemente la imagen anterior.
+- **`aspectRatio: 1`** permite usar ancho al 100 % y que la altura se calcule sola.
+
+## Buenas prácticas
+
+- **Pide al backend imágenes del tamaño que vas a mostrar** (miniaturas para listas). Descargar fotos de 4000 px para un avatar de 48 px desperdicia datos y memoria.
+- **Reserva siempre el espacio** (ancho/alto o `aspectRatio`) para evitar saltos de layout.
+- **Añade `accessibilityLabel`** a imágenes informativas; las decorativas pueden omitirse para los lectores de pantalla.
+- **Usa SVG** (con `react-native-svg` o `expo-image`, que admite SVG) para iconos y logotipos.
+
+### Errores comunes
+
+- Imagen remota sin tamaño: no aparece nada.
+- Seguir usando `ImageBackground`: verás un aviso de obsolescencia en React Native 0.88. Migra al patrón de capas.
+- Rutas dinámicas en `require`: `` require(`./${name}.png`) `` no funciona porque Metro necesita conocer la ruta en tiempo de build. Crea un mapa de imágenes con requires estáticos.
+
+### Cuándo usar otra solución
+
+Para galerías con zoom y gestos usa una librería específica sobre Reanimated y Gesture Handler. Para mostrar fotos del usuario, combínalo con [expo-image-picker](/docs/expo/expo-image-picker).

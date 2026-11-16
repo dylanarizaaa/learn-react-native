@@ -1,0 +1,162 @@
+---
+title: ¿Cómo funciona React Native?
+description: Hilos, motor Hermes, JSI, Fabric y TurboModules. Qué ocurre desde que escribes un componente hasta que aparece un píxel en la pantalla.
+difficulty: principiante
+time: 15
+prerequisites:
+  - introduccion/que-es-react-native
+related:
+  - calidad/rendimiento
+  - estilos/reanimated
+  - introduccion/expo-go-vs-development-builds
+resources:
+  - title: React Native — Arquitectura
+    url: https://reactnative.dev/architecture/overview
+  - title: The New Architecture is here
+    url: https://reactnative.dev/blog/2024/10/23/the-new-architecture-is-here
+  - title: Expo — Nueva Arquitectura
+    url: https://docs.expo.dev/guides/new-architecture/
+keywords: [jsi, fabric, turbomodules, hermes, nueva arquitectura, hilos, metro, bridge]
+---
+
+## Introducción conceptual
+
+Para escribir buenas apps no necesitas conocer cada detalle interno de React Native, pero sí entender **dónde se ejecuta tu código** y **cómo llega a la pantalla**. Ese modelo mental explica por qué una lista lenta se arregla de cierta forma, por qué las animaciones se ejecutan en otro hilo o por qué algunas librerías necesitan un *development build*.
+
+Una app de React Native tiene tres piezas principales:
+
+1. **Tu JavaScript**, empaquetado por <Term slug="metro">Metro</Term> en un único <Term slug="bundle">bundle</Term> y ejecutado por el motor <Term slug="hermes">Hermes</Term>.
+2. **React**, que calcula qué interfaz debe existir según el estado actual.
+3. **El host nativo** (iOS o Android), que crea y dibuja las vistas reales y expone las APIs del dispositivo.
+
+Desde React Native 0.82 todas las apps usan la <Term slug="nueva-arquitectura">Nueva Arquitectura</Term>: no hay opción de volver a la antigua. En Expo esto aplica desde el SDK 55, y en este curso usamos SDK 58 (React Native 0.88).
+
+<Overview
+  purpose="Entender cómo se conectan JavaScript y la plataforma nativa para tomar mejores decisiones de rendimiento y de librerías."
+  importance="Los problemas más comunes (listas lentas, animaciones a tirones, librerías incompatibles) se explican con este modelo."
+  when="Al empezar, para tener una idea general, y más adelante al optimizar o al elegir librerías con código nativo."
+  problem="Evita tratar React Native como una caja negra y depurar a ciegas problemas de rendimiento o compatibilidad."
+/>
+
+## Explicación visual
+
+El recorrido desde tu código hasta los píxeles:
+
+<Flow
+  steps={[
+    { title: 'TSX', desc: 'Tus componentes', tone: 'brand' },
+    { title: 'Metro + Babel', desc: 'Empaqueta y transforma' },
+    { title: 'Hermes', desc: 'Ejecuta el bundle (bytecode)' },
+    { title: 'React + Fabric', desc: 'Árbol de UI y layout con Yoga' },
+    { title: 'Vistas nativas', desc: 'UIKit / Android Views' },
+  ]}
+  caption="Metro trabaja en tu ordenador; el resto ocurre dentro del dispositivo."
+/>
+
+Las capas de la Nueva Arquitectura:
+
+<Layers
+  layers={[
+    { title: 'JavaScript', desc: 'Tu app y librerías JS', items: ['Componentes', 'Hooks', 'Estado', 'Lógica de negocio'], tone: 'brand' },
+    { title: 'JSI', desc: 'Interfaz C++ directa', items: ['Llamadas síncronas', 'Sin serializar JSON', 'Referencias a objetos nativos'] },
+    { title: 'Fabric', desc: 'Renderizador', items: ['Shadow tree en C++', 'Layout con Yoga', 'Renderizado concurrente'] },
+    { title: 'TurboModules', desc: 'APIs nativas', items: ['Carga bajo demanda', 'Tipos con Codegen', 'Expo Modules API'] },
+    { title: 'Plataforma', desc: 'iOS y Android', items: ['UIKit / SwiftUI', 'Android Views / Compose', 'Cámara, GPS, archivos…'] },
+  ]}
+/>
+
+### Los hilos de ejecución
+
+React Native reparte el trabajo en varios hilos. Lo importante es distinguir dos:
+
+<Columns>
+  <Column title="Hilo de JavaScript">
+    - Ejecuta tu código React, los hooks y la lógica.
+    - Si lo bloqueas (por ejemplo, ordenando 50.000 elementos), los toques y actualizaciones se retrasan.
+  </Column>
+  <Column title="Hilo principal (UI)">
+    - Dibuja las vistas nativas y recibe los gestos.
+    - Reanimated y Gesture Handler ejecutan aquí sus <Term slug="worklet">worklets</Term> para animar sin depender del hilo de JS.
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+Este ejemplo muestra el efecto de bloquear el hilo de JavaScript. Mientras se ejecuta el cálculo pesado, el contador no responde; al moverlo fuera del render y diferirlo, la interfaz sigue fluida.
+
+```tsx title="src/app/hilos.tsx"
+import { useState, useTransition } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+
+// Simula un cálculo costoso (por ejemplo, procesar un archivo grande).
+function heavyCalculation(iterations: number) {
+  let total = 0;
+  for (let i = 0; i < iterations; i++) total += Math.sqrt(i);
+  return Math.round(total);
+}
+
+export default function ThreadsDemo() {
+  const [taps, setTaps] = useState(0);
+  const [result, setResult] = useState<number | null>(null);
+  const [isPending, startTransition] = useTransition();
+
+  function runBlocking() {
+    // ❌ Bloquea el hilo de JS ~1 s: los toques se encolan.
+    setResult(heavyCalculation(80_000_000));
+  }
+
+  function runDeferred() {
+    // ✅ Marca la actualización como no urgente: React prioriza la interacción.
+    startTransition(() => {
+      setResult(heavyCalculation(80_000_000));
+    });
+  }
+
+  return (
+    <View style={styles.container}>
+      <Pressable style={styles.button} onPress={() => setTaps((t) => t + 1)}>
+        <Text style={styles.label}>Toques: {taps}</Text>
+      </Pressable>
+      <Pressable style={styles.button} onPress={runBlocking}>
+        <Text style={styles.label}>Calcular (bloqueante)</Text>
+      </Pressable>
+      <Pressable style={styles.button} onPress={runDeferred}>
+        <Text style={styles.label}>{isPending ? 'Calculando…' : 'Calcular (transición)'}</Text>
+      </Pressable>
+      <Text>Resultado: {result ?? '—'}</Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, justifyContent: 'center', padding: 24, gap: 12 },
+  button: { backgroundColor: '#111827', padding: 14, borderRadius: 12 },
+  label: { color: 'white', textAlign: 'center', fontWeight: '600' },
+});
+```
+
+## Explicación del código
+
+- `heavyCalculation` se ejecuta en el **hilo de JavaScript**. Mientras corre, React no puede procesar el toque del botón "Toques".
+- `useTransition` (React 19) marca la actualización de estado como **no urgente**. Con la Nueva Arquitectura, React Native soporta el renderizado concurrente, así que puede priorizar las interacciones. Aun así, el cálculo en sí sigue ocupando el hilo: para trabajo realmente pesado conviene hacerlo en el servidor, en un módulo nativo o dividirlo en partes.
+- El `Pressable` y el `Text` terminan convertidos en vistas nativas por **Fabric**, que calcula el layout (con <Term slug="yoga">Yoga</Term>) en C++ antes de montarlas.
+
+### ¿Qué pasó con el "bridge"?
+
+En la arquitectura antigua, JavaScript y nativo se comunicaban mediante un *bridge* asíncrono que serializaba mensajes en JSON. Era lento para interacciones intensivas. <Term slug="jsi">JSI</Term> lo reemplaza: JavaScript puede llamar a funciones C++ directamente y mantener referencias a objetos nativos. Por eso las librerías modernas (Reanimated, FlashList, MMKV, módulos de Expo) son mucho más rápidas.
+
+## Buenas prácticas
+
+- **Mantén el hilo de JS libre**: evita cálculos pesados durante el render; memoiza y pagina listas largas.
+- **Anima en el hilo de UI** con [Reanimated](/docs/estilos/reanimated) en lugar de actualizar estado de React en cada frame.
+- **Elige librerías compatibles con la Nueva Arquitectura**. Hoy es la única disponible: revisa el directorio [reactnative.directory](https://reactnative.directory) antes de instalar.
+- **Mide antes de optimizar** con React Native DevTools y el monitor de rendimiento (lo vemos en [Depuración](/docs/calidad/depuracion)).
+
+### Errores comunes
+
+- Creer que React Native "compila JavaScript a nativo". No: tu JavaScript se ejecuta en Hermes y **controla** vistas nativas.
+- Pensar que todo es igual de rápido que nativo puro. Lo es para la mayoría de interfaces, pero el trabajo de CPU intensivo en JS sigue compitiendo con tu UI.
+
+### Cuándo usar otra solución
+
+Si una funcionalidad necesita procesamiento intensivo continuo (filtros de vídeo en tiempo real, audio de baja latencia), escribe esa parte como **módulo nativo** con la Expo Modules API y llámala desde JavaScript. React Native se diseñó para combinar ambos mundos.

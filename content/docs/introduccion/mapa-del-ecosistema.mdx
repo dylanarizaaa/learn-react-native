@@ -1,0 +1,125 @@
+---
+title: Mapa del ecosistema
+description: Cómo se relacionan React Native, Expo, TypeScript, NativeWind, Expo Router, TanStack Query, Zustand, React Hook Form, Zod y EAS, y cuándo usar cada uno.
+sidebarTitle: Mapa del ecosistema
+difficulty: principiante
+time: 12
+prerequisites:
+  - introduccion/que-es-expo
+related:
+  - arquitectura/arquitectura-de-carpetas
+  - datos/tanstack-query
+  - arquitectura/estado-global-zustand
+resources:
+  - title: React Native Directory
+    url: https://reactnative.directory
+  - title: Expo — Librerías y SDK
+    url: https://docs.expo.dev/versions/latest/
+keywords: [ecosistema, stack, librerías, decisiones, estado, servidor, cliente]
+---
+
+## Introducción conceptual
+
+Una app moderna no se construye con una sola librería. En este curso usamos un **stack coherente** en el que cada herramienta tiene una responsabilidad clara. Entender esa división evita el error más común de los principiantes: usar la herramienta equivocada para un problema (por ejemplo, guardar datos del servidor en un store global y sincronizarlos a mano).
+
+<Overview
+  purpose="Ver de un vistazo qué hace cada herramienta del stack y cómo encajan entre sí."
+  importance="Elegir la herramienta adecuada para cada tipo de estado y cada responsabilidad simplifica el código y evita errores de sincronización."
+  when="Al planificar un proyecto nuevo o cuando dudes dónde debería vivir un dato o una lógica."
+  problem="Evita sobrediseñar (añadir librerías que no hacen falta) o infradiseñar (resolver a mano lo que una librería ya resuelve bien)."
+/>
+
+## Explicación visual
+
+<Layers
+  layers={[
+    { title: 'Distribución', desc: 'Compilar y publicar', items: ['EAS Build', 'EAS Submit', 'EAS Update'], tone: 'muted' },
+    { title: 'Navegación', desc: 'Pantallas y URLs', items: ['Expo Router', 'Stack', 'Tabs', 'Rutas protegidas'] },
+    { title: 'Interfaz', desc: 'Componentes y estilos', items: ['React Native', 'NativeWind', 'Reanimated', 'Gesture Handler', 'expo-image'], tone: 'brand' },
+    { title: 'Formularios', desc: 'Entrada del usuario', items: ['React Hook Form', 'Zod'] },
+    { title: 'Estado del servidor', desc: 'Datos remotos', items: ['TanStack Query', 'fetch / Axios'] },
+    { title: 'Estado del cliente', desc: 'Datos de la app', items: ['useState', 'Context', 'Zustand'] },
+    { title: 'Persistencia', desc: 'Datos en el dispositivo', items: ['SecureStore', 'AsyncStorage', 'expo-sqlite', 'expo-file-system'] },
+    { title: 'Base', desc: 'Lenguaje y plataforma', items: ['TypeScript', 'React 19', 'Expo SDK 58'] },
+  ]}
+/>
+
+### ¿Qué herramienta uso para cada dato?
+
+| Tipo de dato | Ejemplo | Herramienta |
+| --- | --- | --- |
+| Estado local de UI | Un modal abierto, el texto de un buscador | `useState` |
+| Compartido en un subárbol, cambia poco | Tema, idioma, usuario autenticado | Context API |
+| Global del cliente, cambia a menudo | Carrito, filtros, preferencias | Zustand |
+| Viene de una API | Productos, pedidos, perfil | TanStack Query |
+| Formulario con validación | Registro, checkout | React Hook Form + Zod |
+| Secreto | Token de acceso, refresh token | expo-secure-store |
+| Preferencia persistente no sensible | Onboarding visto, tema elegido | AsyncStorage o `expo-sqlite/kv-store` |
+| Datos estructurados offline | Inventario, notas, ventas | expo-sqlite |
+
+## Ejemplo práctico
+
+Así se combinan varias piezas en una pantalla real: Expo Router para leer parámetros, TanStack Query para los datos del servidor, Zustand para el carrito (estado del cliente) y NativeWind para los estilos.
+
+```tsx title="src/app/productos/[id].tsx"
+import { useLocalSearchParams } from 'expo-router';
+import { useQuery } from '@tanstack/react-query';
+import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { getProduct } from '@/services/products';
+import { useCartStore } from '@/stores/cart-store';
+
+export default function ProductScreen() {
+  // 1. Navegación: el id viene de la URL /productos/123
+  const { id } = useLocalSearchParams<{ id: string }>();
+
+  // 2. Estado del servidor: caché, reintentos y estados de carga
+  const { data: product, isPending, isError } = useQuery({
+    queryKey: ['products', id],
+    queryFn: () => getProduct(id),
+  });
+
+  // 3. Estado del cliente: solo nos suscribimos a la acción que usamos
+  const addItem = useCartStore((state) => state.addItem);
+
+  if (isPending) return <ActivityIndicator className="mt-10" />;
+  if (isError) return <Text className="m-6 text-red-600">No se pudo cargar el producto.</Text>;
+
+  // 4. Interfaz con NativeWind
+  return (
+    <View className="flex-1 gap-4 bg-white p-6 dark:bg-zinc-950">
+      <Text className="text-2xl font-bold text-zinc-900 dark:text-white">{product.name}</Text>
+      <Text className="text-lg text-zinc-500">${product.price.toFixed(2)}</Text>
+      <Pressable
+        onPress={() => addItem(product)}
+        className="items-center rounded-xl bg-sky-600 py-3 active:opacity-80"
+      >
+        <Text className="font-semibold text-white">Añadir al carrito</Text>
+      </Pressable>
+    </View>
+  );
+}
+```
+
+## Explicación del código
+
+- **Expo Router** convierte el archivo `[id].tsx` en una ruta dinámica y `useLocalSearchParams` expone el parámetro tipado.
+- **TanStack Query** gestiona la petición: caché por `queryKey`, reintentos automáticos y los estados `isPending` e `isError`. No necesitas `useEffect` ni `useState` para los datos remotos.
+- **Zustand** guarda el carrito. El selector `(state) => state.addItem` hace que el componente no se vuelva a renderizar cuando cambian otros datos del store.
+- **NativeWind** aplica estilos con clases, incluido el modo oscuro (`dark:`).
+- La lógica de red vive en `services/products.ts`, separada de la pantalla (lo vemos en [Servicios y repositorios](/docs/arquitectura/servicios-y-repositorios)).
+
+## Buenas prácticas
+
+- **Separa estado del servidor y estado del cliente.** Es la decisión de arquitectura más rentable que puedes tomar.
+- **Empieza con lo mínimo** (`useState`, Expo Router) y añade librerías cuando aparezca el problema que resuelven.
+- **Una herramienta por responsabilidad**: evita tener Redux, Zustand y Context compitiendo por el mismo estado.
+
+### Errores comunes
+
+- Copiar respuestas de la API a un store global "para tenerlas a mano": duplicas la fuente de verdad y tendrás datos desactualizados.
+- Guardar tokens en AsyncStorage: no está cifrado. Usa SecureStore.
+- Usar Context para estado que cambia muchas veces por segundo: provoca renders en todo el subárbol.
+
+### Cuándo usar otra solución
+
+Este stack cubre la gran mayoría de apps. Alternativas válidas según el caso: **Redux Toolkit** si tu equipo ya lo domina, **Jotai** para estado atómico, **Apollo/urql** si tu backend es GraphQL, **Tamagui** o **Unistyles** como sistemas de estilos, y **Uniwind** como alternativa a NativeWind.

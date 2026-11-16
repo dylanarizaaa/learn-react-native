@@ -1,0 +1,133 @@
+---
+title: React Native vs desarrollo nativo
+description: Comparativa honesta entre React Native y Swift/Kotlin. Rendimiento, costes, acceso a APIs, equipo y cuándo conviene cada opción.
+difficulty: principiante
+time: 10
+prerequisites:
+  - introduccion/que-es-react-native
+related:
+  - introduccion/react-native-vs-flutter
+  - introduccion/como-funciona-react-native
+  - introduccion/expo-go-vs-development-builds
+resources:
+  - title: React Native — Integración con apps existentes
+    url: https://reactnative.dev/docs/integration-with-existing-apps
+  - title: Expo Modules API
+    url: https://docs.expo.dev/modules/overview/
+keywords: [swift, kotlin, swiftui, jetpack compose, nativo, comparativa]
+---
+
+## Introducción conceptual
+
+"Nativo" significa escribir la app con las herramientas oficiales de cada plataforma: **Swift/SwiftUI** con Xcode para iOS y **Kotlin/Jetpack Compose** con Android Studio para Android. React Native también produce interfaces nativas, pero la lógica y la UI se describen una sola vez en React.
+
+La pregunta útil no es "¿cuál es mejor?", sino **"¿qué necesita este producto y este equipo?"**.
+
+<Overview
+  purpose="Decidir con criterio técnico y de negocio entre una base de código compartida o dos aplicaciones nativas."
+  importance="Es una decisión que condiciona el equipo, los costes y la velocidad de entrega durante años."
+  when="Al iniciar un producto, al reescribir una app o al evaluar si incorporar React Native a una app nativa existente."
+  problem="Evita elegir por moda: cada enfoque tiene costes reales que conviene conocer de antemano."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="Desarrollo nativo" tone="neutral">
+    - Dos bases de código: Swift y Kotlin.
+    - Acceso inmediato a cada API nueva del sistema.
+    - Máximo control de rendimiento y memoria.
+    - Dos equipos o desarrolladores especializados.
+    - Funcionalidades que se implementan dos veces.
+  </Column>
+  <Column title="React Native + Expo" tone="brand">
+    - Una base de código en TypeScript (≈ 90 % compartido).
+    - UI con componentes nativos reales.
+    - Acceso a cualquier API nativa mediante módulos.
+    - Actualizaciones OTA sin pasar por la tienda.
+    - Un equipo con conocimientos de React.
+  </Column>
+</Columns>
+
+| Criterio | Nativo | React Native |
+| --- | --- | --- |
+| Rendimiento de UI típica | Excelente | Excelente (Fabric + Hermes) |
+| Tareas intensivas de CPU/GPU | Ideal | Mejor delegarlas en un módulo nativo |
+| Velocidad de desarrollo | Dos implementaciones | Una implementación, Fast Refresh |
+| APIs nuevas del sistema | Desde el día uno | Cuando exista un módulo (o lo escribes tú) |
+| Tamaño del equipo | Mayor | Menor |
+| Actualizaciones sin tienda | No | Sí, con EAS Update (solo JS y assets) |
+
+## Ejemplo práctico
+
+La misma pantalla mínima, un saludo con un botón, escrita en las tres tecnologías. Observa que la estructura mental (estado + vista declarativa) es casi idéntica: SwiftUI y Compose se inspiraron en el modelo de React.
+
+<CodeTabs>
+
+```tsx title="React Native (TSX)"
+import { useState } from 'react';
+import { Button, Text, View } from 'react-native';
+
+export default function Greeting() {
+  const [count, setCount] = useState(0);
+  return (
+    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 }}>
+      <Text style={{ fontSize: 22 }}>Pulsaste {count} veces</Text>
+      <Button title="Pulsar" onPress={() => setCount(count + 1)} />
+    </View>
+  );
+}
+```
+
+```swift title="iOS (SwiftUI)"
+import SwiftUI
+
+struct Greeting: View {
+    @State private var count = 0
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Text("Pulsaste \(count) veces").font(.title2)
+            Button("Pulsar") { count += 1 }
+        }
+    }
+}
+```
+
+```kotlin title="Android (Compose)"
+@Composable
+fun Greeting() {
+    var count by remember { mutableIntStateOf(0) }
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically)
+    ) {
+        Text("Pulsaste $count veces", fontSize = 22.sp)
+        Button(onClick = { count++ }) { Text("Pulsar") }
+    }
+}
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- En los tres casos hay **estado local** (`useState`, `@State`, `remember`) y una **vista declarativa** que se vuelve a calcular cuando cambia.
+- Con React Native escribes ese componente **una vez** y se ejecuta en iOS y Android. Con nativo, mantienes las dos versiones sincronizadas a mano.
+- Cuando necesites algo que solo existe en una plataforma, React Native permite escribir esa parte en Swift o Kotlin con la [Expo Modules API](https://docs.expo.dev/modules/overview/) y llamarla desde TypeScript. No es "todo o nada".
+
+## Buenas prácticas
+
+- **Evalúa el producto, no la tecnología.** Apps de negocio, formularios, listas, e-commerce, redes sociales o fintech encajan muy bien en React Native.
+- **Combina cuando haga falta.** Muchas empresas usan React Native para la mayoría de pantallas y módulos nativos para piezas críticas.
+- **Considera el equipo.** Si tu equipo ya domina React y TypeScript, la curva de entrada es mucho menor.
+
+### Errores comunes
+
+- Suponer que React Native "no puede" usar una API nativa: casi siempre existe un módulo de Expo o de la comunidad, y si no, puedes crearlo.
+- Elegir React Native y luego escribir la mitad de la app en nativo por desconocimiento: primero aprende los patrones de rendimiento de [Calidad y buenas prácticas](/docs/calidad/rendimiento).
+
+### Cuándo usar otra solución
+
+Elige nativo puro si construyes un juego, una app de edición multimedia en tiempo real, una app que depende sobre todo de funciones de sistema muy recientes (widgets complejos, realidad aumentada avanzada) o si ya tienes dos equipos nativos consolidados y sin intención de unificarlos.

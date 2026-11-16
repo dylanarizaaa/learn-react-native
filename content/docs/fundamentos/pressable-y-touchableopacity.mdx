@@ -1,0 +1,156 @@
+---
+title: Pressable y TouchableOpacity
+description: Cómo detectar toques con Pressable, dar feedback visual, ampliar el área táctil y por qué Pressable reemplaza a los componentes Touchable.
+sidebarTitle: Pressable y TouchableOpacity
+difficulty: principiante
+time: 12
+prerequisites:
+  - fundamentos/view-y-text
+related:
+  - sistema-de-componentes/button
+  - calidad/accesibilidad
+  - estilos/gesture-handler
+resources:
+  - title: React Native — Pressable
+    url: https://reactnative.dev/docs/pressable
+  - title: React Native — TouchableOpacity
+    url: https://reactnative.dev/docs/touchableopacity
+  - title: React Native — Accesibilidad
+    url: https://reactnative.dev/docs/accessibility
+keywords: [pressable, touchableopacity, onPress, onLongPress, hitSlop, android_ripple, feedback, toque]
+---
+
+## Introducción conceptual
+
+En móvil no hay `onClick` ni `:hover`: hay **toques**, **pulsaciones largas** y **gestos**. `Pressable` es el componente del núcleo para detectar interacciones y dar feedback mientras el dedo está sobre el elemento.
+
+Antes existían varios componentes `Touchable*` (`TouchableOpacity`, `TouchableHighlight`, `TouchableWithoutFeedback`). Siguen disponibles, pero **`Pressable` es la API recomendada**: unifica todos los casos y te deja decidir el feedback exacto.
+
+<Overview
+  purpose="Hacer interactivos botones, filas de listas, tarjetas o cualquier vista, con feedback visual al pulsar."
+  importance="Un feedback inmediato al toque es lo que hace que una app se sienta nativa y responsiva."
+  when="Siempre que un elemento deba responder a un toque. Para gestos continuos (arrastrar, pellizcar) usa Gesture Handler."
+  problem="Unifica la detección de toques en ambas plataformas, con área táctil configurable y estados de pulsación."
+/>
+
+## Explicación visual
+
+El ciclo de vida de una pulsación:
+
+<Flow
+  steps={[
+    { title: 'onPressIn', desc: 'El dedo toca' },
+    { title: 'pressed = true', desc: 'Feedback visual', tone: 'brand' },
+    { title: 'onPressOut', desc: 'El dedo se levanta' },
+    { title: 'onPress', desc: 'Si fue un toque corto' },
+  ]}
+  caption="Si el dedo se mantiene más de 500 ms (delayLongPress) se dispara onLongPress en lugar de onPress."
+/>
+
+<Columns>
+  <Column title="Pressable" tone="good">
+    - Estilo como función: `({ pressed }) => …`
+    - `onLongPress`, `hitSlop`, `android_ripple`.
+    - Hijos como función para cambiar contenido.
+    - API recomendada.
+  </Column>
+  <Column title="TouchableOpacity">
+    - Baja la opacidad automáticamente.
+    - Menos control sobre el feedback.
+    - Existe por compatibilidad con código antiguo.
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+Una fila de lista reutilizable con feedback en ambas plataformas, pulsación larga, área táctil ampliada y accesibilidad:
+
+```tsx title="src/components/list-item.tsx"
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+
+type ListItemProps = {
+  title: string;
+  subtitle?: string;
+  onPress: () => void;
+  onLongPress?: () => void;
+  disabled?: boolean;
+};
+
+export function ListItem({ title, subtitle, onPress, onLongPress, disabled = false }: ListItemProps) {
+  return (
+    <Pressable
+      onPress={onPress}
+      onLongPress={onLongPress}
+      delayLongPress={400}
+      disabled={disabled}
+      hitSlop={8}
+      android_ripple={{ color: 'rgba(0,0,0,0.08)' }}
+      accessibilityRole="button"
+      accessibilityState={{ disabled }}
+      accessibilityHint={onLongPress ? 'Mantén pulsado para ver más opciones' : undefined}
+      style={({ pressed }) => [
+        styles.item,
+        // En iOS no hay ripple: usamos un fondo al pulsar.
+        pressed && Platform.OS === 'ios' && styles.pressed,
+        disabled && styles.disabled,
+      ]}
+    >
+      {({ pressed }) => (
+        <View style={styles.content}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.title}>{title}</Text>
+            {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+          </View>
+          <Text style={[styles.chevron, pressed && { transform: [{ translateX: 2 }] }]}>›</Text>
+        </View>
+      )}
+    </Pressable>
+  );
+}
+
+const styles = StyleSheet.create({
+  item: { paddingHorizontal: 16, paddingVertical: 14, backgroundColor: '#fff' },
+  pressed: { backgroundColor: '#f3f4f6' },
+  disabled: { opacity: 0.5 },
+  content: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  title: { fontSize: 16, fontWeight: '500' },
+  subtitle: { fontSize: 13, color: '#6b7280', marginTop: 2 },
+  chevron: { fontSize: 22, color: '#9ca3af' },
+});
+```
+
+Uso:
+
+```tsx
+<ListItem
+  title="Notificaciones"
+  subtitle="Push y correo"
+  onPress={() => router.push('/ajustes/notificaciones')}
+  onLongPress={() => setMenuVisible(true)}
+/>
+```
+
+## Explicación del código
+
+- **`style` como función** recibe `{ pressed }` y devuelve un array de estilos. Es la forma más eficiente de dar feedback, sin `useState`.
+- **`children` como función** también recibe `pressed`: útil para cambiar un icono o desplazar un elemento mientras se pulsa.
+- **`android_ripple`** usa el efecto de onda nativo de Material Design en Android. En iOS no existe, así que combinamos con un fondo condicionado por `Platform.OS`.
+- **`hitSlop={8}`** amplía el área táctil 8 puntos en cada dirección sin cambiar el diseño. Las guías de Apple y Google recomiendan áreas de al menos 44×44 pt / 48×48 dp.
+- **`accessibilityRole` y `accessibilityState`** comunican a VoiceOver y TalkBack que es un botón y si está deshabilitado.
+
+## Buenas prácticas
+
+- **Crea un `Button` propio** sobre `Pressable` con variantes y estado de carga, y úsalo en toda la app ([lo construimos aquí](/docs/sistema-de-componentes/button)).
+- **Da feedback siempre**: opacidad, color de fondo, escala o ripple. Un toque sin respuesta visual parece un error.
+- **Evita dobles envíos**: deshabilita el botón mientras se procesa una acción asíncrona.
+- **Combina con hápticos** (`expo-haptics`) en acciones importantes para reforzar la respuesta.
+
+### Errores comunes
+
+- Áreas táctiles demasiado pequeñas (iconos de 16 px sin `hitSlop` ni padding).
+- Poner un `Pressable` dentro de otro sin pensar en cuál recibe el toque: el más interno gana.
+- Usar el `Button` del núcleo para diseños personalizados: casi no admite estilos.
+
+### Cuándo usar otra solución
+
+Para arrastrar, deslizar para borrar, pellizcar o gestos simultáneos, usa [Gesture Handler](/docs/estilos/gesture-handler) junto con Reanimated. Para animaciones de escala al pulsar más elaboradas, combina `Pressable` con [Reanimated](/docs/estilos/reanimated).

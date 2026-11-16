@@ -1,0 +1,155 @@
+---
+title: Flexbox y diseño responsive
+description: Las propiedades de Flexbox que usarás a diario, sus diferencias con la web y cómo adaptar el layout al tamaño de pantalla con useWindowDimensions.
+difficulty: principiante
+time: 20
+prerequisites:
+  - fundamentos/stylesheet
+related:
+  - estilos/flexbox
+  - estilos/dimensiones
+  - estilos/diseno-adaptable
+resources:
+  - title: React Native — Layout con Flexbox
+    url: https://reactnative.dev/docs/flexbox
+  - title: React Native — useWindowDimensions
+    url: https://reactnative.dev/docs/usewindowdimensions
+  - title: Yoga — Playground
+    url: https://www.yogalayout.dev/playground
+keywords: [flexbox, flexDirection, justifyContent, alignItems, flex, gap, flexWrap, useWindowDimensions, responsive, grid]
+---
+
+## Introducción conceptual
+
+Todo el layout de React Native se basa en **Flexbox**, implementado por el motor <Term slug="yoga">Yoga</Term>. Si conoces Flexbox de la web, ya sabes el 90 %. Las diferencias más importantes:
+
+- `flexDirection` es **`column`** por defecto (en la web es `row`).
+- `alignContent` es `flex-start` por defecto y `flexShrink` es `0`.
+- `flex` acepta un solo número: `flex: 1` significa "ocupa el espacio disponible".
+
+Con cinco propiedades (`flexDirection`, `justifyContent`, `alignItems`, `flex` y `gap`) construirás la mayoría de pantallas.
+
+<Overview
+  purpose="Distribuir y alinear elementos en filas y columnas que se adaptan a cualquier tamaño de pantalla."
+  importance="Las pantallas de móviles varían mucho; un layout basado en Flexbox se adapta sin cálculos manuales."
+  when="En cada contenedor: cabeceras, filas de lista, tarjetas, cuadrículas y pantallas completas."
+  problem="Evita posicionar elementos con coordenadas fijas que se rompen en otros dispositivos u orientaciones."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="Eje principal (justifyContent)">
+    - Sigue a `flexDirection`.
+    - `flex-start`, `center`, `flex-end`.
+    - `space-between`, `space-around`, `space-evenly`.
+  </Column>
+  <Column title="Eje cruzado (alignItems)">
+    - Perpendicular al principal.
+    - `stretch` (por defecto), `flex-start`, `center`, `flex-end`, `baseline`.
+    - `alignSelf` lo sobrescribe en un hijo.
+  </Column>
+</Columns>
+
+<Flow
+  steps={[
+    { title: 'flexDirection', desc: 'column | row' },
+    { title: 'justifyContent', desc: 'Reparte en el eje principal' },
+    { title: 'alignItems', desc: 'Alinea en el eje cruzado' },
+    { title: 'flex / gap', desc: 'Tamaños y separación', tone: 'brand' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+Una cabecera, una cuadrícula responsive de tarjetas y un pie fijo. El número de columnas depende del ancho de la ventana:
+
+```tsx title="src/app/catalogo.tsx"
+import { ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+
+const ITEMS = ['Café', 'Té', 'Jugo', 'Agua', 'Batido', 'Limonada', 'Mate', 'Chocolate'];
+const GAP = 12;
+const PADDING = 16;
+
+export default function CatalogScreen() {
+  const { width } = useWindowDimensions();
+
+  // 2 columnas en teléfonos, 3 en teléfonos grandes en horizontal, 4 en tablets
+  const columns = width >= 900 ? 4 : width >= 600 ? 3 : 2;
+  const itemWidth = (width - PADDING * 2 - GAP * (columns - 1)) / columns;
+
+  return (
+    <View style={styles.screen}>
+      {/* Fila: título a la izquierda, contador a la derecha */}
+      <View style={styles.header}>
+        <Text style={styles.title}>Bebidas</Text>
+        <Text style={styles.count}>{ITEMS.length} productos</Text>
+      </View>
+
+      <ScrollView contentContainerStyle={styles.grid}>
+        {ITEMS.map((item) => (
+          <View key={item} style={[styles.card, { width: itemWidth }]}>
+            <View style={styles.thumbnail} />
+            <Text style={styles.cardTitle}>{item}</Text>
+          </View>
+        ))}
+      </ScrollView>
+
+      {/* Pie: ocupa el ancho y se queda abajo porque ScrollView tiene flex: 1 */}
+      <View style={styles.footer}>
+        <Text style={styles.footerText}>Total: $0</Text>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#f9fafb' },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'baseline',
+    padding: PADDING,
+  },
+  title: { fontSize: 24, fontWeight: '700' },
+  count: { color: '#6b7280' },
+  grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: GAP,
+    paddingHorizontal: PADDING,
+    paddingBottom: PADDING,
+  },
+  card: { backgroundColor: '#fff', borderRadius: 14, padding: 10, gap: 8 },
+  thumbnail: { aspectRatio: 1, borderRadius: 10, backgroundColor: '#e0f2fe' },
+  cardTitle: { fontWeight: '600' },
+  footer: { padding: PADDING, borderTopWidth: 1, borderColor: '#e5e7eb', backgroundColor: '#fff' },
+  footerText: { fontSize: 16, fontWeight: '600', textAlign: 'right' },
+});
+```
+
+## Explicación del código
+
+- **`screen` con `flex: 1`** ocupa toda la pantalla. Dentro, la cabecera y el pie tienen su altura natural y el `ScrollView` (que por defecto se expande) ocupa el resto.
+- **`header`** usa `flexDirection: 'row'` + `justifyContent: 'space-between'` para separar título y contador, y `alignItems: 'baseline'` para alinear la base de ambos textos.
+- **`grid`** combina `flexDirection: 'row'`, `flexWrap: 'wrap'` y `gap` para crear una cuadrícula. `gap` separa elementos sin márgenes en los bordes.
+- **`useWindowDimensions`** devuelve el ancho y alto actuales y **se actualiza** al rotar el dispositivo o cambiar el tamaño de la ventana (tablets, plegables). Con él calculamos columnas y ancho de cada tarjeta.
+- **`aspectRatio: 1`** crea miniaturas cuadradas que escalan con el ancho de la tarjeta.
+
+## Buenas prácticas
+
+- **Piensa en filas y columnas anidadas**: casi cualquier diseño se descompone así.
+- **Usa `gap`** en lugar de márgenes entre hermanos.
+- **Usa `flex: 1` con cuidado**: un hijo con `flex: 1` dentro de un padre sin altura definida no tiene espacio que ocupar.
+- **Diseña para el ancho más pequeño** (≈ 360 dp) y amplía con *breakpoints*, como harías *mobile first* en la web.
+- **Para listas de datos** usa `FlatList` con `numColumns` en lugar de `ScrollView` + `flexWrap`.
+
+### Errores comunes
+
+- Olvidar que el eje principal es vertical: `justifyContent: 'center'` centra **verticalmente** en un contenedor en columna.
+- Usar `Dimensions.get('window')` en el cuerpo del módulo: no se actualiza al rotar. Prefiere el hook `useWindowDimensions`.
+- Elementos que desbordan en filas: añade `flexShrink: 1` al texto que debe ajustarse.
+
+### Cuándo usar otra solución
+
+Para layouts que dependen del tamaño de un contenedor concreto (no de la ventana), mide con `onLayout`. Profundizamos en `position`, `zIndex`, `flexBasis` y patrones avanzados en [Flexbox en profundidad](/docs/estilos/flexbox) y en adaptación a tablets en [Diseño adaptable](/docs/estilos/diseno-adaptable).

@@ -1,0 +1,139 @@
+---
+title: React Native vs Flutter
+description: Dos enfoques multiplataforma muy distintos. Lenguaje, renderizado, ecosistema, web y perfil de equipo para elegir con criterio.
+difficulty: principiante
+time: 10
+prerequisites:
+  - introduccion/que-es-react-native
+related:
+  - introduccion/react-native-vs-nativo
+  - introduccion/como-funciona-react-native
+  - introduccion/mapa-del-ecosistema
+resources:
+  - title: React Native — Documentación
+    url: https://reactnative.dev/
+  - title: Flutter — Arquitectura
+    url: https://docs.flutter.dev/resources/architectural-overview
+keywords: [flutter, dart, skia, impeller, multiplataforma, comparativa]
+---
+
+## Introducción conceptual
+
+React Native y Flutter resuelven el mismo problema (una base de código para Android e iOS) con filosofías opuestas:
+
+- **React Native** usa **componentes nativos de la plataforma**. Un `<Switch>` es el switch real de iOS o de Android.
+- **Flutter** **dibuja cada píxel** con su propio motor gráfico (Impeller). Un `Switch` es un widget pintado por Flutter que imita el aspecto de cada plataforma.
+
+Ninguno es "más rápido" en términos absolutos para apps de producto: ambos alcanzan 60–120 fps. Las diferencias reales están en el lenguaje, el ecosistema y el tipo de interfaz que quieres construir.
+
+<Overview
+  purpose="Comparar las dos opciones multiplataforma más usadas para decidir cuál encaja con tu proyecto y tu equipo."
+  importance="Cambiar de framework después de meses de desarrollo es costoso; conviene entender las diferencias antes."
+  when="Al elegir tecnología para un producto nuevo o al formar un equipo de desarrollo móvil."
+  problem="Evita decisiones basadas en benchmarks aislados en lugar de en necesidades reales."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="React Native" tone="brand">
+    - Lenguaje: **TypeScript / JavaScript**.
+    - Renderiza **vistas nativas** (Fabric).
+    - Ecosistema: npm, el mayor repositorio de paquetes.
+    - Web real con React Native Web y Expo Router.
+    - Actualizaciones OTA del JavaScript.
+  </Column>
+  <Column title="Flutter">
+    - Lenguaje: **Dart**.
+    - Dibuja la UI con su motor (Impeller).
+    - Ecosistema: pub.dev, más pequeño.
+    - Web y escritorio dibujados en canvas.
+    - Las actualizaciones requieren pasar por la tienda (salvo soluciones de terceros).
+  </Column>
+</Columns>
+
+| Aspecto | React Native | Flutter |
+| --- | --- | --- |
+| Aspecto visual | Nativo por defecto (cambia con el SO) | Idéntico en todas las plataformas |
+| Curva de aprendizaje | Baja si sabes React | Requiere aprender Dart y su modelo de widgets |
+| Accesibilidad | Hereda la del sistema | Implementada por el framework |
+| Reutilizar código web | Lógica, tipos, validaciones, hooks | Limitado |
+| Contratación | Gran mercado de desarrolladores React | Mercado más especializado |
+
+## Ejemplo práctico
+
+Una lista de productos en ambos frameworks. Fíjate en la equivalencia de conceptos: `FlatList` ↔ `ListView.builder`, props ↔ parámetros del constructor, `useState` ↔ `StatefulWidget`.
+
+<CodeTabs>
+
+```tsx title="React Native"
+import { FlatList, Text, View } from 'react-native';
+
+type Product = { id: string; name: string; price: number };
+
+export function ProductList({ products }: { products: Product[] }) {
+  return (
+    <FlatList
+      data={products}
+      keyExtractor={(item) => item.id}
+      renderItem={({ item }) => (
+        <View style={{ padding: 16, borderBottomWidth: 1, borderColor: '#e5e7eb' }}>
+          <Text style={{ fontWeight: '600' }}>{item.name}</Text>
+          <Text>${item.price.toFixed(2)}</Text>
+        </View>
+      )}
+    />
+  );
+}
+```
+
+```dart title="Flutter"
+class Product {
+  const Product({required this.id, required this.name, required this.price});
+  final String id;
+  final String name;
+  final double price;
+}
+
+class ProductList extends StatelessWidget {
+  const ProductList({super.key, required this.products});
+  final List<Product> products;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView.builder(
+      itemCount: products.length,
+      itemBuilder: (context, index) {
+        final item = products[index];
+        return ListTile(
+          title: Text(item.name),
+          subtitle: Text('\$${item.price.toStringAsFixed(2)}'),
+        );
+      },
+    );
+  }
+}
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- Ambos usan **listas virtualizadas**: solo construyen los elementos visibles (`FlatList` y `ListView.builder`).
+- En React Native el componente es una **función** que recibe props tipadas con TypeScript. En Flutter es una **clase** con un método `build`.
+- El estilo en React Native se expresa con objetos de estilo (o clases de [NativeWind](/docs/estilos/nativewind)); en Flutter, con widgets envolventes (`Padding`, `Container`…).
+
+## Buenas prácticas
+
+- **Si tu equipo conoce React o tienes una web en React**, React Native maximiza la reutilización de conocimiento, tipos, validaciones (Zod) y lógica de negocio.
+- **Si necesitas una UI de marca idéntica píxel a píxel en todas las plataformas** y no te importa aprender Dart, Flutter es una opción sólida.
+- **Valora el ecosistema de tu dominio**: SDKs de pagos, mapas, analítica o autenticación suelen tener soporte oficial para ambos, pero conviene comprobarlo.
+
+### Errores comunes
+
+- Comparar con artículos antiguos: React Native cambió de forma profunda con la Nueva Arquitectura (JSI, Fabric) y Hermes, y Flutter con Impeller.
+- Elegir por "rendimiento" sin medir tu caso: para apps de producto, la diferencia rara vez es el factor decisivo.
+
+### Cuándo usar otra solución
+
+Si tu producto es principalmente un juego o una experiencia gráfica muy personalizada, valora motores como Unity o Godot. Si necesitas exprimir una única plataforma al máximo, considera [desarrollo nativo](/docs/introduccion/react-native-vs-nativo).

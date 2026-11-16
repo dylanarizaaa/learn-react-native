@@ -1,0 +1,187 @@
+---
+title: ScrollView y FlatList
+description: Contenido desplazable y listas virtualizadas. Cuándo usar cada uno, props esenciales, pull-to-refresh, listas vacías y SectionList.
+difficulty: principiante
+time: 20
+prerequisites:
+  - fundamentos/view-y-text
+  - react-typescript/props
+related:
+  - calidad/optimizacion-de-flatlist
+  - datos/paginacion
+  - datos/estados-de-carga-y-vacios
+resources:
+  - title: React Native — ScrollView
+    url: https://reactnative.dev/docs/scrollview
+  - title: React Native — FlatList
+    url: https://reactnative.dev/docs/flatlist
+  - title: React Native — SectionList
+    url: https://reactnative.dev/docs/sectionlist
+keywords: [scrollview, flatlist, sectionlist, virtualización, renderItem, keyExtractor, onRefresh, onEndReached, ListEmptyComponent]
+---
+
+## Introducción conceptual
+
+En móvil casi todo se desplaza. React Native ofrece dos enfoques:
+
+- **`ScrollView`** renderiza **todos** sus hijos de una vez. Es simple y perfecto para contenido corto: un formulario, una pantalla de ajustes, el detalle de un producto.
+- **`FlatList`** es una lista **virtualizada**: solo renderiza los elementos visibles (más un margen) y desmonta los que salen de pantalla. Es la opción para colecciones de datos de longitud variable o grande.
+
+<Overview
+  purpose="Mostrar contenido que no cabe en la pantalla y colecciones de datos de cualquier tamaño."
+  importance="Una lista de 1.000 elementos en un ScrollView crea 1.000 vistas a la vez: la pantalla tarda en abrir y puede agotar la memoria."
+  when="ScrollView para contenido corto y conocido; FlatList (o SectionList) para datos que vienen de una API o base de datos."
+  problem="La virtualización mantiene constante el coste de renderizado aunque la lista crezca."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="ScrollView">
+    - Renderiza todos los hijos al montar.
+    - Ideal para menos de unas decenas de elementos.
+    - Admite cualquier mezcla de componentes.
+    - Uso: formularios, ajustes, detalles.
+  </Column>
+  <Column title="FlatList" tone="brand">
+    - Renderiza solo lo visible + margen.
+    - Recibe `data` y una función `renderItem`.
+    - Incluye cabecera, pie, vacío, separadores, refresco y paginación.
+    - Uso: feeds, catálogos, chats, resultados.
+  </Column>
+</Columns>
+
+<Flow
+  steps={[
+    { title: 'data[]', desc: '1.000 elementos' },
+    { title: 'Ventana visible', desc: '≈ 10 elementos', tone: 'brand' },
+    { title: 'Margen', desc: 'Renderizado por adelantado' },
+    { title: 'Fuera de ventana', desc: 'Desmontados', tone: 'muted' },
+  ]}
+  caption="FlatList calcula qué elementos están cerca de la vista y solo monta esos."
+/>
+
+## Ejemplo práctico
+
+Una lista de contactos con búsqueda, separadores, estado vacío, cabecera y *pull-to-refresh*:
+
+```tsx title="src/app/contactos.tsx"
+import { useCallback, useMemo, useState } from 'react';
+import { FlatList, StyleSheet, Text, TextInput, View, type ListRenderItem } from 'react-native';
+
+type Contact = { id: string; name: string; phone: string };
+
+const INITIAL: Contact[] = Array.from({ length: 200 }, (_, i) => ({
+  id: String(i + 1),
+  name: `Contacto ${i + 1}`,
+  phone: `+56 9 ${String(10000000 + i * 137).slice(0, 8)}`,
+}));
+
+function ContactRow({ contact }: { contact: Contact }) {
+  return (
+    <View style={styles.row}>
+      <Text style={styles.name}>{contact.name}</Text>
+      <Text style={styles.phone}>{contact.phone}</Text>
+    </View>
+  );
+}
+
+export default function ContactsScreen() {
+  const [contacts, setContacts] = useState(INITIAL);
+  const [query, setQuery] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+
+  const filtered = useMemo(
+    () => contacts.filter((c) => c.name.toLowerCase().includes(query.trim().toLowerCase())),
+    [contacts, query],
+  );
+
+  const renderItem: ListRenderItem<Contact> = useCallback(({ item }) => <ContactRow contact={item} />, []);
+
+  async function handleRefresh() {
+    setRefreshing(true);
+    // Aquí llamarías a tu API. Simulamos una espera.
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    setContacts([...INITIAL].reverse());
+    setRefreshing(false);
+  }
+
+  return (
+    <FlatList
+      data={filtered}
+      keyExtractor={(item) => item.id}
+      renderItem={renderItem}
+      ItemSeparatorComponent={() => <View style={styles.separator} />}
+      ListHeaderComponent={
+        <TextInput
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Buscar contacto…"
+          style={styles.search}
+          clearButtonMode="while-editing"
+        />
+      }
+      ListEmptyComponent={<Text style={styles.empty}>No hay contactos que coincidan.</Text>}
+      refreshing={refreshing}
+      onRefresh={handleRefresh}
+      keyboardShouldPersistTaps="handled"
+      contentContainerStyle={styles.content}
+    />
+  );
+}
+
+const styles = StyleSheet.create({
+  content: { padding: 16, flexGrow: 1 },
+  search: { borderWidth: 1, borderColor: '#d1d5db', borderRadius: 10, padding: 12, marginBottom: 12 },
+  row: { paddingVertical: 12 },
+  name: { fontSize: 16, fontWeight: '600' },
+  phone: { color: '#6b7280', marginTop: 2 },
+  separator: { height: StyleSheet.hairlineWidth, backgroundColor: '#e5e7eb' },
+  empty: { textAlign: 'center', marginTop: 40, color: '#6b7280' },
+});
+```
+
+## Explicación del código
+
+- **`data`** es el array y **`renderItem`** recibe `{ item, index }` y devuelve el elemento. El tipo `ListRenderItem<Contact>` tipa `item` automáticamente.
+- **`keyExtractor`** devuelve una clave estable y única por elemento. Usa el id de tus datos, nunca el índice si la lista puede reordenarse o filtrarse.
+- **`useMemo`** evita recalcular el filtro en cada render, y **`useCallback`** mantiene estable `renderItem` para que la lista no tenga que volver a renderizar las filas sin necesidad.
+- **`ListHeaderComponent`**, **`ListEmptyComponent`** e **`ItemSeparatorComponent`** cubren los casos típicos sin lógica extra.
+- **`refreshing` + `onRefresh`** activan el gesto de deslizar hacia abajo para refrescar.
+- **`flexGrow: 1`** en `contentContainerStyle` permite que el estado vacío se centre en el espacio disponible.
+- **`keyboardShouldPersistTaps="handled"`** evita que el primer toque en una fila solo sirva para cerrar el teclado.
+
+### SectionList para datos agrupados
+
+```tsx
+import { SectionList, Text } from 'react-native';
+
+const sections = [
+  { title: 'A', data: ['Ana', 'Andrés'] },
+  { title: 'B', data: ['Beatriz', 'Bruno'] },
+];
+
+<SectionList
+  sections={sections}
+  keyExtractor={(item) => item}
+  renderItem={({ item }) => <Text style={{ padding: 12 }}>{item}</Text>}
+  renderSectionHeader={({ section }) => <Text style={{ fontWeight: '700', padding: 8 }}>{section.title}</Text>}
+  stickySectionHeadersEnabled
+/>;
+```
+
+## Buenas prácticas
+
+- **Nunca anides una `FlatList` vertical dentro de un `ScrollView` vertical**: pierdes la virtualización. Usa `ListHeaderComponent` y `ListFooterComponent` para el contenido extra.
+- **Extrae la fila a un componente** y mantenlo ligero. Optimizaciones avanzadas (`getItemLayout`, `windowSize`, FlashList) en [Optimización de FlatList](/docs/calidad/optimizacion-de-flatlist).
+- **Pagina** listas que vienen de una API con `onEndReached` (lo vemos en [Paginación](/docs/datos/paginacion)).
+
+### Errores comunes
+
+- Usar el índice como `key`: provoca filas con estado equivocado al filtrar o reordenar.
+- Mostrar 300 elementos con `ScrollView` + `map`: la pantalla tarda en abrir y consume mucha memoria.
+- Olvidar `flex: 1` en el contenedor padre: la lista no tiene altura y no se desplaza.
+
+### Cuándo usar otra solución
+
+Para listas muy largas o con celdas complejas, **FlashList** de Shopify (v2, incluido en el SDK de Expo) recicla celdas y suele rendir mejor. Para cuadrículas usa `numColumns` en `FlatList` o el `masonry` de FlashList.

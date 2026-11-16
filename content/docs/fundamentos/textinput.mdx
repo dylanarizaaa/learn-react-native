@@ -1,0 +1,178 @@
+---
+title: TextInput
+description: Campos de texto controlados, tipos de teclado, autocompletado, contraseñas, saltar entre campos y evitar que el teclado tape el formulario.
+difficulty: principiante
+time: 18
+prerequisites:
+  - fundamentos/view-y-text
+  - react-typescript/usestate
+related:
+  - sistema-de-componentes/input
+  - sistema-de-componentes/formularios
+  - react-typescript/useref
+resources:
+  - title: React Native — TextInput
+    url: https://reactnative.dev/docs/textinput
+  - title: React Native — KeyboardAvoidingView
+    url: https://reactnative.dev/docs/keyboardavoidingview
+keywords: [textinput, teclado, keyboardType, inputMode, secureTextEntry, autoComplete, onSubmitEditing, KeyboardAvoidingView, formulario]
+---
+
+## Introducción conceptual
+
+`TextInput` es el campo de texto nativo. Además del valor, controla **qué teclado aparece**, **cómo se autocompleta**, **qué hace la tecla de retorno** y **si el texto es una contraseña**. Configurarlo bien marca una gran diferencia en la experiencia: un teclado numérico para un teléfono o el autocompletado de contraseñas del sistema ahorran tiempo y errores.
+
+Normalmente se usa como <Term slug="componente-controlado">componente controlado</Term>: el valor vive en el estado de React (`value`) y se actualiza con `onChangeText`.
+
+<Overview
+  purpose="Recoger texto del usuario con el teclado, el autocompletado y el comportamiento adecuados a cada dato."
+  importance="Los formularios son el punto donde más usuarios abandonan; un teclado o autocompletado incorrecto añade fricción."
+  when="En login, registro, búsqueda, chat, formularios de alta y cualquier entrada de texto."
+  problem="Resuelve la entrada de texto nativa con soporte de gestores de contraseñas, autocorrección y accesibilidad."
+/>
+
+## Explicación visual
+
+| Dato | Props recomendadas |
+| --- | --- |
+| Email | `inputMode="email"`, `autoComplete="email"`, `autoCapitalize="none"` |
+| Contraseña | `secureTextEntry`, `autoComplete="current-password"` o `"new-password"` |
+| Teléfono | `inputMode="tel"`, `autoComplete="tel"` |
+| Importe | `inputMode="decimal"` |
+| Código SMS | `inputMode="numeric"`, `autoComplete="one-time-code"`, `maxLength={6}` |
+| Búsqueda | `enterKeyHint="search"`, `returnKeyType="search"` |
+| Texto largo | `multiline`, `textAlignVertical="top"` |
+
+<Flow
+  steps={[
+    { title: 'Email', desc: 'enterKeyHint=next' },
+    { title: 'onSubmitEditing', desc: 'passwordRef.focus()', tone: 'brand' },
+    { title: 'Contraseña', desc: 'enterKeyHint=done' },
+    { title: 'onSubmitEditing', desc: 'Enviar formulario', tone: 'brand' },
+  ]}
+  caption="Encadenar campos con refs permite completar el formulario sin tocar la pantalla."
+/>
+
+## Ejemplo práctico
+
+Un formulario de inicio de sesión con teclado adecuado, salto entre campos y el teclado sin tapar el botón:
+
+```tsx title="src/app/login.tsx"
+import { useRef, useState } from 'react';
+import {
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+} from 'react-native';
+
+export default function LoginScreen() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const passwordRef = useRef<TextInput>(null);
+
+  const canSubmit = email.includes('@') && password.length >= 8;
+
+  function handleSubmit() {
+    if (!canSubmit) return;
+    // Aquí llamarías a tu servicio de autenticación.
+    console.log({ email });
+  }
+
+  return (
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+        <Text style={styles.title}>Inicia sesión</Text>
+
+        <Text style={styles.label} nativeID="email-label">
+          Email
+        </Text>
+        <TextInput
+          value={email}
+          onChangeText={setEmail}
+          placeholder="tu@email.com"
+          inputMode="email"
+          autoComplete="email"
+          textContentType="emailAddress"
+          autoCapitalize="none"
+          autoCorrect={false}
+          enterKeyHint="next"
+          submitBehavior="submit"
+          onSubmitEditing={() => passwordRef.current?.focus()}
+          accessibilityLabelledBy="email-label"
+          style={styles.input}
+        />
+
+        <Text style={styles.label}>Contraseña</Text>
+        <TextInput
+          ref={passwordRef}
+          value={password}
+          onChangeText={setPassword}
+          placeholder="Mínimo 8 caracteres"
+          secureTextEntry={!showPassword}
+          autoComplete="current-password"
+          textContentType="password"
+          enterKeyHint="done"
+          onSubmitEditing={handleSubmit}
+          accessibilityLabel="Contraseña"
+          style={styles.input}
+        />
+        <Pressable onPress={() => setShowPassword((v) => !v)} hitSlop={8}>
+          <Text style={styles.link}>{showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}</Text>
+        </Pressable>
+
+        <Pressable
+          onPress={handleSubmit}
+          disabled={!canSubmit}
+          accessibilityRole="button"
+          accessibilityState={{ disabled: !canSubmit }}
+          style={[styles.button, !canSubmit && { opacity: 0.5 }]}
+        >
+          <Text style={styles.buttonText}>Entrar</Text>
+        </Pressable>
+      </ScrollView>
+    </KeyboardAvoidingView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flexGrow: 1, justifyContent: 'center', padding: 24, gap: 8 },
+  title: { fontSize: 28, fontWeight: '700', marginBottom: 16 },
+  label: { fontSize: 14, fontWeight: '500', marginTop: 8 },
+  input: { borderWidth: 1, borderColor: '#d1d5db', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16 },
+  link: { color: '#0284c7', fontWeight: '500', marginTop: 4 },
+  button: { backgroundColor: '#111827', borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginTop: 16 },
+  buttonText: { color: '#fff', fontWeight: '600', fontSize: 16 },
+});
+```
+
+## Explicación del código
+
+- **`value` + `onChangeText`** convierten el campo en controlado. `onChangeText` recibe directamente el string (no un evento).
+- **`inputMode`** elige el teclado (equivalente moderno y multiplataforma de `keyboardType`). **`enterKeyHint`** cambia la etiqueta de la tecla de retorno.
+- **`autoComplete` y `textContentType`** (iOS) activan el autocompletado del sistema y los gestores de contraseñas.
+- **`useRef<TextInput>`** da acceso al campo nativo para llamar a `focus()`. **`submitBehavior="submit"`** mantiene el teclado abierto al pasar al siguiente campo.
+- **`KeyboardAvoidingView`** con `behavior="padding"` en iOS desplaza el contenido para que el teclado no lo tape. En Android, con *edge-to-edge*, el sistema ajusta la ventana; si necesitas más control, usa la librería `react-native-keyboard-controller`.
+- **`keyboardShouldPersistTaps="handled"`** hace que tocar el botón con el teclado abierto ejecute la acción en lugar de solo cerrar el teclado.
+- **`accessibilityLabelledBy`** (Android) y **`accessibilityLabel`** vinculan cada campo con su etiqueta para los lectores de pantalla.
+
+## Buenas prácticas
+
+- **Un componente `Input` reutilizable** con etiqueta, error y estados evita repetir estas props en cada formulario ([lo construimos aquí](/docs/sistema-de-componentes/input)).
+- **Para formularios con varias reglas**, usa React Hook Form + Zod en lugar de un `useState` por campo ([Formularios](/docs/sistema-de-componentes/formularios)).
+- **Valida al salir del campo o al enviar**, no en cada tecla: mostrar errores mientras el usuario escribe resulta molesto.
+- **Muestra la etiqueta siempre**: el `placeholder` desaparece al escribir y no sustituye a una etiqueta.
+
+### Errores comunes
+
+- Poner `value` sin `onChangeText`: el campo queda bloqueado.
+- Usar `autoCapitalize` por defecto en emails: el teclado escribe "Tu@email.com".
+- Formularios largos sin `ScrollView`: con el teclado abierto, los últimos campos quedan inaccesibles.
+
+### Cuándo usar otra solución
+
+Para campos con máscara (tarjetas de crédito, RUT, fechas) usa una librería de máscaras sobre `TextInput` o formatea en `onChangeText`. Para selección de fechas usa un selector nativo en lugar de texto libre.
