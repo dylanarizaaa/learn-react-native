@@ -1,0 +1,340 @@
+---
+title: Aplicación con notificaciones push
+sidebarTitle: Notificaciones push
+description: Un sistema de notificaciones completo. Registro de tokens en tu backend, canales y preferencias por tipo, envío con expo-server-sdk, recibos, acciones en la notificación y navegación al contenido.
+difficulty: avanzado
+time: 480
+prerequisites:
+  - expo/expo-notifications
+  - datos/autenticacion
+  - expo/eas-build
+related:
+  - expo/expo-linking
+  - proyectos/ecommerce
+  - calidad/produccion
+resources:
+  - title: Expo — Configurar notificaciones push
+    url: https://docs.expo.dev/push-notifications/push-notifications-setup/
+  - title: Expo — Enviar notificaciones con el servicio de Expo
+    url: https://docs.expo.dev/push-notifications/sending-notifications/
+  - title: expo-server-sdk-node
+    url: https://github.com/expo/expo-server-sdk-node
+goal: Construir el circuito completo de notificaciones (cliente, backend y servicio de push) con preferencias del usuario, fiabilidad en el envío y navegación contextual.
+technologies: [Expo SDK 58, expo-notifications, expo-device, Expo Router, Node.js, expo-server-sdk, TanStack Query, NativeWind]
+features:
+  - Solicitud de permiso en contexto, con pantalla explicativa
+  - Registro y actualización del token por usuario y dispositivo
+  - Canales de Android y preferencias por tipo de aviso
+  - Envío desde el backend con lotes y comprobación de recibos
+  - Botones de acción en la notificación
+  - Navegación a la pantalla correcta al tocar la notificación
+---
+
+## Descripción del proyecto
+
+Las notificaciones push son un sistema con tres participantes: **la app** (pide permiso y obtiene el token), **tu backend** (guarda tokens y decide a quién avisar) y **el servicio de push** (Expo Push Service sobre APNs y FCM). Este proyecto construye las tres piezas para una app de pedidos: avisos de cambio de estado, mensajes del repartidor y promociones opcionales.
+
+El objetivo es que las notificaciones sean **útiles y respetuosas**: el usuario elige qué recibir, cada aviso lleva a su contenido y los tokens inválidos se limpian solos.
+
+## Arquitectura propuesta
+
+<Layers
+  layers={[
+    { title: 'App', desc: 'expo-notifications', items: ['Permiso', 'Token', 'Canales', 'Listeners', 'Preferencias'], tone: 'brand' },
+    { title: 'Backend', desc: 'Node.js', items: ['POST /devices', 'PATCH /me/notification-preferences', 'sendToUser()'] },
+    { title: 'Expo Push Service', desc: 'exp.host', items: ['Tickets', 'Recibos'] },
+    { title: 'Plataformas', desc: 'Entrega', items: ['APNs (iOS)', 'FCM (Android)'], tone: 'muted' },
+  ]}
+/>
+
+<Flow
+  steps={[
+    { title: 'Evento', desc: 'Pedido enviado' },
+    { title: 'Backend', desc: '¿Preferencia activa?' },
+    { title: 'Expo Push', desc: 'Lote de mensajes', tone: 'brand' },
+    { title: 'Dispositivo', desc: 'Notificación' },
+    { title: 'Toque', desc: '/pedidos/123' },
+  ]}
+/>
+
+## Estructura de carpetas
+
+```tree
+pedidos-push/
+  server/
+    push.ts * # Envío y recibos con expo-server-sdk
+  src/
+    app/
+      _layout.tsx
+      permisos-notificaciones.tsx # Pantalla explicativa
+      ajustes/
+        notificaciones.tsx
+      pedidos/
+        [id].tsx
+    features/
+      notifications/
+        setup.ts * # Handler, canales, categorías
+        register.ts # Permiso + token
+        use-notification-navigation.ts
+        preferences.ts
+```
+
+## Diseño de las pantallas
+
+<Screens>
+  <ScreenSketch
+    title="Antes del permiso"
+    blocks={[
+      { type: 'text', label: ' ' },
+      { type: 'image', label: '🔔', height: 80 },
+      { type: 'header', label: 'Sigue tu pedido' },
+      { type: 'text', label: 'Te avisaremos cuando tu pedido salga y cuando el repartidor esté cerca.', muted: true },
+      { type: 'button', label: 'Activar notificaciones' },
+      { type: 'button', label: 'Ahora no', variant: 'secondary' },
+    ]}
+  />
+  <ScreenSketch
+    title="Preferencias"
+    blocks={[
+      { type: 'header', label: 'Notificaciones', back: true },
+      { type: 'list', items: ['Estado de mis pedidos', 'Mensajes del repartidor', 'Promociones'], check: true, done: [0, 1] },
+      { type: 'text', label: 'Puedes cambiar esto cuando quieras.', muted: true },
+    ]}
+  />
+</Screens>
+
+## Implementación paso a paso
+
+<Steps>
+<Step title="Configuración del proyecto">
+
+```bash
+npx expo install expo-notifications expo-device expo-constants
+eas init # añade el projectId necesario para obtener el token
+```
+
+```json title="app.json (fragmento)"
+{
+  "expo": {
+    "scheme": "pedidos",
+    "plugins": [["expo-notifications", { "color": "#0284c7", "icon": "./assets/images/notification-icon.png" }]],
+    "android": { "googleServicesFile": "./google-services.json" }
+  }
+}
+```
+
+Para Android sube las credenciales de FCM a EAS (`eas credentials`); en iOS, EAS genera la clave de APNs al compilar. Las push remotas requieren un **development build**.
+
+</Step>
+<Step title="Handler, canales y categorías con acciones">
+
+```ts title="features/notifications/setup.ts"
+import * as Notifications from 'expo-notifications';
+import { Platform } from 'react-native';
+
+export const CHANNELS = {
+  orders: { name: 'Estado de pedidos', importance: Notifications.AndroidImportance.HIGH },
+  chat: { name: 'Mensajes del repartidor', importance: Notifications.AndroidImportance.MAX },
+  promos: { name: 'Promociones', importance: Notifications.AndroidImportance.DEFAULT },
+} as const;
+export type ChannelId = keyof typeof CHANNELS;
+
+// Con la app abierta: mostramos banner salvo para promociones
+Notifications.setNotificationHandler({
+  handleNotification: async (notification) => {
+    const isPromo = notification.request.content.data?.channel === 'promos';
+    return { shouldShowBanner: !isPromo, shouldShowList: true, shouldPlaySound: !isPromo, shouldSetBadge: true };
+  },
+});
+
+export async function setupNotificationChannels() {
+  if (Platform.OS === 'android') {
+    for (const [id, config] of Object.entries(CHANNELS)) {
+      await Notifications.setNotificationChannelAsync(id, config);
+    }
+  }
+  // Botones en la notificación de mensajes
+  await Notifications.setNotificationCategoryAsync('chat-message', [
+    { identifier: 'reply', buttonTitle: 'Responder', textInput: { submitButtonTitle: 'Enviar', placeholder: 'Escribe…' } },
+    { identifier: 'mark-read', buttonTitle: 'Marcar como leído', options: { opensAppToForeground: false } },
+  ]);
+}
+```
+
+</Step>
+<Step title="Permiso en contexto y registro del token">
+
+```ts title="features/notifications/register.ts"
+import Constants from 'expo-constants';
+import * as Device from 'expo-device';
+import * as Notifications from 'expo-notifications';
+import { Platform } from 'react-native';
+import { api } from '@/lib/api-client';
+
+export async function registerDevice(): Promise<'granted' | 'denied' | 'unsupported'> {
+  if (!Device.isDevice) return 'unsupported';
+
+  let { status } = await Notifications.getPermissionsAsync();
+  if (status !== 'granted') status = (await Notifications.requestPermissionsAsync()).status;
+  if (status !== 'granted') return 'denied';
+
+  const projectId = Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
+  const { data: token } = await Notifications.getExpoPushTokenAsync({ projectId });
+
+  // El backend asocia el token al usuario autenticado (upsert por token)
+  await api.post('/devices', {
+    token,
+    platform: Platform.OS,
+    deviceName: Device.deviceName,
+  });
+  return 'granted';
+}
+```
+
+```tsx title="src/app/permisos-notificaciones.tsx"
+import { router } from 'expo-router';
+import { View } from 'react-native';
+import { Button, Text } from '@/components/ui';
+import { registerDevice } from '@/features/notifications/register';
+
+export default function NotificationPrimer() {
+  async function enable() {
+    await registerDevice(); // aquí aparece el diálogo del sistema
+    router.back();
+  }
+
+  return (
+    <View className="flex-1 items-center justify-center gap-4 bg-background p-8">
+      <Text variant="display">🔔</Text>
+      <Text variant="title" align="center">Sigue tu pedido</Text>
+      <Text tone="muted" align="center">
+        Te avisaremos cuando tu pedido salga y cuando el repartidor esté cerca. Nada de spam: tú eliges qué recibir.
+      </Text>
+      <Button fullWidth size="lg" onPress={enable}>Activar notificaciones</Button>
+      <Button variant="ghost" onPress={() => router.back()}>Ahora no</Button>
+    </View>
+  );
+}
+```
+
+</Step>
+<Step title="Navegar al tocar y responder a las acciones">
+
+```ts title="features/notifications/use-notification-navigation.ts"
+import { router } from 'expo-router';
+import * as Notifications from 'expo-notifications';
+import { useEffect } from 'react';
+import { api } from '@/lib/api-client';
+
+function handleResponse(response: Notifications.NotificationResponse) {
+  const data = response.notification.request.content.data as { url?: string; conversationId?: string };
+
+  if (response.actionIdentifier === 'mark-read' && data.conversationId) {
+    api.post(`/conversations/${data.conversationId}/read`).catch(() => {});
+    return;
+  }
+  if (response.actionIdentifier === 'reply' && data.conversationId && response.userText) {
+    api.post(`/conversations/${data.conversationId}/messages`, { text: response.userText }).catch(() => {});
+    return;
+  }
+  if (typeof data.url === 'string') router.push(data.url as never);
+}
+
+export function useNotificationNavigation() {
+  useEffect(() => {
+    // Cubre la apertura en frío: la app estaba cerrada y se abrió desde la notificación
+    const last = Notifications.getLastNotificationResponse();
+    if (last) handleResponse(last);
+
+    const sub = Notifications.addNotificationResponseReceivedListener(handleResponse);
+    return () => sub.remove();
+  }, []);
+}
+```
+
+</Step>
+<Step title="Envío desde el backend con lotes y recibos">
+
+```ts title="server/push.ts"
+import { Expo, type ExpoPushMessage, type ExpoPushTicket } from 'expo-server-sdk';
+import { db } from './db'; // tu acceso a datos
+
+const expo = new Expo({ accessToken: process.env.EXPO_ACCESS_TOKEN }); // opcional: seguridad de push mejorada
+
+type Channel = 'orders' | 'chat' | 'promos';
+
+export async function sendToUser(userId: string, channel: Channel, title: string, body: string, data: Record<string, unknown>) {
+  const prefs = await db.notificationPreferences(userId);
+  if (!prefs[channel]) return; // el usuario desactivó este tipo
+
+  const tokens = (await db.deviceTokens(userId)).filter((t) => Expo.isExpoPushToken(t));
+  const messages: ExpoPushMessage[] = tokens.map((to) => ({
+    to,
+    title,
+    body,
+    data: { ...data, channel },
+    channelId: channel, // canal de Android
+    sound: channel === 'promos' ? undefined : 'default',
+    categoryId: channel === 'chat' ? 'chat-message' : undefined,
+  }));
+
+  const tickets: ExpoPushTicket[] = [];
+  for (const chunk of expo.chunkPushNotifications(messages)) {
+    tickets.push(...(await expo.sendPushNotificationsAsync(chunk)));
+  }
+
+  // Tokens rechazados inmediatamente
+  tickets.forEach((ticket, i) => {
+    if (ticket.status === 'error' && ticket.details?.error === 'DeviceNotRegistered') db.removeDeviceToken(tokens[i]);
+  });
+
+  // Guardamos los ids para consultar los recibos más tarde (por ejemplo, en 15 minutos)
+  const ids = tickets.flatMap((t, i) => (t.status === 'ok' ? [{ id: t.id, token: tokens[i] }] : []));
+  await db.savePushTickets(ids);
+}
+
+/** Tarea programada: comprueba la entrega real y limpia tokens caducados */
+export async function checkReceipts() {
+  const pending = await db.pendingPushTickets();
+  for (const chunk of expo.chunkPushNotificationReceiptIds(pending.map((p) => p.id))) {
+    const receipts = await expo.getPushNotificationReceiptsAsync(chunk);
+    for (const [id, receipt] of Object.entries(receipts)) {
+      if (receipt.status === 'error' && receipt.details?.error === 'DeviceNotRegistered') {
+        const token = pending.find((p) => p.id === id)?.token;
+        if (token) await db.removeDeviceToken(token);
+      }
+    }
+    await db.markTicketsChecked(chunk);
+  }
+}
+```
+
+</Step>
+</Steps>
+
+<Callout type="tip" title="Probar sin backend">
+Mientras desarrollas, puedes enviar una notificación a tu token desde la herramienta web de Expo (expo.dev/notifications) o con un `POST` a `https://exp.host/--/api/v2/push/send` incluyendo `to`, `title`, `body`, `channelId` y `data`.
+</Callout>
+
+## Qué has aprendido
+
+- **El circuito completo** de push: permiso, token, registro en el backend, envío, entrega y recibos.
+- **Pedir permiso en contexto** con una pantalla que explica el valor antes del diálogo del sistema.
+- **Canales de Android y preferencias** por tipo, respetadas en el servidor.
+- **Acciones en la notificación** (responder, marcar como leído) sin abrir la app.
+- **Fiabilidad**: lotes, tickets, recibos y limpieza de tokens inválidos.
+
+## Mejoras y funcionalidades adicionales
+
+<Checklist
+  items={[
+    'Horario silencioso configurable por el usuario',
+    'Agrupar notificaciones del mismo pedido',
+    'Contador de no leídos sincronizado con setBadgeCountAsync',
+    'Notificaciones enriquecidas con imagen',
+    'Analítica de apertura por tipo de notificación',
+    'Desregistrar el token al cerrar sesión',
+    'Cola con reintentos en el backend (por ejemplo, BullMQ)',
+    'Live Activities en iOS para el seguimiento del pedido',
+  ]}
+/>

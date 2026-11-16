@@ -1,0 +1,409 @@
+---
+title: Aplicación de geolocalización
+sidebarTitle: Geolocalización
+description: Un registrador de rutas que sigue la ubicación también en segundo plano, dibuja el recorrido en un mapa nativo con expo-maps, calcula distancia y ritmo y guarda el historial en SQLite.
+difficulty: avanzado
+time: 480
+prerequisites:
+  - expo/expo-location
+  - expo/expo-sqlite
+  - introduccion/expo-go-vs-development-builds
+related:
+  - calidad/rendimiento
+  - calidad/seguridad
+  - proyectos/offline-first
+resources:
+  - title: Expo — Location (segundo plano)
+    url: https://docs.expo.dev/versions/latest/sdk/location/
+  - title: Expo — Maps
+    url: https://docs.expo.dev/versions/latest/sdk/maps/
+  - title: Expo — TaskManager
+    url: https://docs.expo.dev/versions/latest/sdk/task-manager/
+goal: Trabajar con datos de sensores en tiempo real y en segundo plano, procesarlos con algoritmos geográficos y visualizarlos en mapas nativos, cuidando batería y privacidad.
+technologies: [Expo SDK 58, expo-location, expo-task-manager, expo-maps, expo-sqlite, Zustand, NativeWind]
+features:
+  - Iniciar, pausar y finalizar un recorrido
+  - Seguimiento con la pantalla apagada o la app en segundo plano
+  - Recorrido dibujado en vivo sobre el mapa
+  - Distancia, duración y ritmo calculados al momento
+  - Filtro de lecturas imprecisas del GPS
+  - Historial de recorridos guardado en el dispositivo
+---
+
+## Descripción del proyecto
+
+Una app para registrar recorridos: salidas a correr, rutas de reparto o visitas comerciales. El usuario pulsa "Iniciar", guarda el teléfono y al terminar ve en el mapa el camino recorrido, la distancia y el ritmo.
+
+Los retos son reales: **seguir la ubicación en segundo plano** (permisos especiales, servicio en primer plano en Android), **filtrar el ruido del GPS**, **calcular distancias** sobre la superficie terrestre y **no agotar la batería**.
+
+<Callout type="warning" title="Development build y permisos">
+La ubicación en segundo plano y los mapas nativos requieren un [development build](/docs/introduccion/expo-go-vs-development-builds). Las tiendas revisan el uso de la ubicación en segundo plano: debe ser imprescindible para la función principal de la app y estar explicado al usuario.
+</Callout>
+
+## Arquitectura propuesta
+
+<Flow
+  steps={[
+    { title: 'TaskManager', desc: 'Recibe lotes de ubicaciones', tone: 'brand' },
+    { title: 'Filtro', desc: 'Descarta lecturas imprecisas' },
+    { title: 'SQLite', desc: 'Guarda puntos del recorrido' },
+    { title: 'Store', desc: 'Notifica a la UI' },
+    { title: 'Mapa', desc: 'Polilínea + métricas' },
+  ]}
+  caption="La tarea de segundo plano escribe en SQLite: así los puntos no se pierden aunque la UI no esté montada."
+/>
+
+## Estructura de carpetas
+
+```tree
+rutas/
+  src/
+    app/
+      _layout.tsx # Importa la tarea de segundo plano
+      index.tsx # Grabación en vivo
+      historial/
+        index.tsx
+        [id].tsx
+    features/
+      tracking/
+        geo.ts * # Haversine, ritmo, filtros
+        geo.test.ts
+        tracking-task.ts * # defineTask (ámbito global)
+        tracking-repository.ts
+        tracking-store.ts
+        components/
+          route-map.tsx * # AppleMaps / GoogleMaps
+          metrics-bar.tsx
+```
+
+## Diseño de las pantallas
+
+<Screens>
+  <ScreenSketch
+    title="Grabando"
+    blocks={[
+      { type: 'header', label: 'Recorrido', action: 'Historial' },
+      { type: 'map', label: 'Recorrido en vivo' },
+      { type: 'stats', items: [{ label: 'Distancia', value: '3,42 km' }, { label: 'Tiempo', value: '21:08' }, { label: 'Ritmo', value: '6:11 /km' }, { label: 'Precisión', value: '±6 m' }] },
+      { type: 'button', label: 'Pausar' },
+      { type: 'button', label: 'Finalizar', variant: 'danger' },
+    ]}
+  />
+  <ScreenSketch
+    title="Historial"
+    blocks={[
+      { type: 'header', label: 'Historial', back: true },
+      { type: 'list', items: ['Lunes · Parque', 'Sábado · Costanera', 'Jueves · Reparto'], meta: ['5,1 km', '10,3 km', '18,7 km'] },
+    ]}
+  />
+</Screens>
+
+## Implementación paso a paso
+
+<Steps>
+<Step title="Dependencias y configuración nativa">
+
+```bash
+npx expo install expo-location expo-task-manager expo-maps expo-sqlite
+```
+
+```json title="app.json (fragmento)"
+{
+  "expo": {
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Usamos tu ubicación para dibujar el recorrido que estás grabando.",
+          "locationAlwaysPermission": "Para seguir grabando tu recorrido con la pantalla apagada necesitamos la ubicación en segundo plano.",
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ],
+      "expo-maps"
+    ],
+    "android": {
+      "config": { "googleMaps": { "apiKey": "TU_API_KEY_DE_GOOGLE_MAPS" } }
+    }
+  }
+}
+```
+
+</Step>
+<Step title="Cálculos geográficos con funciones puras">
+
+<CodeTabs>
+
+```ts title="features/tracking/geo.ts"
+export type Point = { latitude: number; longitude: number; timestamp: number; accuracy: number | null };
+
+const EARTH_RADIUS_M = 6_371_000;
+const rad = (deg: number) => (deg * Math.PI) / 180;
+
+/** Distancia en metros entre dos coordenadas (fórmula de Haversine) */
+export function haversine(a: Point, b: Point) {
+  const dLat = rad(b.latitude - a.latitude);
+  const dLng = rad(b.longitude - a.longitude);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.latitude)) * Math.cos(rad(b.latitude)) * Math.sin(dLng / 2) ** 2;
+  return 2 * EARTH_RADIUS_M * Math.asin(Math.sqrt(h));
+}
+
+/** Descarta lecturas imprecisas y saltos imposibles (más de 15 m/s ≈ 54 km/h) */
+export function isReliable(prev: Point | undefined, next: Point) {
+  if (next.accuracy !== null && next.accuracy > 30) return false;
+  if (!prev) return true;
+  const seconds = (next.timestamp - prev.timestamp) / 1000;
+  if (seconds <= 0) return false;
+  return haversine(prev, next) / seconds < 15;
+}
+
+export function totalDistance(points: Point[]) {
+  let meters = 0;
+  for (let i = 1; i < points.length; i++) meters += haversine(points[i - 1], points[i]);
+  return meters;
+}
+
+/** Ritmo en "min:seg /km" */
+export function formatPace(meters: number, seconds: number) {
+  if (meters < 50) return '–';
+  const secPerKm = seconds / (meters / 1000);
+  const m = Math.floor(secPerKm / 60);
+  const s = Math.round(secPerKm % 60);
+  return `${m}:${String(s).padStart(2, '0')} /km`;
+}
+```
+
+```ts title="features/tracking/geo.test.ts"
+import { haversine, isReliable } from './geo';
+
+const p = (latitude: number, longitude: number, timestamp = 0, accuracy = 5) => ({ latitude, longitude, timestamp, accuracy });
+
+test('un grado de latitud mide unos 111 km', () => {
+  expect(haversine(p(0, 0), p(1, 0)) / 1000).toBeCloseTo(111.19, 1);
+});
+
+test('descarta saltos imposibles y lecturas imprecisas', () => {
+  expect(isReliable(p(-33.45, -70.66, 0), p(-33.46, -70.66, 1000))).toBe(false); // 1,1 km en 1 s
+  expect(isReliable(undefined, p(-33.45, -70.66, 0, 80))).toBe(false); // ±80 m
+});
+```
+
+</CodeTabs>
+
+</Step>
+<Step title="Tarea de segundo plano">
+
+`defineTask` debe ejecutarse en el **ámbito global** (al cargar el módulo), porque el sistema puede despertar la app en segundo plano sin montar ninguna pantalla.
+
+```ts title="features/tracking/tracking-task.ts"
+import * as Location from 'expo-location';
+import * as TaskManager from 'expo-task-manager';
+import { openDatabaseAsync } from 'expo-sqlite';
+import { isReliable, type Point } from './geo';
+import { trackingRepository } from './tracking-repository';
+import { useTrackingStore } from './tracking-store';
+
+export const TRACKING_TASK = 'route-tracking';
+
+TaskManager.defineTask<{ locations: Location.LocationObject[] }>(TRACKING_TASK, async ({ data, error }) => {
+  if (error || !data) return;
+  const db = await openDatabaseAsync('routes.db');
+  const routeId = await trackingRepository.activeRouteId(db);
+  if (!routeId) return;
+
+  let last = await trackingRepository.lastPoint(db, routeId);
+  for (const loc of data.locations) {
+    const point: Point = { latitude: loc.coords.latitude, longitude: loc.coords.longitude, timestamp: loc.timestamp, accuracy: loc.coords.accuracy };
+    if (!isReliable(last, point)) continue;
+    await trackingRepository.addPoint(db, routeId, point);
+    last = point;
+  }
+  useTrackingStore.getState().notifyNewPoints(); // la UI, si está montada, recarga los puntos
+});
+
+export async function startTracking() {
+  const fg = await Location.requestForegroundPermissionsAsync();
+  if (fg.status !== 'granted') throw new Error('Permiso de ubicación denegado');
+  const bg = await Location.requestBackgroundPermissionsAsync();
+  if (bg.status !== 'granted') throw new Error('Activa "Permitir siempre" para grabar con la pantalla apagada');
+
+  await Location.startLocationUpdatesAsync(TRACKING_TASK, {
+    accuracy: Location.Accuracy.BestForNavigation,
+    distanceInterval: 5, // metros
+    timeInterval: 3000, // Android
+    activityType: Location.LocationActivityType.Fitness, // iOS optimiza para actividad física
+    pausesUpdatesAutomatically: false,
+    showsBackgroundLocationIndicator: true, // indicador azul en iOS
+    foregroundService: {
+      notificationTitle: 'Grabando recorrido',
+      notificationBody: 'Toca para volver a la app',
+      notificationColor: '#0284c7',
+    },
+  });
+}
+
+export async function stopTracking() {
+  if (await Location.hasStartedLocationUpdatesAsync(TRACKING_TASK)) {
+    await Location.stopLocationUpdatesAsync(TRACKING_TASK);
+  }
+}
+```
+
+```tsx title="src/app/_layout.tsx (fragmento)"
+// Importar el módulo registra la tarea en cuanto arranca el bundle
+import '@/features/tracking/tracking-task';
+```
+
+</Step>
+<Step title="Mapa nativo con la polilínea del recorrido">
+
+```tsx title="features/tracking/components/route-map.tsx"
+import { AppleMaps, GoogleMaps } from 'expo-maps';
+import { Platform } from 'react-native';
+import type { Point } from '../geo';
+
+export function RouteMap({ points }: { points: Point[] }) {
+  const coordinates = points.map(({ latitude, longitude }) => ({ latitude, longitude }));
+  const last = coordinates.at(-1);
+  const camera = last ? { coordinates: last, zoom: 16 } : undefined;
+  const polylines = coordinates.length > 1 ? [{ id: 'route', coordinates, color: '#0284c7', width: 6 }] : [];
+
+  if (Platform.OS === 'ios') {
+    return (
+      <AppleMaps.View
+        style={{ flex: 1 }}
+        cameraPosition={camera}
+        polylines={polylines}
+        properties={{ isMyLocationEnabled: true }}
+      />
+    );
+  }
+  return (
+    <GoogleMaps.View
+      style={{ flex: 1 }}
+      cameraPosition={camera}
+      polylines={polylines}
+      properties={{ isMyLocationEnabled: true }}
+    />
+  );
+}
+```
+
+</Step>
+<Step title="Pantalla de grabación">
+
+```tsx title="src/app/index.tsx"
+import { useEffect, useState } from 'react';
+import { Alert, View } from 'react-native';
+import { useSQLiteContext } from 'expo-sqlite';
+import { Button, Card, Text } from '@/components/ui';
+import { formatPace, totalDistance, type Point } from '@/features/tracking/geo';
+import { RouteMap } from '@/features/tracking/components/route-map';
+import { trackingRepository } from '@/features/tracking/tracking-repository';
+import { useTrackingStore } from '@/features/tracking/tracking-store';
+import { startTracking, stopTracking } from '@/features/tracking/tracking-task';
+
+export default function RecordScreen() {
+  const db = useSQLiteContext();
+  const version = useTrackingStore((s) => s.version); // cambia con cada lote de puntos
+  const [routeId, setRouteId] = useState<number | null>(null);
+  const [points, setPoints] = useState<Point[]>([]);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    trackingRepository.activeRouteId(db).then(setRouteId); // reanudar si se estaba grabando
+  }, [db]);
+
+  useEffect(() => {
+    if (routeId) trackingRepository.points(db, routeId).then(setPoints);
+  }, [db, routeId, version]);
+
+  useEffect(() => {
+    if (!routeId) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [routeId]);
+
+  async function start() {
+    try {
+      const id = await trackingRepository.startRoute(db);
+      setRouteId(id);
+      setPoints([]);
+      await startTracking();
+    } catch (error) {
+      Alert.alert('No se pudo iniciar', error instanceof Error ? error.message : '');
+    }
+  }
+
+  async function finish() {
+    await stopTracking();
+    if (routeId) await trackingRepository.finishRoute(db, routeId, totalDistance(points));
+    setRouteId(null);
+  }
+
+  const meters = totalDistance(points);
+  const seconds = points.length ? Math.floor((now - points[0].timestamp) / 1000) : 0;
+
+  return (
+    <View className="flex-1 bg-background">
+      <RouteMap points={points} />
+      <Card className="absolute inset-x-4 bottom-8 gap-4 p-4">
+        <View className="flex-row justify-between">
+          <Metric label="Distancia" value={`${(meters / 1000).toFixed(2)} km`} />
+          <Metric label="Tiempo" value={`${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`} />
+          <Metric label="Ritmo" value={formatPace(meters, seconds)} />
+        </View>
+        {routeId ? (
+          <Button variant="destructive" fullWidth onPress={finish}>
+            Finalizar
+          </Button>
+        ) : (
+          <Button fullWidth onPress={start}>
+            Iniciar recorrido
+          </Button>
+        )}
+      </Card>
+    </View>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <View accessible accessibilityLabel={`${label}: ${value}`}>
+      <Text variant="caption">{label}</Text>
+      <Text variant="heading">{value}</Text>
+    </View>
+  );
+}
+```
+
+</Step>
+</Steps>
+
+<Callout type="info" title="Repositorio y store">
+`tracking-repository.ts` contiene las tablas `routes` (inicio, fin, distancia, activa) y `points` (ruta, latitud, longitud, precisión, timestamp) con las funciones usadas arriba, siguiendo el patrón de [Expo SQLite](/docs/expo/expo-sqlite). `tracking-store.ts` es un store de Zustand mínimo con un contador `version` y la acción `notifyNewPoints()`.
+</Callout>
+
+## Qué has aprendido
+
+- **Tareas en segundo plano** con `TaskManager.defineTask` en ámbito global y `startLocationUpdatesAsync`.
+- **Permisos escalonados**: primero en uso, después "siempre", explicando el motivo.
+- **Servicio en primer plano** en Android con notificación persistente.
+- **Algoritmos geográficos** (Haversine, filtrado de ruido) como funciones puras testeadas.
+- **Mapas nativos** con `expo-maps`: Apple Maps en iOS y Google Maps en Android.
+
+## Mejoras y funcionalidades adicionales
+
+<Checklist
+  items={[
+    'Pausa automática cuando el usuario está detenido',
+    'Simplificar la polilínea (Douglas-Peucker) para rutas largas',
+    'Exportar el recorrido en formato GPX',
+    'Zonas y alertas por geocercas (startGeofencingAsync)',
+    'Gráfico de ritmo por kilómetro',
+    'Compartir una imagen del mapa del recorrido',
+    'Sincronizar recorridos con un backend',
+    'Modo ahorro de batería con menor precisión',
+  ]}
+/>

@@ -1,0 +1,342 @@
+---
+title: Aplicación con funcionamiento offline
+sidebarTitle: Offline-first
+description: Una app de inspecciones en terreno que funciona sin conexión. SQLite como fuente de verdad, cola de cambios (outbox), detección de conectividad, reintentos con backoff e idempotencia.
+difficulty: avanzado
+time: 540
+prerequisites:
+  - expo/expo-sqlite
+  - datos/manejo-de-errores
+  - arquitectura/servicios-y-repositorios
+related:
+  - proyectos/sincronizacion-de-datos
+  - expo/expo-file-system
+  - datos/tanstack-query
+resources:
+  - title: Expo — SQLite
+    url: https://docs.expo.dev/versions/latest/sdk/sqlite/
+  - title: NetInfo
+    url: https://github.com/react-native-netinfo/react-native-netinfo
+  - title: Local-first software (Ink & Switch)
+    url: https://www.inkandswitch.com/local-first/
+keywords: [offline, outbox, cola, sqlite, netinfo, idempotencia, reintentos, backoff, local-first]
+goal: Diseñar una app que nunca depende de la red para funcionar, con escrituras locales inmediatas y una cola fiable que envía los cambios al servidor cuando hay conexión.
+technologies: [Expo SDK 58, expo-sqlite, NetInfo, expo-file-system, expo-camera, TanStack Query, Zustand, NativeWind]
+features:
+  - Crear y editar inspecciones sin conexión
+  - Fotos guardadas localmente y subidas después
+  - Cola de cambios pendientes con estado visible
+  - Envío automático al recuperar la conexión
+  - Reintentos con backoff exponencial
+  - Sin duplicados gracias a claves de idempotencia
+---
+
+## Descripción del proyecto
+
+Técnicos que inspeccionan instalaciones en sótanos, zonas rurales o edificios sin cobertura necesitan una app que **funcione siempre**. En un diseño *offline-first*:
+
+1. **La base de datos local es la fuente de verdad**: la UI lee y escribe en SQLite, nunca espera a la red.
+2. **Cada cambio se registra en una cola (outbox)** en la misma transacción que el dato.
+3. **Un motor de envío** procesa la cola cuando hay conexión, con reintentos y sin duplicar nada.
+
+Este proyecto se centra en el **envío** de cambios locales al servidor. La recepción de cambios de otros dispositivos y la resolución de conflictos se tratan en [Sincronización de datos](/docs/proyectos/sincronizacion-de-datos).
+
+## Arquitectura propuesta
+
+<Layers
+  layers={[
+    { title: 'UI', desc: 'Siempre local', items: ['Lista', 'Formulario', 'Indicador de pendientes'], tone: 'brand' },
+    { title: 'Repositorio', desc: 'Transacción', items: ['dato + entrada en outbox'] },
+    { title: 'SQLite', desc: 'Fuente de verdad', items: ['inspections', 'photos', 'outbox'] },
+    { title: 'Motor de envío', desc: 'Cuando hay red', items: ['NetInfo', 'FIFO', 'backoff', 'Idempotency-Key'] },
+    { title: 'API', desc: 'Servidor', items: ['PUT /inspections/:id', 'POST /photos'], tone: 'muted' },
+  ]}
+/>
+
+<Flow
+  steps={[
+    { title: 'Guardar', desc: 'SQLite + outbox (transacción)', tone: 'brand' },
+    { title: 'UI actualizada', desc: 'Al instante' },
+    { title: '¿Hay red?', desc: 'NetInfo' },
+    { title: 'Enviar en orden', desc: 'Con Idempotency-Key' },
+    { title: 'Éxito', desc: 'Borrar de la outbox' },
+  ]}
+/>
+
+## Estructura de carpetas
+
+```tree
+inspecciones/
+  src/
+    app/
+      index.tsx # Lista + estado de sincronización
+      inspeccion/
+        [id].tsx # Formulario con fotos
+    features/
+      offline/
+        outbox.ts * # Cola de cambios
+        sync-engine.ts * # Envío con reintentos
+        use-connectivity.ts
+        sync-store.ts
+      inspections/
+        repository.ts * # Escrituras con transacción
+        photos.ts # Copia de fotos a documentos
+        hooks.ts
+    db/
+      migrations.ts
+```
+
+## Diseño de las pantallas
+
+<Screens>
+  <ScreenSketch
+    title="Sin conexión"
+    blocks={[
+      { type: 'header', label: 'Inspecciones', action: '+ Nueva' },
+      { type: 'card', label: 'Sin conexión', value: '3 cambios pendientes' },
+      { type: 'list', items: ['Bodega Norte · borrador', 'Planta 2 · pendiente ↑', 'Subestación · enviada ✓'], meta: ['hoy', 'hoy', 'ayer'] },
+      { type: 'fab' },
+    ]}
+  />
+  <ScreenSketch
+    title="Inspección"
+    blocks={[
+      { type: 'header', label: 'Planta 2', back: true },
+      { type: 'segmented', items: ['OK', 'Observación', 'Falla'], active: 1 },
+      { type: 'input', label: 'Observaciones' },
+      { type: 'grid', items: [{ label: 'Foto 1' }, { label: 'Foto 2' }] },
+      { type: 'button', label: 'Guardar (se enviará al tener red)' },
+    ]}
+  />
+</Screens>
+
+## Implementación paso a paso
+
+<Steps>
+<Step title="Dependencias">
+
+```bash
+npx expo install expo-sqlite expo-file-system expo-camera expo-crypto @react-native-community/netinfo
+npm install @tanstack/react-query zustand axios
+```
+
+</Step>
+<Step title="Tablas: datos y outbox">
+
+```ts title="src/db/migrations.ts"
+import type { SQLiteDatabase } from 'expo-sqlite';
+
+export async function migrate(db: SQLiteDatabase) {
+  const row = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
+  if ((row?.user_version ?? 0) >= 1) return;
+  await db.execAsync(`
+    PRAGMA journal_mode = WAL;
+    CREATE TABLE inspections (
+      id TEXT PRIMARY KEY,               -- UUID generado en el dispositivo
+      site TEXT NOT NULL,
+      result TEXT NOT NULL CHECK (result IN ('ok', 'observation', 'failure')),
+      notes TEXT NOT NULL DEFAULT '',
+      updated_at INTEGER NOT NULL,
+      sync_state TEXT NOT NULL DEFAULT 'pending' -- 'pending' | 'synced' | 'error'
+    );
+    CREATE TABLE photos (
+      id TEXT PRIMARY KEY,
+      inspection_id TEXT NOT NULL REFERENCES inspections (id) ON DELETE CASCADE,
+      file_name TEXT NOT NULL,           -- relativo a Paths.document
+      uploaded INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE outbox (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT, -- orden de envío
+      kind TEXT NOT NULL,                    -- 'upsert-inspection' | 'upload-photo'
+      entity_id TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT
+    );
+    PRAGMA user_version = 1;
+  `);
+}
+```
+
+</Step>
+<Step title="Escribir el dato y la intención en la misma transacción">
+
+```ts title="features/inspections/repository.ts"
+import { randomUUID } from 'expo-crypto';
+import type { SQLiteDatabase } from 'expo-sqlite';
+
+export type Inspection = { id: string; site: string; result: 'ok' | 'observation' | 'failure'; notes: string; updatedAt: number };
+
+export const inspectionsRepository = {
+  /** Guarda localmente y encola el envío. Nunca toca la red. */
+  async save(db: SQLiteDatabase, input: Omit<Inspection, 'id' | 'updatedAt'> & { id?: string }) {
+    const inspection: Inspection = { ...input, id: input.id ?? randomUUID(), updatedAt: Date.now() };
+
+    await db.withExclusiveTransactionAsync(async (tx) => {
+      await tx.runAsync(
+        `INSERT INTO inspections (id, site, result, notes, updated_at, sync_state) VALUES (?, ?, ?, ?, ?, 'pending')
+         ON CONFLICT (id) DO UPDATE SET site = excluded.site, result = excluded.result, notes = excluded.notes,
+           updated_at = excluded.updated_at, sync_state = 'pending'`,
+        inspection.id, inspection.site, inspection.result, inspection.notes, inspection.updatedAt,
+      );
+      // Si ya había un envío pendiente de esta inspección, lo sustituimos por el más reciente
+      await tx.runAsync(`DELETE FROM outbox WHERE kind = 'upsert-inspection' AND entity_id = ?`, inspection.id);
+      await tx.runAsync(
+        `INSERT INTO outbox (kind, entity_id, payload, idempotency_key) VALUES ('upsert-inspection', ?, ?, ?)`,
+        inspection.id, JSON.stringify(inspection), `${inspection.id}:${inspection.updatedAt}`,
+      );
+    });
+    return inspection;
+  },
+
+  list(db: SQLiteDatabase) {
+    return db.getAllAsync<Inspection & { syncState: string }>(
+      'SELECT id, site, result, notes, updated_at AS updatedAt, sync_state AS syncState FROM inspections ORDER BY updated_at DESC',
+    );
+  },
+};
+```
+
+</Step>
+<Step title="El motor de envío con reintentos">
+
+```ts title="features/offline/sync-engine.ts"
+import NetInfo from '@react-native-community/netinfo';
+import { File, Paths } from 'expo-file-system';
+import type { SQLiteDatabase } from 'expo-sqlite';
+import { api } from '@/lib/api-client';
+import { useSyncStore } from './sync-store';
+
+type OutboxRow = { seq: number; kind: string; entity_id: string; payload: string; idempotency_key: string; attempts: number };
+
+const MAX_BACKOFF = 5 * 60_000;
+let running = false;
+
+async function send(row: OutboxRow) {
+  const headers = { 'Idempotency-Key': row.idempotency_key }; // el servidor ignora repeticiones
+  if (row.kind === 'upsert-inspection') {
+    await api.put(`/inspections/${row.entity_id}`, JSON.parse(row.payload), { headers });
+  } else if (row.kind === 'upload-photo') {
+    const { inspectionId, fileName } = JSON.parse(row.payload) as { inspectionId: string; fileName: string };
+    const file = new File(Paths.document, 'photos', fileName);
+    const form = new FormData();
+    form.append('photo', { uri: file.uri, name: fileName, type: 'image/jpeg' } as unknown as Blob);
+    await api.post(`/inspections/${inspectionId}/photos`, form, { headers });
+  }
+}
+
+/** Procesa la cola en orden. Se detiene ante el primer error para respetar el orden de los cambios. */
+export async function processOutbox(db: SQLiteDatabase) {
+  if (running) return;
+  const net = await NetInfo.fetch();
+  if (!net.isConnected) return;
+
+  running = true;
+  useSyncStore.getState().setSyncing(true);
+  try {
+    while (true) {
+      const row = await db.getFirstAsync<OutboxRow>('SELECT * FROM outbox WHERE next_attempt_at <= ? ORDER BY seq LIMIT 1', Date.now());
+      if (!row) break;
+      try {
+        await send(row);
+        await db.withExclusiveTransactionAsync(async (tx) => {
+          await tx.runAsync('DELETE FROM outbox WHERE seq = ?', row.seq);
+          if (row.kind === 'upsert-inspection') {
+            // Solo marcamos como sincronizada si no hay otro cambio más nuevo en cola
+            await tx.runAsync(
+              `UPDATE inspections SET sync_state = 'synced' WHERE id = ? AND NOT EXISTS (SELECT 1 FROM outbox WHERE entity_id = ?)`,
+              row.entity_id, row.entity_id,
+            );
+          }
+        });
+      } catch (error) {
+        const attempts = row.attempts + 1;
+        const delay = Math.min(MAX_BACKOFF, 2 ** attempts * 1000);
+        await db.runAsync('UPDATE outbox SET attempts = ?, next_attempt_at = ?, last_error = ? WHERE seq = ?',
+          attempts, Date.now() + delay, String(error), row.seq);
+        break; // reintentaremos más tarde
+      }
+    }
+  } finally {
+    running = false;
+    const pending = await db.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM outbox');
+    useSyncStore.getState().update({ syncing: false, pending: pending?.n ?? 0, lastRunAt: Date.now() });
+  }
+}
+```
+
+</Step>
+<Step title="Disparar el envío: red, arranque y primer plano">
+
+```ts title="features/offline/use-sync-triggers.ts"
+import NetInfo from '@react-native-community/netinfo';
+import { useSQLiteContext } from 'expo-sqlite';
+import { useEffect } from 'react';
+import { AppState } from 'react-native';
+import { processOutbox } from './sync-engine';
+
+export function useSyncTriggers() {
+  const db = useSQLiteContext();
+
+  useEffect(() => {
+    processOutbox(db); // al arrancar
+
+    const netSub = NetInfo.addEventListener((state) => {
+      if (state.isConnected) processOutbox(db); // al recuperar la red
+    });
+    const appSub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') processOutbox(db); // al volver a primer plano
+    });
+    const interval = setInterval(() => processOutbox(db), 60_000); // reintentos programados
+
+    return () => {
+      netSub();
+      appSub.remove();
+      clearInterval(interval);
+    };
+  }, [db]);
+}
+```
+
+```tsx title="Indicador de estado (en la lista)"
+const { pending, syncing } = useSyncStore();
+const { isConnected } = useNetInfo();
+
+{!isConnected ? (
+  <Card className="bg-warning/15 p-3"><Text>Sin conexión · {pending} cambios se enviarán al volver la red</Text></Card>
+) : pending > 0 ? (
+  <Card className="p-3"><Text>{syncing ? 'Enviando…' : `${pending} cambios pendientes`}</Text></Card>
+) : null}
+```
+
+</Step>
+</Steps>
+
+<Callout type="info" title="Fotos sin conexión">
+Al hacer una foto, `photos.ts` copia el archivo temporal a `Paths.document/photos` (ver [Expo FileSystem](/docs/expo/expo-file-system)), guarda solo el **nombre** del archivo en la tabla `photos` y encola un `upload-photo` en la misma transacción. Guardar rutas relativas evita problemas cuando el contenedor de la app cambia de ruta en iOS.
+</Callout>
+
+## Qué has aprendido
+
+- **Local como fuente de verdad**: la UI nunca espera a la red.
+- **Patrón outbox**: el dato y la intención de enviarlo se guardan en la misma transacción, así nunca se pierde un cambio.
+- **Idempotencia**: los reintentos no crean duplicados gracias a la `Idempotency-Key` (el backend debe respetarla).
+- **Reintentos con backoff** persistidos en la base de datos, que sobreviven a cierres de la app.
+- **Disparadores** de envío: arranque, recuperación de red, primer plano y temporizador.
+
+## Mejoras y funcionalidades adicionales
+
+<Checklist
+  items={[
+    'Envío en segundo plano con expo-background-task',
+    'Compresión de fotos antes de subirlas',
+    'Pantalla de errores de envío con reintento manual',
+    'Descarga inicial de catálogos de sitios para trabajar offline',
+    'Cifrado de la base de datos con SQLCipher',
+    'Firmas del técnico y geolocalización de cada inspección',
+    'Recepción de cambios del servidor (proyecto de sincronización)',
+    'Tests del motor de envío con una API simulada que falla',
+  ]}
+/>

@@ -1,0 +1,404 @@
+---
+title: Aplicación de gestión de arriendos
+sidebarTitle: Gestión de arriendos
+description: Gestión de propiedades, arrendatarios y contratos con Supabase y RLS. Control de pagos mensuales, morosidad, comprobantes en Storage y recordatorios de vencimiento.
+difficulty: avanzado
+time: 600
+prerequisites:
+  - datos/firebase-y-supabase
+  - datos/tanstack-query
+  - sistema-de-componentes/formularios
+related:
+  - expo/expo-image-picker
+  - expo/expo-notifications
+  - arquitectura/separacion-de-responsabilidades
+resources:
+  - title: Expo — Usar Supabase
+    url: https://docs.expo.dev/guides/using-supabase/
+  - title: Supabase — Row Level Security
+    url: https://supabase.com/docs/guides/database/postgres/row-level-security
+  - title: Supabase — Storage
+    url: https://supabase.com/docs/guides/storage
+goal: Diseñar un modelo de datos relacional con seguridad a nivel de fila, calcular reglas de negocio de cobros y vencimientos, y gestionar archivos en un backend como servicio.
+technologies: [Expo SDK 58, Supabase, PostgreSQL, TanStack Query, NativeWind, React Hook Form, Zod, expo-image-picker, expo-notifications]
+features:
+  - Propiedades, arrendatarios y contratos con montos y día de pago
+  - Generación del calendario de pagos de cada contrato
+  - Registro de pagos con foto del comprobante
+  - Panel con ingresos del mes y pagos atrasados
+  - Recordatorios locales antes de cada vencimiento
+  - Datos privados por propietario gracias a RLS
+---
+
+## Descripción del proyecto
+
+Una app para propietarios y pequeñas administradoras: saber **qué propiedades están arrendadas, quién debe pagar este mes y quién está atrasado**, con los comprobantes a mano.
+
+Es un proyecto avanzado porque combina un **modelo relacional** real (propiedades → contratos → pagos), **reglas de negocio con fechas** (vencimientos, días de atraso), **seguridad multiusuario** en la base de datos y **subida de archivos**.
+
+## Arquitectura propuesta
+
+<Layers
+  layers={[
+    { title: 'Pantallas', desc: 'Expo Router', items: ['Panel', 'Propiedades', 'Contrato', 'Registrar pago'], tone: 'brand' },
+    { title: 'Hooks', desc: 'TanStack Query', items: ['useDashboard', 'useLeases', 'useRegisterPayment'] },
+    { title: 'Dominio', desc: 'Funciones puras', items: ['dueDatesFor', 'paymentStatus', 'daysLate'] },
+    { title: 'Servicios', desc: 'supabase-js', items: ['rentalsService', 'Storage: receipts'] },
+    { title: 'Supabase', desc: 'Postgres + RLS', items: ['properties', 'tenants', 'leases', 'payments'], tone: 'muted' },
+  ]}
+/>
+
+## Estructura de carpetas
+
+```tree
+arriendos/
+  supabase/
+    schema.sql * # Tablas, RLS y bucket
+  src/
+    app/
+      (tabs)/
+        index.tsx # Panel
+        propiedades.tsx
+      contrato/
+        [id].tsx
+      pago/
+        nuevo.tsx
+    features/
+      rentals/
+        domain/
+          schedule.ts * # Vencimientos y estados
+          schedule.test.ts
+        api/
+          rentals-service.ts
+        hooks.ts
+        reminders.ts
+    lib/
+      supabase.ts
+```
+
+## Diseño de las pantallas
+
+<Screens>
+  <ScreenSketch
+    title="Panel"
+    blocks={[
+      { type: 'header', label: 'Noviembre' },
+      { type: 'stats', items: [{ label: 'Cobrado', value: '$2,4 M' }, { label: 'Pendiente', value: '$850 k' }, { label: 'Atrasados', value: '2' }, { label: 'Ocupación', value: '92 %' }] },
+      { type: 'text', label: 'Pagos atrasados' },
+      { type: 'list', items: ['Depto 302 · J. Rojas', 'Casa Ñuñoa · M. Díaz'], meta: ['8 días', '3 días'] },
+      { type: 'tabs', items: ['Panel', 'Propiedades', 'Ajustes'], active: 0 },
+    ]}
+  />
+  <ScreenSketch
+    title="Contrato"
+    blocks={[
+      { type: 'header', label: 'Depto 302', back: true },
+      { type: 'card', label: 'Arrendatario', value: 'Javier Rojas' },
+      { type: 'text', label: '$450.000 · día 5 de cada mes', muted: true },
+      { type: 'list', items: ['Nov 2026 · Atrasado', 'Oct 2026 · Pagado', 'Sep 2026 · Pagado'], meta: ['⚠', '✓', '✓'] },
+      { type: 'button', label: 'Registrar pago' },
+    ]}
+  />
+  <ScreenSketch
+    title="Registrar pago"
+    blocks={[
+      { type: 'header', label: 'Registrar pago', action: 'Guardar' },
+      { type: 'input', label: 'Periodo' },
+      { type: 'input', label: 'Monto' },
+      { type: 'input', label: 'Fecha de pago' },
+      { type: 'image', label: 'Foto del comprobante', height: 90 },
+      { type: 'button', label: 'Guardar pago' },
+    ]}
+  />
+</Screens>
+
+## Implementación paso a paso
+
+<Steps>
+<Step title="Esquema de base de datos con RLS">
+
+```sql title="supabase/schema.sql"
+create table public.properties (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null default auth.uid() references auth.users (id),
+  name text not null,
+  address text not null
+);
+
+create table public.tenants (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null default auth.uid() references auth.users (id),
+  full_name text not null,
+  phone text,
+  email text
+);
+
+create table public.leases (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null default auth.uid() references auth.users (id),
+  property_id uuid not null references public.properties (id) on delete cascade,
+  tenant_id uuid not null references public.tenants (id),
+  monthly_rent numeric(12, 2) not null check (monthly_rent > 0),
+  due_day int not null check (due_day between 1 and 28),
+  start_date date not null,
+  end_date date
+);
+
+create table public.payments (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null default auth.uid() references auth.users (id),
+  lease_id uuid not null references public.leases (id) on delete cascade,
+  period text not null, -- 'YYYY-MM'
+  amount numeric(12, 2) not null check (amount > 0),
+  paid_at date not null,
+  receipt_path text,
+  unique (lease_id, period)
+);
+
+-- Cada propietario solo ve y modifica sus filas
+alter table public.properties enable row level security;
+alter table public.tenants enable row level security;
+alter table public.leases enable row level security;
+alter table public.payments enable row level security;
+
+create policy "own properties" on public.properties for all to authenticated using (owner_id = auth.uid()) with check (owner_id = auth.uid());
+create policy "own tenants" on public.tenants for all to authenticated using (owner_id = auth.uid()) with check (owner_id = auth.uid());
+create policy "own leases" on public.leases for all to authenticated using (owner_id = auth.uid()) with check (owner_id = auth.uid());
+create policy "own payments" on public.payments for all to authenticated using (owner_id = auth.uid()) with check (owner_id = auth.uid());
+
+-- Bucket privado para comprobantes: cada usuario en su carpeta
+insert into storage.buckets (id, name, public) values ('receipts', 'receipts', false);
+create policy "own receipts" on storage.objects for all to authenticated
+  using (bucket_id = 'receipts' and (storage.foldername(name))[1] = auth.uid()::text)
+  with check (bucket_id = 'receipts' and (storage.foldername(name))[1] = auth.uid()::text);
+```
+
+</Step>
+<Step title="Reglas de negocio: calendario y estado de pagos">
+
+<CodeTabs>
+
+```ts title="features/rentals/domain/schedule.ts"
+export type Lease = { id: string; monthlyRent: number; dueDay: number; startDate: string; endDate: string | null };
+export type Payment = { leaseId: string; period: string; amount: number };
+export type PeriodStatus = { period: string; dueDate: Date; status: 'paid' | 'partial' | 'pending' | 'late'; paid: number; daysLate: number };
+
+const DAY = 24 * 60 * 60 * 1000;
+const periodOf = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+
+/** Periodos (meses) exigibles de un contrato hasta la fecha indicada */
+export function duePeriods(lease: Lease, until: Date): { period: string; dueDate: Date }[] {
+  const start = new Date(`${lease.startDate}T00:00:00`);
+  const end = lease.endDate ? new Date(`${lease.endDate}T00:00:00`) : until;
+  const last = end < until ? end : until;
+  const result: { period: string; dueDate: Date }[] = [];
+  for (let d = new Date(start.getFullYear(), start.getMonth(), 1); d <= last; d.setMonth(d.getMonth() + 1)) {
+    result.push({ period: periodOf(d), dueDate: new Date(d.getFullYear(), d.getMonth(), lease.dueDay) });
+  }
+  return result;
+}
+
+export function leaseStatement(lease: Lease, payments: Payment[], today = new Date()): PeriodStatus[] {
+  return duePeriods(lease, today)
+    .map(({ period, dueDate }) => {
+      const paid = payments.filter((p) => p.leaseId === lease.id && p.period === period).reduce((s, p) => s + p.amount, 0);
+      const daysLate = Math.max(0, Math.floor((today.getTime() - dueDate.getTime()) / DAY));
+      const status: PeriodStatus['status'] =
+        paid >= lease.monthlyRent ? 'paid' : paid > 0 ? 'partial' : daysLate > 0 ? 'late' : 'pending';
+      return { period, dueDate, status, paid, daysLate: status === 'paid' ? 0 : daysLate };
+    })
+    .reverse();
+}
+```
+
+```ts title="features/rentals/domain/schedule.test.ts"
+import { leaseStatement } from './schedule';
+
+const lease = { id: 'l1', monthlyRent: 450000, dueDay: 5, startDate: '2026-09-01', endDate: null };
+
+test('marca como atrasado un mes vencido sin pagar', () => {
+  const statement = leaseStatement(lease, [{ leaseId: 'l1', period: '2026-09', amount: 450000 }], new Date(2026, 9, 13));
+  expect(statement.map((p) => [p.period, p.status, p.daysLate])).toEqual([
+    ['2026-10', 'late', 8],
+    ['2026-09', 'paid', 0],
+  ]);
+});
+```
+
+</CodeTabs>
+
+</Step>
+<Step title="Servicio con Supabase y subida de comprobantes">
+
+```ts title="features/rentals/api/rentals-service.ts"
+import { File } from 'expo-file-system';
+import { supabase } from '@/lib/supabase';
+import type { Lease, Payment } from '../domain/schedule';
+
+export const rentalsService = {
+  async leasesWithPayments() {
+    const { data, error } = await supabase
+      .from('leases')
+      .select('id, monthly_rent, due_day, start_date, end_date, property:properties(name), tenant:tenants(full_name, phone), payments(lease_id, period, amount)')
+      .order('start_date', { ascending: false });
+    if (error) throw error;
+    return data.map((row) => ({
+      lease: { id: row.id, monthlyRent: row.monthly_rent, dueDay: row.due_day, startDate: row.start_date, endDate: row.end_date } satisfies Lease,
+      propertyName: row.property?.name ?? '',
+      tenant: row.tenant,
+      payments: row.payments.map((p) => ({ leaseId: p.lease_id, period: p.period, amount: p.amount })) satisfies Payment[],
+    }));
+  },
+
+  async registerPayment(input: { leaseId: string; period: string; amount: number; paidAt: string; receiptUri?: string }) {
+    let receiptPath: string | null = null;
+
+    if (input.receiptUri) {
+      const { data: auth } = await supabase.auth.getUser();
+      receiptPath = `${auth.user!.id}/${input.leaseId}/${input.period}.jpg`;
+      const bytes = await new File(input.receiptUri).bytes(); // contenido del archivo local
+      const { error } = await supabase.storage.from('receipts').upload(receiptPath, bytes, { contentType: 'image/jpeg', upsert: true });
+      if (error) throw error;
+    }
+
+    const { error } = await supabase.from('payments').insert({
+      lease_id: input.leaseId,
+      period: input.period,
+      amount: input.amount,
+      paid_at: input.paidAt,
+      receipt_path: receiptPath,
+    });
+    if (error) throw error;
+  },
+
+  /** URL temporal (10 minutos) para ver un comprobante privado */
+  async receiptUrl(path: string) {
+    const { data, error } = await supabase.storage.from('receipts').createSignedUrl(path, 600);
+    if (error) throw error;
+    return data.signedUrl;
+  },
+};
+```
+
+</Step>
+<Step title="Panel: ingresos del mes y atrasos">
+
+```tsx title="src/app/(tabs)/index.tsx"
+import { useQuery } from '@tanstack/react-query';
+import { router } from 'expo-router';
+import { ScrollView, View } from 'react-native';
+import { ErrorState, LoadingState } from '@/components/feedback';
+import { Card, ListItem, Text } from '@/components/ui';
+import { rentalsService } from '@/features/rentals/api/rentals-service';
+import { leaseStatement } from '@/features/rentals/domain/schedule';
+import { formatMoney } from '@/lib/format';
+
+export default function DashboardScreen() {
+  const { data, isPending, isError, refetch } = useQuery({
+    queryKey: ['leases'],
+    queryFn: rentalsService.leasesWithPayments,
+    select: (rows) => {
+      const today = new Date();
+      const currentPeriod = today.toISOString().slice(0, 7);
+      let collected = 0;
+      let pending = 0;
+      const late: { leaseId: string; label: string; daysLate: number; amount: number }[] = [];
+      for (const row of rows) {
+        const statement = leaseStatement(row.lease, row.payments, today);
+        const current = statement.find((p) => p.period === currentPeriod);
+        if (current) {
+          collected += current.paid;
+          pending += Math.max(0, row.lease.monthlyRent - current.paid);
+        }
+        for (const p of statement.filter((s) => s.status === 'late' || s.status === 'partial')) {
+          late.push({ leaseId: row.lease.id, label: `${row.propertyName} · ${row.tenant?.full_name}`, daysLate: p.daysLate, amount: row.lease.monthlyRent - p.paid });
+        }
+      }
+      return { collected, pending, late: late.sort((a, b) => b.daysLate - a.daysLate) };
+    },
+  });
+
+  if (isPending) return <LoadingState />;
+  if (isError) return <ErrorState onRetry={refetch} />;
+
+  return (
+    <ScrollView className="flex-1 bg-background" contentContainerClassName="gap-4 p-4">
+      <View className="flex-row gap-3">
+        <Card className="flex-1 p-4">
+          <Text variant="caption">Cobrado este mes</Text>
+          <Text variant="title" tone="success">{formatMoney(data.collected)}</Text>
+        </Card>
+        <Card className="flex-1 p-4">
+          <Text variant="caption">Pendiente</Text>
+          <Text variant="title">{formatMoney(data.pending)}</Text>
+        </Card>
+      </View>
+      <Text variant="heading">Pagos atrasados ({data.late.length})</Text>
+      {data.late.length === 0 ? <Text tone="muted">Todo al día 🎉</Text> : null}
+      {data.late.map((item) => (
+        <ListItem
+          key={`${item.leaseId}-${item.daysLate}`}
+          title={item.label}
+          subtitle={`${formatMoney(item.amount)} pendientes`}
+          trailing={<Text tone="danger" className="font-semibold">{item.daysLate} días</Text>}
+          onPress={() => router.push({ pathname: '/contrato/[id]', params: { id: item.leaseId } })}
+        />
+      ))}
+    </ScrollView>
+  );
+}
+```
+
+</Step>
+<Step title="Recordatorios antes de cada vencimiento">
+
+```ts title="features/rentals/reminders.ts"
+import * as Notifications from 'expo-notifications';
+import type { Lease } from './domain/schedule';
+
+/** Programa un aviso 2 días antes del próximo vencimiento de cada contrato */
+export async function scheduleDueReminders(leases: { lease: Lease; label: string }[]) {
+  const { status } = await Notifications.requestPermissionsAsync();
+  if (status !== 'granted') return;
+
+  await Notifications.cancelAllScheduledNotificationsAsync();
+  const now = new Date();
+
+  for (const { lease, label } of leases) {
+    let due = new Date(now.getFullYear(), now.getMonth(), lease.dueDay, 9, 0);
+    if (due.getTime() - 2 * 86_400_000 <= now.getTime()) due = new Date(now.getFullYear(), now.getMonth() + 1, lease.dueDay, 9, 0);
+    const remindAt = new Date(due.getTime() - 2 * 86_400_000);
+
+    await Notifications.scheduleNotificationAsync({
+      content: { title: 'Vencimiento próximo', body: `${label} vence el día ${lease.dueDay}`, data: { url: `/contrato/${lease.id}` } },
+      trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: remindAt },
+    });
+  }
+}
+```
+
+</Step>
+</Steps>
+
+## Qué has aprendido
+
+- **Modelado relacional** con claves foráneas, restricciones y una restricción `unique (lease_id, period)` que impide pagos duplicados por periodo.
+- **Seguridad multiusuario** con RLS en tablas y en Storage (carpeta por usuario).
+- **Reglas de negocio con fechas** en funciones puras, cubiertas por tests.
+- **`select` de TanStack Query** para derivar el panel a partir de una sola consulta.
+- **Archivos privados**: subida con `File.bytes()` y URLs firmadas de corta duración.
+
+## Mejoras y funcionalidades adicionales
+
+<Checklist
+  items={[
+    'Reajuste anual del arriendo (IPC o porcentaje)',
+    'Gastos comunes y servicios asociados a cada propiedad',
+    'Portal para arrendatarios con su propio rol y políticas RLS',
+    'Generar recibos en PDF con expo-print',
+    'Envío de recordatorios por WhatsApp o correo desde una Edge Function',
+    'Reportes anuales para la declaración de impuestos',
+    'Firma digital del contrato',
+    'Modo offline con caché persistida de TanStack Query',
+  ]}
+/>

@@ -5,7 +5,7 @@
  * - que prerequisitos, temas relacionados, glosario y rutas apunten a temas existentes,
  * - que los enlaces internos /docs/... y <Term slug="..."> sean válidos.
  *
- * Uso: npm run check:content
+ * Uso: npm run check:content (node scripts/check-content.mts)
  */
 import fs from 'node:fs';
 import path from 'node:path';

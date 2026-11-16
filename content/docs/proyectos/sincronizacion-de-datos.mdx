@@ -1,0 +1,365 @@
+---
+title: Aplicación con sincronización de datos
+sidebarTitle: Sincronización de datos
+description: Sincronización bidireccional entre dispositivos. Pull incremental con cursor, push de cambios locales, borrados con tombstones, resolución de conflictos y sincronización en segundo plano.
+difficulty: avanzado
+time: 600
+prerequisites:
+  - proyectos/offline-first
+  - datos/websockets
+related:
+  - expo/expo-sqlite
+  - datos/tanstack-query
+  - arquitectura/servicios-y-repositorios
+resources:
+  - title: Expo — BackgroundTask
+    url: https://docs.expo.dev/versions/latest/sdk/background-task/
+  - title: Expo — SQLite
+    url: https://docs.expo.dev/versions/latest/sdk/sqlite/
+  - title: Martin Kleppmann — CRDTs y sincronización
+    url: https://crdt.tech/
+keywords: [sincronización, sync, pull, push, cursor, conflictos, last write wins, tombstones, background task, versiones]
+goal: Implementar un protocolo de sincronización bidireccional robusto, entender los tipos de conflicto y elegir una estrategia de resolución adecuada al dominio.
+technologies: [Expo SDK 58, expo-sqlite, expo-background-task, expo-task-manager, NetInfo, TanStack Query, NativeWind]
+features:
+  - Lista de compras compartida entre varios dispositivos
+  - Cambios locales inmediatos y envío posterior
+  - Descarga incremental solo de lo que cambió
+  - Borrados sincronizados con tombstones
+  - Resolución de conflictos por campo
+  - Sincronización periódica en segundo plano
+---
+
+## Descripción del proyecto
+
+Una **lista de compras compartida**: una familia la edita desde varios teléfonos, a veces sin conexión. Cuando vuelven a tener red, todos deben ver la misma lista, sin perder cambios y sin que reaparezcan productos borrados.
+
+Partimos del patrón outbox del proyecto [Offline-first](/docs/proyectos/offline-first) (enviar cambios locales) y añadimos lo que falta para una sincronización completa:
+
+1. **Pull incremental**: pedir al servidor solo los cambios posteriores a la última sincronización (cursor).
+2. **Tombstones**: los borrados se marcan, no se eliminan, para que viajen a otros dispositivos.
+3. **Conflictos**: decidir qué ocurre si dos personas editan el mismo elemento sin conexión.
+
+## Arquitectura propuesta
+
+<Flow
+  steps={[
+    { title: '1. Push', desc: 'Enviar outbox local', tone: 'brand' },
+    { title: '2. Pull', desc: 'GET /changes?since=cursor' },
+    { title: '3. Merge', desc: 'Aplicar y resolver conflictos', tone: 'brand' },
+    { title: '4. Cursor', desc: 'Guardar nuevo cursor' },
+    { title: '5. UI', desc: 'Invalidar consultas' },
+  ]}
+  caption="Siempre push antes que pull: así el servidor ya conoce nuestros cambios al calcular el estado final."
+/>
+
+### Estrategias de resolución de conflictos
+
+| Estrategia | Cómo funciona | Cuándo usarla |
+| --- | --- | --- |
+| Last write wins (fila) | Gana la versión con `updated_at` más reciente | Datos simples, conflictos raros |
+| Por campo | Se fusionan campos distintos; en el mismo campo gana el más reciente | Formularios, listas compartidas |
+| Servidor manda | El servidor rechaza cambios sobre versiones antiguas | Inventario, dinero |
+| CRDT | Estructuras que convergen matemáticamente | Edición colaborativa de texto |
+
+Usaremos **por campo**: si una persona marca "Leche" como comprada y otra cambia la cantidad a 2, se conservan ambos cambios.
+
+## Estructura de carpetas
+
+```tree
+lista-compartida/
+  src/
+    app/
+      _layout.tsx # Registra la tarea de segundo plano
+      index.tsx # Lista + estado de sincronización
+    features/
+      sync/
+        protocol.ts # Tipos del protocolo
+        merge.ts * # Resolución de conflictos (puro)
+        merge.test.ts
+        sync.ts * # push → pull → merge
+        background.ts # expo-background-task
+      items/
+        repository.ts
+        hooks.ts
+```
+
+## Diseño de las pantallas
+
+<Screens>
+  <ScreenSketch
+    title="Lista compartida"
+    blocks={[
+      { type: 'header', label: 'Compras', action: '⟳' },
+      { type: 'text', label: 'Sincronizado hace 1 min · 3 personas', muted: true },
+      { type: 'input', label: 'Añadir producto…' },
+      { type: 'list', items: ['Leche ×2', 'Pan', 'Huevos ×12', 'Café'], check: true, done: [1] },
+    ]}
+  />
+  <ScreenSketch
+    title="Cambios pendientes"
+    blocks={[
+      { type: 'header', label: 'Compras', action: '⟳' },
+      { type: 'card', label: 'Sin conexión', value: '2 cambios por enviar' },
+      { type: 'list', items: ['Leche ×2 ↑', 'Pan ✓ ↑', 'Huevos ×12', 'Café'], check: true, done: [1] },
+    ]}
+  />
+</Screens>
+
+## Implementación paso a paso
+
+<Steps>
+<Step title="Modelo y protocolo de sincronización">
+
+Cada elemento guarda, además de sus campos, **cuándo se modificó cada campo**. El servidor asigna un número de secuencia (`server_seq`) creciente a cada cambio: es el cursor.
+
+```ts title="features/sync/protocol.ts"
+/** Elemento de la lista con marca de tiempo por campo */
+export type Item = {
+  id: string; // UUID generado en el cliente
+  name: string;
+  quantity: number;
+  checked: boolean;
+  deleted: boolean; // tombstone
+  fieldUpdatedAt: { name: number; quantity: number; checked: number; deleted: number };
+};
+
+/** Cambio enviado al servidor: solo los campos modificados */
+export type LocalChange = { id: string; fields: Partial<Omit<Item, 'id' | 'fieldUpdatedAt'>>; at: number };
+
+/** Respuesta del pull: elementos completos cambiados desde el cursor */
+export type PullResponse = { items: Item[]; cursor: number; hasMore: boolean };
+```
+
+```sql title="Tabla local (migración)"
+CREATE TABLE items (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  quantity INTEGER NOT NULL DEFAULT 1,
+  checked INTEGER NOT NULL DEFAULT 0,
+  deleted INTEGER NOT NULL DEFAULT 0,
+  field_updated_at TEXT NOT NULL -- JSON con la marca por campo
+);
+CREATE TABLE outbox (seq INTEGER PRIMARY KEY AUTOINCREMENT, change TEXT NOT NULL);
+CREATE TABLE sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); -- cursor, última sincronización
+```
+
+</Step>
+<Step title="Fusión por campo: función pura y testeada">
+
+<CodeTabs>
+
+```ts title="features/sync/merge.ts"
+import type { Item } from './protocol';
+
+const FIELDS = ['name', 'quantity', 'checked', 'deleted'] as const;
+
+/**
+ * Combina la versión local y la remota campo a campo:
+ * en cada campo gana la modificación más reciente.
+ */
+export function mergeItem(local: Item | undefined, remote: Item): Item {
+  if (!local) return remote;
+  const merged: Item = { ...local, fieldUpdatedAt: { ...local.fieldUpdatedAt } };
+  for (const field of FIELDS) {
+    if (remote.fieldUpdatedAt[field] > local.fieldUpdatedAt[field]) {
+      (merged as Record<string, unknown>)[field] = remote[field];
+      merged.fieldUpdatedAt[field] = remote.fieldUpdatedAt[field];
+    }
+  }
+  return merged;
+}
+```
+
+```ts title="features/sync/merge.test.ts"
+import { mergeItem } from './merge';
+import type { Item } from './protocol';
+
+const base: Item = {
+  id: '1', name: 'Leche', quantity: 1, checked: false, deleted: false,
+  fieldUpdatedAt: { name: 100, quantity: 100, checked: 100, deleted: 100 },
+};
+
+test('conserva cambios concurrentes en campos distintos', () => {
+  const local = { ...base, checked: true, fieldUpdatedAt: { ...base.fieldUpdatedAt, checked: 200 } };
+  const remote = { ...base, quantity: 2, fieldUpdatedAt: { ...base.fieldUpdatedAt, quantity: 210 } };
+  expect(mergeItem(local, remote)).toMatchObject({ checked: true, quantity: 2 });
+});
+
+test('un borrado más reciente gana y no se resucita el elemento', () => {
+  const local = { ...base, name: 'Leche entera', fieldUpdatedAt: { ...base.fieldUpdatedAt, name: 150 } };
+  const remote = { ...base, deleted: true, fieldUpdatedAt: { ...base.fieldUpdatedAt, deleted: 300 } };
+  expect(mergeItem(local, remote).deleted).toBe(true);
+});
+```
+
+</CodeTabs>
+
+</Step>
+<Step title="El ciclo de sincronización: push, pull y merge">
+
+```ts title="features/sync/sync.ts"
+import type { SQLiteDatabase } from 'expo-sqlite';
+import { api } from '@/lib/api-client';
+import { mergeItem } from './merge';
+import type { Item, LocalChange, PullResponse } from './protocol';
+
+type ItemRow = { id: string; name: string; quantity: number; checked: number; deleted: number; field_updated_at: string };
+
+const toItem = (r: ItemRow): Item => ({
+  id: r.id, name: r.name, quantity: r.quantity, checked: r.checked === 1, deleted: r.deleted === 1,
+  fieldUpdatedAt: JSON.parse(r.field_updated_at),
+});
+
+async function getMeta(db: SQLiteDatabase, key: string) {
+  return (await db.getFirstAsync<{ value: string }>('SELECT value FROM sync_meta WHERE key = ?', key))?.value;
+}
+
+let inFlight: Promise<void> | null = null;
+
+/** Un único ciclo de sincronización a la vez */
+export function sync(db: SQLiteDatabase) {
+  inFlight ??= runSync(db).finally(() => (inFlight = null));
+  return inFlight;
+}
+
+async function runSync(db: SQLiteDatabase) {
+  // 1. PUSH: enviamos todos los cambios locales en orden
+  const pending = await db.getAllAsync<{ seq: number; change: string }>('SELECT * FROM outbox ORDER BY seq');
+  if (pending.length > 0) {
+    const changes: LocalChange[] = pending.map((p) => JSON.parse(p.change));
+    await api.post('/lists/family/changes', { changes }); // el servidor aplica la misma fusión por campo
+    await db.runAsync('DELETE FROM outbox WHERE seq <= ?', pending.at(-1)!.seq);
+  }
+
+  // 2. PULL: pedimos solo lo cambiado desde el último cursor, en páginas
+  let cursor = Number((await getMeta(db, 'cursor')) ?? 0);
+  let hasMore = true;
+  while (hasMore) {
+    const { data } = await api.get<PullResponse>(`/lists/family/changes?since=${cursor}&limit=200`);
+
+    // 3. MERGE: aplicamos cada elemento remoto sobre el local en una transacción
+    await db.withExclusiveTransactionAsync(async (tx) => {
+      for (const remote of data.items) {
+        const row = await tx.getFirstAsync<ItemRow>('SELECT * FROM items WHERE id = ?', remote.id);
+        const merged = mergeItem(row ? toItem(row) : undefined, remote);
+        await tx.runAsync(
+          `INSERT INTO items (id, name, quantity, checked, deleted, field_updated_at) VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT (id) DO UPDATE SET name = excluded.name, quantity = excluded.quantity,
+             checked = excluded.checked, deleted = excluded.deleted, field_updated_at = excluded.field_updated_at`,
+          merged.id, merged.name, merged.quantity, merged.checked ? 1 : 0, merged.deleted ? 1 : 0, JSON.stringify(merged.fieldUpdatedAt),
+        );
+      }
+      // 4. Guardamos el cursor en la misma transacción que los datos
+      await tx.runAsync(`INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('cursor', ?)`, String(data.cursor));
+      await tx.runAsync(`INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('lastSyncAt', ?)`, String(Date.now()));
+    });
+
+    cursor = data.cursor;
+    hasMore = data.hasMore;
+  }
+}
+```
+
+</Step>
+<Step title="Cambios locales: aplicar y encolar">
+
+```ts title="features/items/repository.ts"
+import { randomUUID } from 'expo-crypto';
+import type { SQLiteDatabase } from 'expo-sqlite';
+import type { LocalChange } from '../sync/protocol';
+
+type EditableField = 'name' | 'quantity' | 'checked' | 'deleted';
+
+export async function updateItem(db: SQLiteDatabase, id: string, fields: Partial<Record<EditableField, string | number | boolean>>) {
+  const at = Date.now();
+  await db.withExclusiveTransactionAsync(async (tx) => {
+    const row = await tx.getFirstAsync<{ field_updated_at: string }>('SELECT field_updated_at FROM items WHERE id = ?', id);
+    const stamps = row ? JSON.parse(row.field_updated_at) : { name: 0, quantity: 0, checked: 0, deleted: 0 };
+
+    for (const [field, value] of Object.entries(fields)) {
+      stamps[field] = at;
+      const sqlValue = typeof value === 'boolean' ? (value ? 1 : 0) : value;
+      await tx.runAsync(`UPDATE items SET ${field} = ? WHERE id = ?`, sqlValue, id); // field viene de una unión cerrada
+    }
+    await tx.runAsync('UPDATE items SET field_updated_at = ? WHERE id = ?', JSON.stringify(stamps), id);
+
+    const change: LocalChange = { id, fields, at };
+    await tx.runAsync('INSERT INTO outbox (change) VALUES (?)', JSON.stringify(change));
+  });
+}
+
+export async function addItem(db: SQLiteDatabase, name: string) {
+  const id = randomUUID();
+  const at = Date.now();
+  await db.runAsync(
+    'INSERT INTO items (id, name, quantity, checked, deleted, field_updated_at) VALUES (?, ?, 1, 0, 0, ?)',
+    id, name, JSON.stringify({ name: at, quantity: at, checked: at, deleted: at }),
+  );
+  await db.runAsync('INSERT INTO outbox (change) VALUES (?)', JSON.stringify({ id, fields: { name, quantity: 1, checked: false, deleted: false }, at }));
+  return id;
+}
+
+/** Borrar = marcar tombstone; la fila se purga cuando todos los dispositivos lo hayan recibido */
+export const deleteItem = (db: SQLiteDatabase, id: string) => updateItem(db, id, { deleted: true });
+```
+
+</Step>
+<Step title="Sincronización en segundo plano">
+
+```ts title="features/sync/background.ts"
+import * as BackgroundTask from 'expo-background-task';
+import * as TaskManager from 'expo-task-manager';
+import { openDatabaseAsync } from 'expo-sqlite';
+import { sync } from './sync';
+
+const SYNC_TASK = 'shopping-list-sync';
+
+// Ámbito global: el sistema puede ejecutar la tarea sin ninguna pantalla montada
+TaskManager.defineTask(SYNC_TASK, async () => {
+  try {
+    const db = await openDatabaseAsync('shopping.db');
+    await sync(db);
+    return BackgroundTask.BackgroundTaskResult.Success;
+  } catch {
+    return BackgroundTask.BackgroundTaskResult.Failed;
+  }
+});
+
+export async function registerBackgroundSync() {
+  const status = await BackgroundTask.getStatusAsync();
+  if (status !== BackgroundTask.BackgroundTaskStatus.Available) return;
+  if (!(await TaskManager.isTaskRegisteredAsync(SYNC_TASK))) {
+    // El sistema decide el momento exacto; el mínimo es orientativo (minutos)
+    await BackgroundTask.registerTaskAsync(SYNC_TASK, { minimumInterval: 30 });
+  }
+}
+```
+
+Con la app abierta, sincroniza al recuperar la red, al volver a primer plano y tras cada cambio local (con *debounce*), como en [Offline-first](/docs/proyectos/offline-first). Para ver los cambios de otros en tiempo real, un mensaje por [WebSocket](/docs/datos/websockets) del tipo `"hay cambios"` puede disparar `sync(db)` inmediatamente.
+
+</Step>
+</Steps>
+
+## Qué has aprendido
+
+- **Protocolo push → pull → merge** con cursor incremental y paginación.
+- **Tombstones** para que los borrados se propaguen y no reaparezcan elementos.
+- **Resolución de conflictos por campo** como función pura con tests de los casos difíciles.
+- **Atomicidad**: datos y cursor se guardan en la misma transacción; si algo falla, el siguiente ciclo repite sin perder ni duplicar.
+- **Sincronización en segundo plano** con `expo-background-task` y `TaskManager`.
+
+## Mejoras y funcionalidades adicionales
+
+<Checklist
+  items={[
+    'Relojes lógicos (Hybrid Logical Clocks) en lugar de la hora del dispositivo',
+    'Purgado de tombstones antiguos en el servidor y el cliente',
+    'Notificación por WebSocket para sincronizar al instante',
+    'Varias listas con permisos por miembro',
+    'Historial de cambios y deshacer',
+    'Comparar con soluciones gestionadas (PowerSync, ElectricSQL, Replicache)',
+    'Tests de propiedades: fusionar en cualquier orden da el mismo resultado',
+    'Métricas de sincronización: duración, conflictos, errores',
+  ]}
+/>

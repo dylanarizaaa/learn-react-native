@@ -1,0 +1,544 @@
+---
+title: Aplicación de comercio electrónico
+sidebarTitle: E-commerce
+description: Una tienda completa con catálogo infinito, búsqueda, detalle con deep links, favoritos optimistas, carrito persistente, checkout validado y pago con Stripe a través de tu backend.
+difficulty: avanzado
+time: 600
+prerequisites:
+  - proyectos/autenticacion-con-api
+  - proyectos/ventas
+  - datos/paginacion
+related:
+  - arquitectura/arquitectura-de-carpetas
+  - datos/tanstack-query
+  - calidad/seguridad
+resources:
+  - title: Stripe — React Native SDK
+    url: https://docs.stripe.com/payments/accept-a-payment?platform=react-native
+  - title: Expo — Stripe
+    url: https://docs.expo.dev/versions/latest/sdk/stripe/
+  - title: TanStack Query — Actualizaciones optimistas
+    url: https://tanstack.com/query/latest/docs/framework/react/guides/optimistic-updates
+goal: Integrar todo lo aprendido en una app de producto real con arquitectura por funcionalidades, estado del servidor y del cliente, navegación profunda y pagos seguros.
+technologies: [Expo SDK 58, Expo Router, TanStack Query, Zustand, NativeWind, React Hook Form, Zod, Stripe, expo-image]
+features:
+  - Catálogo con scroll infinito, categorías y búsqueda
+  - Detalle de producto accesible por enlace (miapp://producto/42)
+  - Favoritos con actualización optimista
+  - Carrito persistente con cantidades y totales
+  - Checkout con dirección validada y pago con Stripe
+  - Historial de pedidos del usuario
+---
+
+## Descripción del proyecto
+
+Este es el proyecto integrador: una tienda con todo lo que espera un usuario de una app de comercio moderna. No introduce conceptos nuevos, sino que **combina** los anteriores con una arquitectura que podría mantener un equipo durante años.
+
+El punto crítico es el **pago**: la app **nunca** calcula el precio final ni maneja claves secretas. Envía el contenido del carrito a tu backend, que recalcula el total, crea un *PaymentIntent* en Stripe y devuelve solo un secreto de cliente de un solo uso.
+
+## Arquitectura propuesta
+
+<Layers
+  layers={[
+    { title: 'src/app', desc: 'Rutas delgadas', items: ['(tabs)/tienda', '(tabs)/buscar', '(tabs)/carrito', '(tabs)/perfil', 'producto/[id]', 'checkout', 'pedidos'], tone: 'brand' },
+    { title: 'features', desc: 'Por funcionalidad', items: ['catalog', 'favorites', 'cart', 'checkout', 'orders', 'auth'] },
+    { title: 'Estado', desc: 'Servidor y cliente', items: ['TanStack Query (catálogo, pedidos, favoritos)', 'Zustand (carrito)'] },
+    { title: 'Backend', desc: 'Tu API', items: ['/products', '/favorites', '/orders', '/payments/intent'], tone: 'muted' },
+  ]}
+/>
+
+<Flow
+  steps={[
+    { title: 'Carrito', desc: 'Zustand' },
+    { title: 'POST /payments/intent', desc: 'Backend recalcula el total', tone: 'brand' },
+    { title: 'PaymentSheet', desc: 'UI segura de Stripe' },
+    { title: 'Webhook', desc: 'Backend confirma el pedido' },
+    { title: 'Pedidos', desc: 'invalidateQueries' },
+  ]}
+  caption="La confirmación definitiva del pago llega al backend por webhook, no desde la app."
+/>
+
+## Estructura de carpetas
+
+```tree
+tienda/
+  src/
+    app/
+      _layout.tsx # Query, sesión, tema, Stripe
+      (tabs)/
+        _layout.tsx
+        tienda.tsx
+        buscar.tsx
+        carrito.tsx
+        perfil.tsx
+      producto/
+        [id].tsx
+      checkout.tsx
+      pedidos/
+        index.tsx
+        [id].tsx
+    features/
+      catalog/
+        api.ts
+        hooks.ts *
+        components/
+          product-card.tsx
+          product-gallery.tsx
+      favorites/
+        hooks.ts * # Mutación optimista
+      cart/
+        store.ts *
+        components/
+          cart-line.tsx
+      checkout/
+        schema.ts
+        use-checkout.ts *
+      orders/
+        hooks.ts
+    components/ # Kit
+    lib/
+      api-client.ts
+```
+
+## Diseño de las pantallas
+
+<Screens>
+  <ScreenSketch
+    title="Tienda"
+    blocks={[
+      { type: 'header', label: 'Tienda', action: '🛒 3' },
+      { type: 'chips', items: ['Todo', 'Ropa', 'Hogar', 'Tecnología'], active: 0 },
+      { type: 'grid', items: [{ label: 'Zapatillas', value: '$59.990' }, { label: 'Mochila', value: '$34.990' }, { label: 'Lámpara', value: '$24.990' }, { label: 'Audífonos', value: '$45.990' }] },
+      { type: 'tabs', items: ['Tienda', 'Buscar', 'Carrito', 'Perfil'], active: 0 },
+    ]}
+  />
+  <ScreenSketch
+    title="Producto"
+    blocks={[
+      { type: 'header', label: 'Zapatillas Runner', back: true, action: '♡' },
+      { type: 'image', label: 'Galería', height: 120 },
+      { type: 'text', label: '$59.990' },
+      { type: 'chips', items: ['38', '39', '40', '41'], active: 2 },
+      { type: 'text', label: 'Ligeras y transpirables para correr a diario.', muted: true },
+      { type: 'button', label: 'Añadir al carrito' },
+    ]}
+  />
+  <ScreenSketch
+    title="Checkout"
+    blocks={[
+      { type: 'header', label: 'Checkout', back: true },
+      { type: 'input', label: 'Dirección' },
+      { type: 'input', label: 'Comuna' },
+      { type: 'total', label: 'Subtotal', value: '$129.970' },
+      { type: 'total', label: 'Envío', value: 'Gratis' },
+      { type: 'total', label: 'Total', value: '$129.970' },
+      { type: 'button', label: 'Pagar' },
+    ]}
+  />
+</Screens>
+
+## Implementación paso a paso
+
+<Steps>
+<Step title="Dependencias y proveedor de Stripe">
+
+```bash
+npx expo install @stripe/stripe-react-native expo-image
+npm install @tanstack/react-query zustand react-hook-form zod @hookform/resolvers axios
+```
+
+```json title="app.json (fragmento)"
+{
+  "expo": {
+    "scheme": "tienda",
+    "plugins": [["@stripe/stripe-react-native", { "merchantIdentifier": "merchant.com.miempresa.tienda", "enableGooglePay": true }]]
+  }
+}
+```
+
+```tsx title="src/app/_layout.tsx (fragmento)"
+import { StripeProvider } from '@stripe/stripe-react-native';
+
+// La clave publicable de Stripe es pública por diseño; la secreta vive solo en el backend
+<StripeProvider publishableKey={process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY!} urlScheme="tienda" merchantIdentifier="merchant.com.miempresa.tienda">
+  {/* …QueryProvider, SessionProvider, ThemeProvider y el Stack */}
+</StripeProvider>;
+```
+
+<Callout type="warning" title="Development build">
+El SDK de Stripe incluye código nativo: necesitas un [development build](/docs/introduccion/expo-go-vs-development-builds), no funciona en Expo Go.
+</Callout>
+
+</Step>
+<Step title="Catálogo con scroll infinito">
+
+<CodeTabs>
+
+```ts title="features/catalog/hooks.ts"
+import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { catalogApi, type CatalogFilters } from './api';
+
+export const catalogKeys = {
+  all: ['catalog'] as const,
+  list: (f: CatalogFilters) => [...catalogKeys.all, 'list', f] as const,
+  product: (id: string) => [...catalogKeys.all, 'product', id] as const,
+};
+
+export function useCatalog(filters: CatalogFilters) {
+  return useInfiniteQuery({
+    queryKey: catalogKeys.list(filters),
+    queryFn: ({ pageParam, signal }) => catalogApi.list({ ...filters, cursor: pageParam }, signal),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+    placeholderData: keepPreviousData,
+    select: (data) => data.pages.flatMap((p) => p.items),
+  });
+}
+
+export function useProduct(id: string) {
+  return useQuery({ queryKey: catalogKeys.product(id), queryFn: ({ signal }) => catalogApi.get(id, signal) });
+}
+```
+
+```tsx title="src/app/(tabs)/tienda.tsx"
+import { useState } from 'react';
+import { router } from 'expo-router';
+import { FlatList, RefreshControl } from 'react-native';
+import { ErrorState, ListSkeleton, Spinner } from '@/components/feedback';
+import { ProductCard } from '@/features/catalog/components/product-card';
+import { CategoryChips } from '@/features/catalog/components/category-chips';
+import { useCatalog } from '@/features/catalog/hooks';
+
+export default function StoreScreen() {
+  const [category, setCategory] = useState<string | undefined>();
+  const { data: products, isPending, isError, refetch, isRefetching, fetchNextPage, hasNextPage, isFetchingNextPage } =
+    useCatalog({ category });
+
+  if (isPending) return <ListSkeleton />;
+  if (isError) return <ErrorState onRetry={refetch} />;
+
+  return (
+    <FlatList
+      className="flex-1 bg-background"
+      data={products}
+      numColumns={2}
+      keyExtractor={(p) => p.id}
+      columnWrapperClassName="gap-3"
+      contentContainerClassName="gap-3 p-4"
+      ListHeaderComponent={<CategoryChips value={category} onChange={setCategory} />}
+      renderItem={({ item }) => (
+        <ProductCard product={item} onPress={() => router.push({ pathname: '/producto/[id]', params: { id: item.id } })} />
+      )}
+      onEndReached={() => hasNextPage && !isFetchingNextPage && fetchNextPage()}
+      onEndReachedThreshold={0.6}
+      ListFooterComponent={isFetchingNextPage ? <Spinner className="my-6" /> : null}
+      refreshControl={<RefreshControl refreshing={isRefetching && !isFetchingNextPage} onRefresh={refetch} />}
+    />
+  );
+}
+```
+
+</CodeTabs>
+
+</Step>
+<Step title="Detalle del producto y deep links">
+
+Como la ruta es `producto/[id].tsx` y la app tiene `scheme: "tienda"`, el enlace `tienda://producto/42` (o un Universal Link `https://tienda.com/producto/42`) abre esta pantalla sin configuración adicional.
+
+```tsx title="src/app/producto/[id].tsx"
+import { Stack, router, useLocalSearchParams } from 'expo-router';
+import { Image } from 'expo-image';
+import { useState } from 'react';
+import { ScrollView, Share, View } from 'react-native';
+import { ErrorState, LoadingState } from '@/components/feedback';
+import { Button, SegmentedControl, Text } from '@/components/ui';
+import { useCartStore } from '@/features/cart/store';
+import { useProduct } from '@/features/catalog/hooks';
+import { FavoriteButton } from '@/features/favorites/favorite-button';
+import { formatMoney } from '@/lib/format';
+import * as Linking from 'expo-linking';
+
+export default function ProductScreen() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const { data: product, isPending, isError, refetch } = useProduct(id);
+  const addToCart = useCartStore((s) => s.add);
+  const [size, setSize] = useState<string | null>(null);
+
+  if (isPending) return <LoadingState />;
+  if (isError) return <ErrorState onRetry={refetch} />;
+
+  const needsSize = product.sizes.length > 0;
+
+  return (
+    <ScrollView className="flex-1 bg-background" contentContainerClassName="gap-4 pb-10">
+      <Stack.Screen
+        options={{
+          title: product.name,
+          headerRight: () => (
+            <View className="flex-row gap-2">
+              <FavoriteButton productId={product.id} />
+              <Button variant="ghost" size="icon" accessibilityLabel="Compartir"
+                onPress={() => Share.share({ message: `${product.name} ${Linking.createURL(`/producto/${product.id}`)}` })}>
+                ⇪
+              </Button>
+            </View>
+          ),
+        }}
+      />
+      <Image source={{ uri: product.images[0] }} style={{ width: '100%', aspectRatio: 1 }} contentFit="cover" transition={200} />
+      <View className="gap-3 px-5">
+        <Text variant="title">{product.name}</Text>
+        <Text variant="heading" tone="primary">{formatMoney(product.price)}</Text>
+        {needsSize ? (
+          <SegmentedControl accessibilityLabel="Talla" options={product.sizes.map((s) => ({ value: s, label: s }))} value={size ?? undefined} onChange={setSize} />
+        ) : null}
+        <Text tone="muted">{product.description}</Text>
+        <Button
+          size="lg"
+          fullWidth
+          disabled={product.stock === 0 || (needsSize && !size)}
+          onPress={() => {
+            addToCart({ productId: product.id, name: product.name, price: product.price, image: product.images[0], size });
+            router.push('/carrito');
+          }}
+        >
+          {product.stock === 0 ? 'Agotado' : needsSize && !size ? 'Elige una talla' : 'Añadir al carrito'}
+        </Button>
+      </View>
+    </ScrollView>
+  );
+}
+```
+
+</Step>
+<Step title="Favoritos con actualización optimista">
+
+```ts title="features/favorites/hooks.ts"
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { api } from '@/lib/api-client';
+
+const key = ['favorites'] as const;
+
+export function useFavoriteIds() {
+  return useQuery({
+    queryKey: key,
+    queryFn: async () => new Set((await api.get<string[]>('/me/favorites')).data),
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useToggleFavorite() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ productId, favorite }: { productId: string; favorite: boolean }) =>
+      favorite ? api.put(`/me/favorites/${productId}`) : api.delete(`/me/favorites/${productId}`),
+    onMutate: async ({ productId, favorite }) => {
+      await queryClient.cancelQueries({ queryKey: key });
+      const previous = queryClient.getQueryData<Set<string>>(key);
+      const next = new Set(previous);
+      if (favorite) next.add(productId);
+      else next.delete(productId);
+      queryClient.setQueryData(key, next); // el corazón cambia al instante
+      return { previous };
+    },
+    onError: (_e, _v, onMutateResult) => queryClient.setQueryData(key, onMutateResult?.previous),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: key }),
+  });
+}
+```
+
+</Step>
+<Step title="Carrito persistente">
+
+```ts title="features/cart/store.ts"
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { create } from 'zustand';
+import { createJSONStorage, persist } from 'zustand/middleware';
+
+export type CartLine = { productId: string; name: string; price: number; image: string; size: string | null; quantity: number };
+const lineKey = (l: Pick<CartLine, 'productId' | 'size'>) => `${l.productId}:${l.size ?? ''}`;
+
+type CartState = {
+  lines: CartLine[];
+  add: (item: Omit<CartLine, 'quantity'>) => void;
+  setQuantity: (key: string, quantity: number) => void;
+  clear: () => void;
+};
+
+export const useCartStore = create<CartState>()(
+  persist(
+    (set) => ({
+      lines: [],
+      add: (item) =>
+        set((s) => {
+          const k = lineKey(item);
+          const existing = s.lines.find((l) => lineKey(l) === k);
+          return existing
+            ? { lines: s.lines.map((l) => (lineKey(l) === k ? { ...l, quantity: Math.min(l.quantity + 1, 10) } : l)) }
+            : { lines: [...s.lines, { ...item, quantity: 1 }] };
+        }),
+      setQuantity: (k, quantity) =>
+        set((s) => ({
+          lines: quantity <= 0 ? s.lines.filter((l) => lineKey(l) !== k) : s.lines.map((l) => (lineKey(l) === k ? { ...l, quantity } : l)),
+        })),
+      clear: () => set({ lines: [] }),
+    }),
+    { name: 'shop-cart-v1', storage: createJSONStorage(() => AsyncStorage) },
+  ),
+);
+
+export { lineKey };
+export const selectSubtotal = (s: CartState) => s.lines.reduce((sum, l) => sum + l.price * l.quantity, 0);
+export const selectItemCount = (s: CartState) => s.lines.reduce((n, l) => n + l.quantity, 0);
+```
+
+</Step>
+<Step title="Checkout y pago con Stripe">
+
+<CodeTabs>
+
+```ts title="features/checkout/schema.ts"
+import { z } from 'zod';
+
+export const shippingSchema = z.object({
+  fullName: z.string().trim().min(3, 'Escribe tu nombre completo'),
+  street: z.string().trim().min(5, 'Escribe la dirección'),
+  city: z.string().trim().min(2, 'Escribe la comuna o ciudad'),
+  phone: z.string().regex(/^\+?\d{8,15}$/, 'Teléfono no válido'),
+});
+
+export type ShippingValues = z.infer<typeof shippingSchema>;
+```
+
+```ts title="features/checkout/use-checkout.ts"
+import { useStripe } from '@stripe/stripe-react-native';
+import { useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
+import { api } from '@/lib/api-client';
+import { useCartStore } from '@/features/cart/store';
+import type { ShippingValues } from './schema';
+
+type IntentResponse = { orderId: string; clientSecret: string; total: number };
+
+export function useCheckout() {
+  const { initPaymentSheet, presentPaymentSheet } = useStripe();
+  const queryClient = useQueryClient();
+  const [status, setStatus] = useState<'idle' | 'processing' | 'success' | 'error'>('idle');
+
+  async function pay(shipping: ShippingValues): Promise<{ ok: true; orderId: string } | { ok: false; message: string }> {
+    setStatus('processing');
+    try {
+      const lines = useCartStore.getState().lines;
+      // 1. El backend valida stock y precios, crea el pedido y el PaymentIntent
+      const { data } = await api.post<IntentResponse>('/payments/intent', {
+        items: lines.map((l) => ({ productId: l.productId, size: l.size, quantity: l.quantity })),
+        shipping,
+      });
+
+      // 2. Preparamos la hoja de pago nativa de Stripe
+      const init = await initPaymentSheet({
+        merchantDisplayName: 'Mi Tienda',
+        paymentIntentClientSecret: data.clientSecret,
+        returnURL: 'tienda://checkout',
+        defaultBillingDetails: { name: shipping.fullName, phone: shipping.phone },
+      });
+      if (init.error) throw new Error(init.error.message);
+
+      // 3. El usuario introduce la tarjeta (o Apple Pay / Google Pay) en la UI de Stripe
+      const result = await presentPaymentSheet();
+      if (result.error) {
+        setStatus('idle');
+        return { ok: false, message: result.error.code === 'Canceled' ? 'Pago cancelado' : result.error.message };
+      }
+
+      // 4. Éxito: vaciamos el carrito; el backend confirmará el pedido vía webhook
+      useCartStore.getState().clear();
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
+      setStatus('success');
+      return { ok: true, orderId: data.orderId };
+    } catch (error) {
+      setStatus('error');
+      return { ok: false, message: error instanceof Error ? error.message : 'No se pudo completar el pago' };
+    }
+  }
+
+  return { pay, status };
+}
+```
+
+```tsx title="src/app/checkout.tsx"
+import { zodResolver } from '@hookform/resolvers/zod';
+import { router } from 'expo-router';
+import { useForm } from 'react-hook-form';
+import { Alert, ScrollView, View } from 'react-native';
+import { FormInput } from '@/components/form';
+import { Button, Text } from '@/components/ui';
+import { selectSubtotal, useCartStore } from '@/features/cart/store';
+import { shippingSchema } from '@/features/checkout/schema';
+import { useCheckout } from '@/features/checkout/use-checkout';
+import { formatMoney } from '@/lib/format';
+
+export default function CheckoutScreen() {
+  const subtotal = useCartStore(selectSubtotal);
+  const { pay, status } = useCheckout();
+  const { control, handleSubmit } = useForm({
+    resolver: zodResolver(shippingSchema),
+    defaultValues: { fullName: '', street: '', city: '', phone: '' },
+  });
+
+  const onPay = handleSubmit(async (shipping) => {
+    const result = await pay(shipping);
+    if (result.ok) router.replace({ pathname: '/pedidos/[id]', params: { id: result.orderId } });
+    else Alert.alert('Pago no completado', result.message);
+  });
+
+  return (
+    <ScrollView className="flex-1 bg-background" contentContainerClassName="gap-4 p-5" keyboardShouldPersistTaps="handled">
+      <Text variant="heading">Datos de envío</Text>
+      <FormInput control={control} name="fullName" label="Nombre completo" autoComplete="name" />
+      <FormInput control={control} name="street" label="Dirección" autoComplete="street-address" />
+      <FormInput control={control} name="city" label="Comuna / ciudad" />
+      <FormInput control={control} name="phone" label="Teléfono" inputMode="tel" autoComplete="tel" />
+      <View className="gap-1 border-t border-border pt-4">
+        <Text tone="muted">El total final, con envío e impuestos, se calcula en el servidor.</Text>
+        <Text variant="heading">Subtotal: {formatMoney(subtotal)}</Text>
+      </View>
+      <Button size="lg" fullWidth onPress={onPay} loading={status === 'processing'} disabled={subtotal === 0}>
+        Pagar
+      </Button>
+    </ScrollView>
+  );
+}
+```
+
+</CodeTabs>
+
+</Step>
+</Steps>
+
+<Callout type="info" title="El backend del pago (resumen)">
+El endpoint `POST /payments/intent` debe: autenticar al usuario, recalcular el total con los precios de tu base de datos, reservar stock, crear el pedido en estado `pending` y crear un *PaymentIntent* con la clave secreta de Stripe. Un *webhook* `payment_intent.succeeded` marca el pedido como pagado. La app solo muestra el estado.
+</Callout>
+
+## Qué has aprendido
+
+- **Arquitectura por funcionalidades** en una app grande, con rutas delgadas.
+- **Paginación infinita** con `select` para aplanar páginas y `keepPreviousData` al cambiar filtros.
+- **Deep links** gratuitos gracias a Expo Router y enlaces compartibles con `createURL`.
+- **Actualizaciones optimistas** con reversión en caso de error.
+- **Pagos seguros**: el cliente nunca fija precios ni usa claves secretas; el backend y los webhooks deciden.
+
+## Mejoras y funcionalidades adicionales
+
+<Checklist
+  items={[
+    'Búsqueda con sugerencias y filtros por precio y talla',
+    'Apple Pay y Google Pay como métodos destacados',
+    'Seguimiento del envío en tiempo real (WebSockets)',
+    'Notificaciones push de cambios de estado del pedido',
+    'Reseñas con fotos de los clientes',
+    'Cupones de descuento validados en el servidor',
+    'Universal Links / App Links con dominio propio',
+    'Pruebas E2E del flujo de compra con Maestro',
+  ]}
+/>
