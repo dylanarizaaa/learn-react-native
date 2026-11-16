@@ -1,0 +1,147 @@
+---
+title: Memoización
+description: React Compiler en Expo (cómo activarlo, verificarlo y excluir componentes) y las reglas para memoizar a mano con memo, useMemo y useCallback cuando no lo usas.
+difficulty: avanzado
+time: 18
+prerequisites:
+  - react-typescript/usememo-y-usecallback
+  - calidad/rendimiento
+related:
+  - calidad/optimizacion-de-flatlist
+  - arquitectura/estado-global-zustand
+  - calidad/depuracion
+resources:
+  - title: Expo — React Compiler
+    url: https://docs.expo.dev/guides/react-compiler/
+  - title: React — React Compiler
+    url: https://react.dev/learn/react-compiler
+  - title: React — memo
+    url: https://react.dev/reference/react/memo
+keywords: [memoización, React Compiler, memo, useMemo, useCallback, use no memo, reactCompiler, rendimiento, renders]
+---
+
+## Introducción conceptual
+
+<Term slug="memoizacion">Memoizar</Term> es recordar un resultado para no recalcularlo. En React sirve para dos cosas: evitar **cálculos repetidos** y evitar **renders innecesarios** de componentes cuyas props no cambiaron.
+
+Durante años se hizo a mano con `memo`, `useMemo` y `useCallback`, con dos problemas: es fácil olvidarlo donde importa y es fácil abusar de él donde no. El **<Term slug="react-compiler">React Compiler</Term>** resuelve esto en tiempo de build: analiza tus componentes y añade la memoización automáticamente, de forma más granular que a mano.
+
+En Expo, Babel ya está configurado para el compilador desde SDK 54; solo tienes que activarlo.
+
+<Overview
+  purpose="Evitar trabajo y renders innecesarios sin llenar el código de memoización manual."
+  importance="Mejora la fluidez en pantallas complejas y listas, y elimina una fuente habitual de errores (dependencias olvidadas)."
+  when="Activa React Compiler en proyectos nuevos; memoiza a mano solo si no puedes usarlo o en casos medidos."
+  problem="Evita renders en cascada y el código defensivo lleno de useCallback que nadie sabe si sirve."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="Sin compilador">
+    - `memo` en componentes costosos.
+    - `useCallback` para callbacks que pasas a componentes memoizados.
+    - `useMemo` para cálculos caros o valores que son dependencias.
+    - Dependencias mantenidas a mano.
+  </Column>
+  <Column title="Con React Compiler" tone="good">
+    - Escribes componentes normales.
+    - El compilador memoiza valores, JSX y callbacks.
+    - Las reglas de React se validan con el linter.
+    - `"use no memo"` para excluir un componente concreto.
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+Activar React Compiler:
+
+```json title="app.json"
+{
+  "expo": {
+    "experiments": {
+      "reactCompiler": true
+    }
+  }
+}
+```
+
+```bash
+# Las reglas del compilador ya vienen en eslint-config-expo (SDK 55+)
+npx expo lint
+```
+
+Con el compilador, este componente no necesita ninguna memoización manual:
+
+```tsx title="src/features/cart/components/cart-screen.tsx"
+import { FlatList, Text, View } from 'react-native';
+import { selectSubtotal, useCartStore } from '../store/cart-store';
+import { CartRow } from './cart-row';
+
+export function CartScreen() {
+  const items = useCartStore((s) => s.items);
+  const setQuantity = useCartStore((s) => s.setQuantity);
+  const subtotal = useCartStore(selectSubtotal);
+
+  // El compilador memoiza este cálculo y el callback automáticamente
+  const itemCount = items.reduce((n, i) => n + i.quantity, 0);
+  const handleChange = (productId: string, quantity: number) => setQuantity(productId, quantity);
+
+  return (
+    <View className="flex-1">
+      <Text className="p-4 text-lg font-semibold">
+        {itemCount} artículos · ${subtotal.toFixed(2)}
+      </Text>
+      <FlatList
+        data={items}
+        keyExtractor={(i) => i.productId}
+        renderItem={({ item }) => <CartRow item={item} onChangeQuantity={handleChange} />}
+      />
+    </View>
+  );
+}
+```
+
+Si un componente da problemas con el compilador, exclúyelo mientras lo investigas:
+
+```tsx
+function LegacyChart(props: ChartProps) {
+  'use no memo';
+  // …código que muta valores durante el render o usa una librería incompatible
+}
+```
+
+Sin compilador, la versión equivalente a mano:
+
+```tsx
+const itemCount = useMemo(() => items.reduce((n, i) => n + i.quantity, 0), [items]);
+const handleChange = useCallback(
+  (productId: string, quantity: number) => setQuantity(productId, quantity),
+  [setQuantity],
+);
+// …y CartRow envuelto en memo()
+```
+
+## Explicación del código
+
+- **`experiments.reactCompiler: true`** activa el plugin de Babel del compilador que Expo ya incluye. No hay que instalar nada más.
+- **El compilador necesita que sigas las reglas de React**: componentes puros, no mutar props ni estado, hooks en el nivel superior. El linter de Expo detecta las infracciones y el compilador omite (sin romper) los componentes que no puede optimizar.
+- **`'use no memo'`** es una directiva que excluye un componente o hook concreto: útil para aislar un problema o con librerías que dependen de mutaciones.
+- **Verificación**: en React Native DevTools, los componentes optimizados por el compilador aparecen marcados con una insignia "Memo ✨".
+- **Sin compilador**: `useMemo`, `useCallback` y `memo` deben aplicarse **juntos**; un `useCallback` cuyo consumidor no está memoizado no evita nada.
+
+## Buenas prácticas
+
+- **Activa el compilador desde el inicio** en proyectos nuevos y corrige las advertencias del linter.
+- **No elimines de golpe** toda la memoización manual de un proyecto existente: hazlo gradualmente y mide.
+- **Las mejores optimizaciones siguen siendo estructurales**: colocar el estado donde se usa y usar selectores en stores ([Renderizado y rendimiento](/docs/calidad/rendimiento)).
+
+### Errores comunes
+
+- Mutar objetos durante el render (`items.sort()` sobre el estado): rompe la memoización y es un bug incluso sin compilador. Usa `[...items].sort()` o `toSorted()`.
+- Memoizar cálculos triviales a mano "por si acaso".
+- Pensar que el compilador arregla listas mal configuradas: las [optimizaciones de FlatList](/docs/calidad/optimizacion-de-flatlist) siguen siendo necesarias.
+
+### Cuándo usar otra solución
+
+Si un cálculo es costoso de verdad (miles de elementos), además de memoizarlo considera hacerlo en el servidor, paginar los datos o calcularlo de forma incremental. Para estado global con muchas lecturas, los selectores de [Zustand](/docs/arquitectura/estado-global-zustand) evitan renders sin memoización.

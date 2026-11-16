@@ -1,0 +1,146 @@
+---
+title: Accesibilidad
+description: Apps usables con VoiceOver y TalkBack. Roles, etiquetas, estados, acciones, orden de foco, tamaño de toque, texto dinámico, contraste y movimiento reducido.
+difficulty: intermedio
+time: 25
+prerequisites:
+  - fundamentos/pressable-y-touchableopacity
+related:
+  - sistema-de-componentes/button
+  - sistema-de-componentes/input
+  - estilos/dimensiones
+resources:
+  - title: React Native — Accesibilidad
+    url: https://reactnative.dev/docs/accessibility
+  - title: Apple HIG — Accesibilidad
+    url: https://developer.apple.com/design/human-interface-guidelines/accessibility
+  - title: Android — Accesibilidad
+    url: https://developer.android.com/guide/topics/ui/accessibility
+  - title: WCAG 2.2
+    url: https://www.w3.org/TR/WCAG22/
+keywords: [accesibilidad, a11y, VoiceOver, TalkBack, accessibilityLabel, accessibilityRole, accessibilityState, accessibilityActions, contraste, fontScale, reduce motion]
+---
+
+## Introducción conceptual
+
+La accesibilidad hace que la app funcione para **todas** las personas: quien usa un lector de pantalla (VoiceOver en iOS, TalkBack en Android), quien aumenta el tamaño del texto, quien tiene baja visión, daltonismo, temblor en las manos o sensibilidad al movimiento. Además, en muchos países es un requisito legal, y las tiendas lo valoran.
+
+React Native expone las APIs de accesibilidad nativas con props como `accessibilityRole`, `accessibilityLabel` o `accessibilityState` (también acepta los equivalentes `role` y `aria-*`). La clave es que **un lector de pantalla solo conoce lo que tú le describes**.
+
+<Overview
+  purpose="Que cualquier persona pueda entender y usar todas las funciones de la app."
+  importance="Más de mil millones de personas tienen alguna discapacidad; además mejora la usabilidad para todos (texto grande, contraste, áreas táctiles)."
+  when="Desde el diseño y en cada componente; es mucho más caro añadirla al final."
+  problem="Evita botones anunciados como 'botón' sin nombre, controles inalcanzables y textos que se cortan al ampliar la fuente."
+/>
+
+## Explicación visual
+
+| Propiedad | Para qué | Ejemplo |
+| --- | --- | --- |
+| `accessibilityRole` | Qué es el elemento | `button`, `link`, `header`, `checkbox`, `switch`, `tab` |
+| `accessibilityLabel` | Qué se anuncia | "Eliminar gasto Supermercado" |
+| `accessibilityHint` | Qué ocurre al activarlo | "Abre el detalle del pedido" |
+| `accessibilityState` | Estado actual | `{ checked, disabled, selected, busy, expanded }` |
+| `accessibilityValue` | Valor de controles | `{ min: 0, max: 100, now: 40 }` o `{ text }` |
+| `accessibilityActions` | Acciones extra | Eliminar, archivar (sin gestos) |
+| `accessible` | Agrupar hijos en un elemento | Tarjetas con varios textos |
+
+<Flow
+  steps={[
+    { title: 'Diseño', desc: 'Contraste, tamaños, orden', tone: 'muted' },
+    { title: 'Componentes del kit', desc: 'Roles y estados por defecto', tone: 'brand' },
+    { title: 'Pantallas', desc: 'Etiquetas con contexto' },
+    { title: 'Pruebas', desc: 'VoiceOver, TalkBack, texto grande' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+Una fila de tarea accesible con casilla personalizada, acciones alternativas al gesto de deslizar y soporte de texto grande:
+
+```tsx title="src/features/tasks/components/task-row.tsx"
+import { AccessibilityInfo, Pressable, Text, View } from 'react-native';
+
+type Task = { id: string; title: string; done: boolean; dueDate?: string };
+
+type TaskRowProps = {
+  task: Task;
+  onToggle: (id: string) => void;
+  onDelete: (id: string) => void;
+  onOpen: (id: string) => void;
+};
+
+export function TaskRow({ task, onToggle, onDelete, onOpen }: TaskRowProps) {
+  function toggle() {
+    onToggle(task.id);
+    AccessibilityInfo.announceForAccessibility(task.done ? 'Tarea pendiente' : 'Tarea completada');
+  }
+
+  return (
+    <View className="min-h-14 flex-row items-center gap-3 px-4 py-2">
+      {/* Casilla: rol checkbox con estado, área táctil de al menos 44x44 */}
+      <Pressable
+        onPress={toggle}
+        hitSlop={10}
+        accessibilityRole="checkbox"
+        accessibilityState={{ checked: task.done }}
+        accessibilityLabel={`Marcar "${task.title}" como ${task.done ? 'pendiente' : 'completada'}`}
+        className={`h-6 w-6 items-center justify-center rounded-md border-2 ${task.done ? 'border-emerald-600 bg-emerald-600' : 'border-zinc-400'}`}
+      >
+        {task.done ? <Text className="text-xs font-bold text-white">✓</Text> : null}
+      </Pressable>
+
+      {/* Contenido: un solo elemento para el lector, con acciones personalizadas */}
+      <Pressable
+        onPress={() => onOpen(task.id)}
+        accessibilityRole="button"
+        accessibilityLabel={`${task.title}${task.dueDate ? `, vence ${task.dueDate}` : ''}`}
+        accessibilityHint="Abre el detalle de la tarea"
+        accessibilityActions={[{ name: 'delete', label: 'Eliminar tarea' }]}
+        onAccessibilityAction={(event) => {
+          if (event.nativeEvent.actionName === 'delete') onDelete(task.id);
+        }}
+        className="flex-1"
+      >
+        <Text className={`text-base ${task.done ? 'text-zinc-400 line-through' : 'text-zinc-900'}`} maxFontSizeMultiplier={2}>
+          {task.title}
+        </Text>
+        {task.dueDate ? (
+          <Text className="text-sm text-zinc-500" maxFontSizeMultiplier={2}>
+            Vence {task.dueDate}
+          </Text>
+        ) : null}
+      </Pressable>
+    </View>
+  );
+}
+```
+
+## Explicación del código
+
+- **`accessibilityRole="checkbox"` + `accessibilityState.checked`**: VoiceOver anuncia "Marcar … como completada, casilla, no marcada". Sin el rol, sería un elemento genérico.
+- **Etiqueta con contexto**: en una lista con veinte casillas, "casilla" no basta; incluir el título indica cuál es.
+- **`announceForAccessibility`** comunica el resultado de la acción a quien no ve el cambio visual.
+- **`accessibilityActions` + `onAccessibilityAction`**: el usuario de lector de pantalla puede eliminar desde el menú de acciones (rotor en iOS, menú de acciones en Android) sin necesidad de deslizar.
+- **`min-h-14` y `hitSlop`**: áreas táctiles de al menos 44×44 pt (Apple) o 48×48 dp (Android).
+- **`maxFontSizeMultiplier={2}`**: respetamos el texto grande del sistema hasta el doble; el layout se adapta porque usamos `min-h` en lugar de altura fija.
+
+## Buenas prácticas
+
+- **Accesibilidad en el kit**: si `Button`, `Input` y `Select` ya incluyen roles y estados, cada pantalla hereda la mayor parte del trabajo.
+- **Contraste**: 4.5:1 para texto normal y 3:1 para texto grande e iconos (WCAG).
+- **No transmitas información solo con color** (por ejemplo, rojo = error): añade texto o icono.
+- **Respeta "reducir movimiento"** (`useReducedMotion` de Reanimated, `AccessibilityInfo.isReduceMotionEnabled`).
+- **Prueba con el lector de pantalla activado** al menos los flujos principales: registro, compra, tareas clave.
+
+### Errores comunes
+
+- Iconos pulsables sin `accessibilityLabel`.
+- Desactivar `allowFontScaling` en toda la app.
+- Alturas fijas que cortan el texto al ampliarlo.
+- Elementos decorativos que el lector anuncia (usa `accessibilityElementsHidden` en iOS e `importantForAccessibility="no-hide-descendants"` en Android).
+
+### Cuándo usar otra solución
+
+Para auditorías completas, combina pruebas manuales con herramientas como Accessibility Inspector (Xcode) y Accessibility Scanner (Android). En los tests automáticos, buscar elementos por rol y nombre con React Native Testing Library ([Testing](/docs/calidad/testing)) valida la accesibilidad de paso.

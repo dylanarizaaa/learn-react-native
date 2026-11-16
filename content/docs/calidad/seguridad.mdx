@@ -1,0 +1,140 @@
+---
+title: Seguridad
+description: Amenazas reales en apps móviles y cómo mitigarlas. Secretos fuera del bundle, almacenamiento seguro, red, deep links, validación, permisos, dependencias y logs.
+difficulty: avanzado
+time: 25
+prerequisites:
+  - datos/almacenamiento-seguro
+  - datos/jwt
+related:
+  - expo/variables-de-entorno
+  - calidad/dependencias
+  - calidad/produccion
+resources:
+  - title: OWASP Mobile Application Security (MASVS)
+    url: https://mas.owasp.org/MASVS/
+  - title: OWASP Mobile Top 10
+    url: https://owasp.org/www-project-mobile-top-10/
+  - title: React Native — Seguridad
+    url: https://reactnative.dev/docs/security
+keywords: [seguridad, owasp, masvs, secretos, tls, deep links, validación, permisos, logs, ofuscación, supply chain]
+---
+
+## Introducción conceptual
+
+Una app móvil se ejecuta **en un dispositivo que no controlas**. Cualquier persona puede descargarla, descomprimirla, leer su JavaScript (aunque Hermes lo compile a bytecode), inspeccionar su tráfico o modificarla. El principio fundamental es:
+
+> **El cliente no es de confianza.** Toda decisión de seguridad (permisos, precios, validaciones) se aplica en el servidor. La app solo mejora la experiencia.
+
+La guía de referencia es **OWASP MASVS**. Estas son las áreas que más afectan a una app típica de React Native:
+
+| Área | Riesgo | Mitigación |
+| --- | --- | --- |
+| Secretos | Claves privadas en el bundle | Nunca en la app; usar backend o funciones |
+| Almacenamiento | Tokens en texto plano | SecureStore, borrar al cerrar sesión |
+| Red | Tráfico interceptado | Solo HTTPS/WSS; pinning en apps críticas |
+| Autenticación | Tokens de larga duración | Access cortos + refresh con rotación |
+| Deep links | Parámetros manipulados | Validar y proteger rutas |
+| Entradas | Datos maliciosos | Validar con Zod; nunca SQL concatenado |
+| Logs | Datos personales filtrados | No registrar tokens ni PII |
+| Dependencias | Paquetes comprometidos | Auditorías, lockfile, pocas dependencias |
+
+<Overview
+  purpose="Reducir los riesgos reales de seguridad de una app móvil con medidas proporcionadas."
+  importance="Una fuga de credenciales o datos personales puede tener consecuencias legales, económicas y de reputación."
+  when="Desde el diseño; y revisando esta lista antes de cada lanzamiento."
+  problem="Evita los errores más comunes: claves en el bundle, tokens en texto plano y confiar en validaciones del cliente."
+/>
+
+## Explicación visual
+
+<Columns>
+  <Column title="Lo que protege de verdad" tone="good">
+    - Autorización en el servidor.
+    - Tokens de corta duración.
+    - RLS / reglas de seguridad.
+    - TLS en todo el tráfico.
+    - Validación en el backend.
+  </Column>
+  <Column title="Lo que solo dificulta" tone="neutral">
+    - Ofuscación del código.
+    - Detección de root/jailbreak.
+    - Ocultar endpoints.
+    - Validación solo en el cliente.
+  </Column>
+</Columns>
+
+## Ejemplo práctico
+
+**1. Nunca llames a servicios con claves secretas desde la app**: muévelo a una función del servidor.
+
+```ts title="Mal: la clave secreta viaja en el bundle"
+// ❌ Cualquiera puede extraer EXPO_PUBLIC_STRIPE_SECRET del APK
+await fetch('https://api.stripe.com/v1/payment_intents', {
+  headers: { Authorization: `Bearer ${process.env.EXPO_PUBLIC_STRIPE_SECRET}` },
+});
+```
+
+```ts title="Bien: la app llama a tu backend, que tiene la clave"
+// ✅ El servidor valida al usuario, calcula el importe y usa su clave secreta
+const { clientSecret } = await httpClient.post<{ clientSecret: string }>('/payments/intent', {
+  cartId, // el servidor recalcula el total: nunca confíes en el precio que envía la app
+});
+```
+
+**2. Valida los parámetros que llegan por deep link**:
+
+```tsx title="src/app/invitacion/[code].tsx"
+import { Redirect, useLocalSearchParams } from 'expo-router';
+import { z } from 'zod';
+import { AcceptInvitationScreen } from '@/features/teams';
+
+const codeSchema = z.string().regex(/^[A-Z0-9]{8}$/);
+
+export default function InvitationRoute() {
+  const { code } = useLocalSearchParams<{ code: string }>();
+  const parsed = codeSchema.safeParse(code);
+  if (!parsed.success) return <Redirect href="/" />; // URL manipulada: no seguimos
+  return <AcceptInvitationScreen code={parsed.data} />; // el servidor vuelve a validarlo
+}
+```
+
+**3. Elimina datos sensibles de los logs y de la monitorización**:
+
+```ts title="src/lib/redact.ts"
+const SENSITIVE_KEYS = /token|password|authorization|secret|card|cvv/i;
+
+/** Sustituye valores sensibles antes de registrar un objeto */
+export function redact<T>(value: T): T {
+  return JSON.parse(
+    JSON.stringify(value, (key, val) => (SENSITIVE_KEYS.test(key) ? '[REDACTED]' : val)),
+  ) as T;
+}
+
+// logger.error('payments', 'Fallo al pagar', redact({ cartId, cardNumber, token }));
+```
+
+## Explicación del código
+
+- **Claves secretas**: cualquier variable `EXPO_PUBLIC_` se incrusta en el bundle. Las operaciones con claves secretas (pagos, envío de correos, APIs de terceros de pago) van en tu backend o en funciones *serverless*.
+- **El precio lo calcula el servidor**: si la app enviara el importe, un usuario podría modificar la petición y pagar menos.
+- **Deep links**: cualquiera puede construir `miapp://invitacion/lo-que-quiera`. Validamos el formato con Zod y, aun así, el servidor comprueba que el código existe y pertenece al usuario.
+- **`redact`** recorre el objeto con el *replacer* de `JSON.stringify` y oculta claves sensibles antes de enviarlo a la consola o a Sentry.
+
+## Buenas prácticas
+
+- **Permisos mínimos**: pide solo los que necesitas, cuando los necesitas, y elimina los que ya no uses de `app.json`.
+- **Solo HTTPS**: no añadas excepciones de tráfico en claro en producción.
+- **Revisa las WebViews**: no cargues URLs arbitrarias ni expongas puentes de JavaScript a contenido no confiable.
+- **Actualiza dependencias** y revisa `npm audit` ([Gestión de dependencias](/docs/calidad/dependencias)).
+- **Considera *certificate pinning*** solo en apps de alto riesgo (banca, salud): añade complejidad operativa al rotar certificados.
+
+### Errores comunes
+
+- Pensar que una app "privada" o "interna" no necesita estas medidas.
+- Ocultar funciones de administrador en la UI sin proteger los endpoints.
+- Guardar datos sensibles en AsyncStorage, en caché de imágenes o en capturas de pantalla (para pantallas sensibles, `expo-screen-capture` permite impedir capturas).
+
+### Cuándo usar otra solución
+
+Para apps reguladas (fintech, salud), complementa con auditorías externas de seguridad, pruebas de penetración y soluciones especializadas de protección en tiempo de ejecución. La base sigue siendo la misma: el servidor decide, el cliente solo presenta.

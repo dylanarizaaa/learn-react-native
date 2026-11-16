@@ -1,0 +1,148 @@
+---
+title: Depuración
+description: React Native DevTools, menú de desarrollo, consola y breakpoints, inspección de red, logs nativos, errores frecuentes y cómo reproducir fallos de producción.
+difficulty: intermedio
+time: 20
+prerequisites:
+  - introduccion/preparacion-del-entorno
+related:
+  - calidad/rendimiento
+  - calidad/manejo-de-errores
+  - calidad/dependencias
+resources:
+  - title: Expo — Herramientas de depuración
+    url: https://docs.expo.dev/debugging/tools/
+  - title: React Native DevTools
+    url: https://reactnative.dev/docs/react-native-devtools
+  - title: Expo — Errores comunes
+    url: https://docs.expo.dev/debugging/errors-and-warnings/
+keywords: [depuración, debugging, React Native DevTools, breakpoints, consola, red, logcat, LogBox, menú de desarrollo, expo start --clear]
+---
+
+## Introducción conceptual
+
+Depurar es encontrar **por qué** el código hace algo distinto de lo esperado. En React Native los problemas pueden estar en tu JavaScript, en la configuración nativa, en la red o en Metro, así que conviene conocer las herramientas de cada capa:
+
+| Capa | Herramienta |
+| --- | --- |
+| JavaScript y React | **React Native DevTools**: consola, breakpoints, componentes, profiler, red |
+| Interfaz | Inspector de elementos y Perf Monitor del menú de desarrollo |
+| Red | Panel de red de DevTools, logs del servidor |
+| Nativo | Logcat (Android Studio), consola de Xcode |
+| Empaquetado | Salida de `npx expo start`, Expo Atlas |
+| Producción | Sentry / Crashlytics ([Manejo de errores](/docs/calidad/manejo-de-errores)) |
+
+<Overview
+  purpose="Localizar la causa de un error o comportamiento inesperado de forma sistemática."
+  importance="Saber depurar reduce de horas a minutos la resolución de la mayoría de problemas."
+  when="Cada vez que algo falla, se comporta raro o va lento."
+  problem="Evita depurar a base de console.log por todo el código y cambios al azar."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'Reproducir', desc: 'Pasos exactos' },
+    { title: 'Aislar', desc: '¿JS, nativo, red o Metro?' },
+    { title: 'Observar', desc: 'DevTools, breakpoints, logs', tone: 'brand' },
+    { title: 'Hipótesis', desc: 'Y comprobarla' },
+    { title: 'Corregir + test', desc: 'Que no vuelva' },
+  ]}
+/>
+
+## Ejemplo práctico
+
+Atajos y comandos esenciales:
+
+```bash
+# Arranca Metro; en la terminal:
+#   j  → abre React Native DevTools
+#   m  → abre el menú de desarrollo en el dispositivo
+#   r  → recarga la app
+#   shift+m → más herramientas (plugins de desarrollo)
+npx expo start
+
+# Limpia la caché de Metro (tras cambiar Babel, Metro, NativeWind o variables de entorno)
+npx expo start --clear
+
+# Logs nativos de Android (filtrados por React Native)
+adb logcat '*:S' ReactNative:V ReactNativeJS:V
+
+# Diagnóstico del proyecto
+npx expo-doctor
+```
+
+Depurar con breakpoints en lugar de `console.log`:
+
+```tsx title="src/features/cart/hooks/use-cart-totals.ts"
+import { selectSubtotal, useCartStore } from '../store/cart-store';
+
+export function useCartTotals(shippingRate: number) {
+  const subtotal = useCartStore(selectSubtotal);
+
+  // `debugger` pausa la ejecución aquí si React Native DevTools está abierto
+  if (__DEV__ && Number.isNaN(subtotal)) {
+    debugger;
+  }
+
+  const shipping = subtotal >= 30_000 ? 0 : shippingRate;
+  return { subtotal, shipping, total: subtotal + shipping };
+}
+```
+
+Logs que solo existen en desarrollo y con contexto útil:
+
+```ts title="src/lib/logger.ts"
+type Level = 'debug' | 'info' | 'warn' | 'error';
+
+function log(level: Level, scope: string, message: string, data?: unknown) {
+  if (!__DEV__ && level === 'debug') return;
+  const line = `[${scope}] ${message}`;
+  console[level === 'debug' ? 'log' : level](line, data ?? '');
+}
+
+export const logger = {
+  debug: (scope: string, message: string, data?: unknown) => log('debug', scope, message, data),
+  info: (scope: string, message: string, data?: unknown) => log('info', scope, message, data),
+  warn: (scope: string, message: string, data?: unknown) => log('warn', scope, message, data),
+  error: (scope: string, message: string, data?: unknown) => log('error', scope, message, data),
+};
+
+// logger.debug('cart', 'Añadido producto', { productId });
+```
+
+## Explicación del código
+
+- **React Native DevTools** (tecla `j`) es el depurador oficial basado en Chrome DevTools: consola conectada a la app, pestaña *Sources* con breakpoints y paso a paso, *Components* para inspeccionar props y estado, *Profiler* y panel de red.
+- **`debugger`** detiene la ejecución en esa línea cuando DevTools está abierto. Con la condición, solo se detiene en el caso sospechoso (un subtotal `NaN`).
+- **`--clear`** soluciona muchos problemas "misteriosos" tras cambiar configuración: Metro cachea las transformaciones.
+- **`adb logcat`** muestra errores nativos (por ejemplo, un módulo que no se encuentra o un fallo de permisos) que no aparecen en la consola de JavaScript.
+- **Un logger con niveles y ámbito** te permite dejar logs útiles sin ensuciar producción.
+
+### Errores frecuentes y su causa habitual
+
+| Mensaje | Causa probable |
+| --- | --- |
+| `Text strings must be rendered within a <Text> component` | Texto o número suelto, a menudo por `cond && …` con `0` |
+| `Cannot find native module 'X'` | Librería nativa en Expo Go o development build desactualizado: recompila |
+| `Invalid hook call` | Hook fuera de un componente o dos copias de React |
+| `Unable to resolve module` | Ruta o alias incorrecto; reinicia con `--clear` |
+| Pantalla en blanco sin errores | Error capturado en silencio; revisa la consola de DevTools y los logs nativos |
+
+## Buenas prácticas
+
+- **Reproduce antes de corregir**: escribe los pasos exactos y, si es posible, un test que falle.
+- **Cambia una cosa a la vez** y comprueba el efecto.
+- **Lee el error completo**, incluido el *stack trace*: suele señalar el archivo y la línea.
+- **Para errores de producción**, usa los datos de Sentry (versión, dispositivo, pasos) y prueba con una build de release.
+
+### Errores comunes
+
+- Dejar `console.log` con datos sensibles (tokens, datos personales).
+- Probar un problema de rendimiento en modo desarrollo.
+- Olvidar que Expo Go no incluye librerías nativas propias: el error no está en tu código.
+
+### Cuándo usar otra solución
+
+Para problemas exclusivamente nativos (cierres al arrancar, firma, permisos), abre el proyecto generado en Android Studio o Xcode (`npx expo prebuild` y `npx expo run:android|ios`) y usa sus depuradores. Para inspeccionar el tamaño del bundle, [Expo Atlas](/docs/calidad/rendimiento).

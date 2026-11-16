@@ -1,0 +1,142 @@
+---
+title: Renderizado y rendimiento
+description: Qué provoca un render, cómo perfilar con React Native DevTools, el hilo de JS frente al de UI, tiempo de arranque, tamaño del bundle con Expo Atlas e imágenes.
+difficulty: avanzado
+time: 25
+prerequisites:
+  - introduccion/como-funciona-react-native
+  - react-typescript/state
+related:
+  - calidad/memoizacion
+  - calidad/optimizacion-de-flatlist
+  - calidad/depuracion
+resources:
+  - title: React Native — Rendimiento
+    url: https://reactnative.dev/docs/performance
+  - title: React Native DevTools
+    url: https://reactnative.dev/docs/react-native-devtools
+  - title: Expo — Analizar el bundle con Expo Atlas
+    url: https://docs.expo.dev/guides/analyzing-bundles/
+keywords: [rendimiento, render, re-render, profiler, React Native DevTools, hilo de JS, arranque, bundle, Expo Atlas, Hermes, imágenes]
+---
+
+## Introducción conceptual
+
+El rendimiento percibido de una app móvil se resume en tres preguntas: **¿arranca rápido?**, **¿responde al instante a los toques?** y **¿se desplaza y anima con fluidez (60–120 fps)?**. Las causas más habituales de problemas son:
+
+- **Renders innecesarios**: un cambio de estado provoca que se vuelvan a renderizar muchos componentes que no cambiaron.
+- **Trabajo pesado en el hilo de JavaScript**: cálculos, parseo de JSON enormes o lógica en cada render que retrasan la respuesta a los toques.
+- **Imágenes** demasiado grandes y listas mal configuradas.
+- **Bundles grandes** que retrasan el arranque.
+
+<Overview
+  purpose="Detectar y corregir las causas reales de lentitud con medidas, no con suposiciones."
+  importance="La fluidez es lo primero que perciben los usuarios; una app lenta recibe peores valoraciones y más desinstalaciones."
+  when="Cuando notes lentitud, antes de cada lanzamiento importante y en dispositivos de gama media."
+  problem="Evita optimizar a ciegas (memoizar todo) mientras el problema real está en otro lugar."
+/>
+
+## Explicación visual
+
+### ¿Qué provoca un render?
+
+<Flow
+  steps={[
+    { title: 'Cambia el estado', desc: 'useState / store' },
+    { title: 'Render del componente', desc: 'Se ejecuta la función' },
+    { title: 'Render de los hijos', desc: 'Salvo memo + props iguales', tone: 'brand' },
+    { title: 'Reconciliación', desc: 'Solo se aplican diferencias' },
+  ]}
+  caption="También provocan render: un contexto consumido que cambia y el render del componente padre."
+/>
+
+| Síntoma | Causa probable | Herramienta |
+| --- | --- | --- |
+| Toques que tardan en responder | Hilo de JS ocupado | Perf Monitor (FPS de JS), Profiler |
+| Scroll a tirones | Filas costosas, imágenes grandes | Profiler, [Optimización de FlatList](/docs/calidad/optimizacion-de-flatlist) |
+| Animaciones lentas | Animaciones en el hilo de JS | Pasar a Reanimated |
+| Arranque lento | Bundle grande, trabajo síncrono al inicio | Expo Atlas, trazas de arranque |
+
+## Ejemplo práctico
+
+**Problema típico**: un contexto con un valor que cambia constantemente re-renderiza toda la pantalla.
+
+```tsx title="Antes: todo se re-renderiza cada segundo"
+function DashboardScreen() {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <ScrollView>
+      <Text>{new Date(now).toLocaleTimeString()}</Text>
+      <SalesChart />        {/* costoso, se re-renderiza cada segundo */}
+      <TopProductsList />   {/* costoso, se re-renderiza cada segundo */}
+    </ScrollView>
+  );
+}
+```
+
+```tsx title="Después: el estado vive donde se usa"
+function LiveClock() {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return <Text>{new Date(now).toLocaleTimeString()}</Text>;
+}
+
+function DashboardScreen() {
+  return (
+    <ScrollView>
+      <LiveClock />          {/* solo este componente se re-renderiza */}
+      <SalesChart />
+      <TopProductsList />
+    </ScrollView>
+  );
+}
+```
+
+Herramientas para medir:
+
+```bash
+# Abrir React Native DevTools (Profiler, componentes, consola, red)
+npx expo start   # y pulsa "j"
+
+# Analizar el tamaño del bundle con Expo Atlas
+EXPO_ATLAS=true npx expo export --platform android
+npx expo-atlas .expo/atlas.jsonl
+
+# Probar el rendimiento real: build de release en el dispositivo
+npx expo run:android --variant release
+npx expo run:ios --configuration Release
+```
+
+## Explicación del código
+
+- **Bajar el estado** (*state colocation*): mover el estado al componente más pequeño que lo necesita es la optimización más eficaz y no requiere memoización. `LiveClock` se renderiza cada segundo; el resto de la pantalla, no.
+- **El Profiler de React Native DevTools** graba una interacción y muestra qué componentes se renderizaron, cuántas veces y cuánto tardaron. Activa "Highlight updates" para ver los renders en pantalla.
+- **Expo Atlas** muestra qué módulos ocupan el bundle: librerías enormes importadas para una función, iconos completos, *polyfills* innecesarios.
+- **Build de release**: el modo desarrollo incluye comprobaciones extra y es mucho más lento; mide siempre en release.
+
+## Buenas prácticas
+
+- **Mide primero** (Profiler, Perf Monitor del menú de desarrollo) y optimiza lo que los datos señalen.
+- **Coloca el estado** lo más abajo posible; divide contextos y usa selectores en stores.
+- **Arranque**: evita trabajo síncrono pesado al inicio, carga datos tras el primer render y mantén la splash solo lo imprescindible.
+- **Imágenes**: tamaños adecuados, `expo-image` con caché, formatos modernos (WebP/AVIF).
+- **Animaciones** en el hilo de UI con Reanimated.
+- **Activa React Compiler** para reducir renders sin memoización manual.
+
+### Errores comunes
+
+- Medir en modo desarrollo y concluir que la app es lenta.
+- Dejar `console.log` con objetos enormes en bucles o en cada render.
+- Importar librerías completas (por ejemplo, todas las utilidades de una librería de fechas) para una sola función.
+
+### Cuándo usar otra solución
+
+Si una tarea es intensiva en CPU (procesar imágenes, cifrado, cálculos grandes), muévela al servidor, a un módulo nativo o a un runtime de worklets en segundo plano. Para listas, consulta [Optimización de FlatList](/docs/calidad/optimizacion-de-flatlist).

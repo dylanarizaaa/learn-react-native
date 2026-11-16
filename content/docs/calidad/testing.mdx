@@ -1,0 +1,187 @@
+---
+title: Testing
+description: Estrategia de pruebas para apps Expo. Jest con jest-expo, React Native Testing Library 14, tests de componentes, hooks y rutas, mocks y pruebas end-to-end con Maestro.
+difficulty: avanzado
+time: 30
+prerequisites:
+  - arquitectura/componentes-de-presentacion
+related:
+  - arquitectura/custom-hooks
+  - sistema-de-componentes/button
+  - calidad/produccion
+resources:
+  - title: Expo — Pruebas unitarias con Jest
+    url: https://docs.expo.dev/develop/unit-testing/
+  - title: React Native Testing Library
+    url: https://oss.callstack.com/react-native-testing-library/
+  - title: Expo Router — Testing
+    url: https://docs.expo.dev/router/reference/testing/
+  - title: Maestro — Documentación
+    url: https://docs.maestro.dev/
+keywords: [testing, jest, jest-expo, react native testing library, userEvent, renderHook, mocks, maestro, e2e, renderRouter]
+---
+
+## Introducción conceptual
+
+Los tests te permiten cambiar código con confianza. En una app móvil conviene combinar varios niveles:
+
+| Nivel | Qué prueba | Herramienta | Cantidad |
+| --- | --- | --- | --- |
+| Unitario | Funciones puras, reglas de negocio | Jest | Muchos |
+| Componente | Lo que ve y hace el usuario en un componente | React Native Testing Library | Bastantes |
+| Integración | Pantallas con navegación y datos simulados | RNTL + `expo-router/testing-library` | Algunos |
+| End-to-end | Flujos completos en un dispositivo | Maestro | Pocos y críticos |
+
+El principio de **Testing Library**: *cuanto más se parezcan tus tests a cómo se usa la app, más confianza te dan*. Busca por texto y por rol (como un usuario o un lector de pantalla), no por estructura interna.
+
+<Overview
+  purpose="Detectar regresiones automáticamente y documentar el comportamiento esperado."
+  importance="Permite refactorizar, actualizar dependencias y entregar más rápido sin romper lo que ya funcionaba."
+  when="Reglas de negocio siempre; componentes del kit y flujos críticos (login, pago) desde el principio."
+  problem="Evita probar a mano todo antes de cada versión y descubrir regresiones en producción."
+/>
+
+## Explicación visual
+
+<Layers
+  layers={[
+    { title: 'E2E (Maestro)', desc: 'App real en simulador', items: ['Login', 'Compra', 'Onboarding'], tone: 'muted' },
+    { title: 'Integración', desc: 'Pantallas + router', items: ['renderRouter', 'Servicios simulados'] },
+    { title: 'Componentes', desc: 'RNTL', items: ['Button', 'Formularios', 'Listas'], tone: 'brand' },
+    { title: 'Unitarios', desc: 'Jest', items: ['Dominio', 'Utilidades', 'Mappers'] },
+  ]}
+/>
+
+## Ejemplo práctico
+
+Configuración siguiendo la guía de Expo:
+
+```bash
+npx expo install jest-expo jest @types/jest --dev
+npm install --save-dev @testing-library/react-native
+```
+
+```json title="package.json (fragmento)"
+{
+  "scripts": {
+    "test": "jest --watchAll",
+    "test:ci": "jest --ci"
+  },
+  "jest": {
+    "preset": "jest-expo"
+  }
+}
+```
+
+<CodeTabs>
+
+```ts title="Unitario: features/expenses/domain/expenses.test.ts"
+import { totalsByCategory } from './expenses';
+
+test('agrupa y ordena los gastos por categoría', () => {
+  const result = totalsByCategory([
+    { id: '1', category: 'food', amount: 20, description: 'Pan' },
+    { id: '2', category: 'transport', amount: 50, description: 'Taxi' },
+    { id: '3', category: 'food', amount: 15, description: 'Leche' },
+  ]);
+  expect(result).toEqual([
+    { category: 'transport', amount: 50 },
+    { category: 'food', amount: 35 },
+  ]);
+});
+```
+
+```tsx title="Componente: features/auth/sign-in-form.test.tsx"
+import { render, screen, userEvent, waitFor } from '@testing-library/react-native';
+import { SignInForm } from './sign-in-form';
+
+test('muestra errores de validación y no envía el formulario', async () => {
+  const user = userEvent.setup();
+  const onSubmit = jest.fn();
+  await render(<SignInForm onSubmit={onSubmit} />);
+
+  await user.type(screen.getByLabelText('Email'), 'no-es-un-email');
+  await user.press(screen.getByRole('button', { name: 'Entrar' }));
+
+  expect(await screen.findByText('Introduce un email válido')).toBeOnTheScreen();
+  expect(onSubmit).not.toHaveBeenCalled();
+});
+
+test('envía las credenciales válidas', async () => {
+  const user = userEvent.setup();
+  const onSubmit = jest.fn().mockResolvedValue(undefined);
+  await render(<SignInForm onSubmit={onSubmit} />);
+
+  await user.type(screen.getByLabelText('Email'), 'ana@ejemplo.com');
+  await user.type(screen.getByLabelText('Contraseña'), 'Secreta123');
+  await user.press(screen.getByRole('button', { name: 'Entrar' }));
+
+  await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ email: 'ana@ejemplo.com', password: 'Secreta123' }));
+});
+```
+
+```tsx title="Integración con rutas: app/__tests__/orders.test.tsx"
+import { screen } from '@testing-library/react-native';
+import { renderRouter } from 'expo-router/testing-library';
+import { ordersService } from '@/features/orders/api/orders-service';
+
+jest.mock('@/features/orders/api/orders-service');
+
+test('abre el detalle de un pedido desde una URL', async () => {
+  jest.mocked(ordersService.get).mockResolvedValue({ id: '42', number: '1042', status: 'paid', items: [], total: 0 } as never);
+
+  // Monta un árbol de rutas virtual y navega a /orders/42
+  await renderRouter(
+    {
+      _layout: require('../_layout').default,
+      'orders/[id]': require('../orders/[id]').default,
+    },
+    { initialUrl: '/orders/42' },
+  );
+
+  expect(await screen.findByText('Pedido #1042')).toBeOnTheScreen();
+  expect(screen).toHavePathname('/orders/42');
+});
+```
+
+```yaml title="E2E: .maestro/login.yaml"
+appId: com.miempresa.finanzas
+---
+- launchApp:
+    clearState: true
+- tapOn: "Email"
+- inputText: "demo@ejemplo.com"
+- tapOn: "Contraseña"
+- inputText: "Demo1234"
+- tapOn: "Entrar"
+- assertVisible: "Resumen del mes"
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`preset: "jest-expo"`** configura Jest para React Native y simula la parte nativa de los módulos del SDK de Expo.
+- **React Native Testing Library 14**: `render` y `renderHook` son **asíncronos** (`await render(...)`). `userEvent.setup()` simula interacciones realistas (`type` letra a letra, `press` con eventos de pulsación).
+- **Consultas por rol y etiqueta** (`getByRole('button', { name })`, `getByLabelText`): si el test no encuentra el botón por su nombre accesible, un usuario de lector de pantalla tampoco podría.
+- **`findBy…`** espera a que aparezca el elemento (validaciones asíncronas); **`waitFor`** reintenta una aserción hasta que se cumpla.
+- **`jest.mock` + `jest.mocked`** sustituyen el servicio para no depender de la red; el test controla exactamente qué devuelve.
+- **`renderRouter`** de `expo-router/testing-library` monta rutas en memoria y permite comprobar la ruta actual con `toHavePathname`.
+- **Maestro** describe flujos E2E en YAML legible, que se ejecutan contra la app real en un simulador o dispositivo (y también en la nube con EAS Workflows).
+
+## Buenas prácticas
+
+- **Testea comportamiento, no implementación**: nada de comprobar estados internos o nombres de componentes.
+- **Prioriza** reglas de negocio, componentes del kit y flujos que generan ingresos.
+- **Ejecuta los tests en CI** en cada pull request junto con `tsc --noEmit` y el linter.
+- **Datos de prueba con *factories*** (`makeOrder({ status: 'paid' })`) en lugar de objetos enormes repetidos.
+
+### Errores comunes
+
+- Olvidar `await` en `render` o en las interacciones de `userEvent` con RNTL 14.
+- Tests de *snapshot* gigantes que se actualizan sin revisar: no detectan nada.
+- Mockear demasiado (incluido el propio componente que se prueba).
+
+### Cuándo usar otra solución
+
+Para E2E con lógica compleja de sincronización, **Detox** es una alternativa más programática que Maestro. Para pruebas visuales de componentes, un catálogo con Storybook ayuda a detectar regresiones de diseño.

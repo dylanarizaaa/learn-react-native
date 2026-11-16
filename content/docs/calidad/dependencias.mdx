@@ -1,0 +1,142 @@
+---
+title: Gestión de dependencias
+description: Instalar con npx expo install, evaluar librerías, mantener versiones alineadas con el SDK, actualizar de SDK paso a paso, lockfiles, auditorías y parches.
+difficulty: intermedio
+time: 18
+prerequisites:
+  - introduccion/que-es-expo
+related:
+  - calidad/seguridad
+  - calidad/depuracion
+  - sistema-de-componentes/biblioteca-compartida
+resources:
+  - title: Expo — Instalar librerías
+    url: https://docs.expo.dev/workflow/using-libraries/
+  - title: Expo — Actualizar el SDK
+    url: https://docs.expo.dev/workflow/upgrading-expo-sdk-walkthrough/
+  - title: React Native Directory
+    url: https://reactnative.directory
+keywords: [dependencias, npx expo install, expo-doctor, actualizar sdk, lockfile, npm audit, patch-package, react native directory, versiones]
+---
+
+## Introducción conceptual
+
+Una app de React Native depende de decenas de paquetes, y algunos contienen **código nativo** que debe ser compatible con tu versión de React Native. Por eso en Expo la regla es instalar con **`npx expo install`**: elige automáticamente la versión probada con tu SDK.
+
+Gestionar dependencias bien implica: **elegir** librerías con criterio, **mantenerlas alineadas** con el SDK, **actualizar** con regularidad y **controlar** la seguridad de la cadena de suministro.
+
+<Overview
+  purpose="Mantener un árbol de dependencias compatible, seguro y fácil de actualizar."
+  importance="Dependencias desalineadas causan los errores más difíciles de diagnosticar y bloquean las actualizaciones de SDK."
+  when="Al añadir cada librería, en cada actualización de SDK y de forma periódica (mensual)."
+  problem="Evita incompatibilidades nativas, actualizaciones imposibles tras años sin mantener y vulnerabilidades conocidas."
+/>
+
+## Explicación visual
+
+### Checklist para evaluar una librería
+
+<Checklist
+  items={[
+    '¿La resuelve ya el SDK de Expo o React Native?',
+    'Compatible con la Nueva Arquitectura (React Native Directory)',
+    'Mantenimiento activo: commits y releases recientes',
+    'Incluye config plugin si tiene código nativo',
+    'Tipos de TypeScript incluidos',
+    'Tamaño razonable (comprueba con Expo Atlas)',
+    'Licencia compatible con tu proyecto',
+    'Issues abiertos sin respuesta durante meses',
+  ]}
+/>
+
+<Flow
+  steps={[
+    { title: 'Leer el changelog', desc: 'Del nuevo SDK' },
+    { title: 'expo install expo@^58', desc: '--fix alinea el resto', tone: 'brand' },
+    { title: 'expo-doctor', desc: 'Detecta problemas' },
+    { title: 'Recompilar', desc: 'Development build' },
+    { title: 'Probar', desc: 'Tests + flujos críticos' },
+  ]}
+  caption="Actualizar de SDK, una versión cada vez."
+/>
+
+## Ejemplo práctico
+
+```bash
+# Instalar con la versión compatible con tu SDK
+npx expo install react-native-reanimated @shopify/flash-list
+
+# Comprobar y corregir versiones desalineadas
+npx expo install --check
+npx expo install --fix
+
+# Diagnóstico completo (duplicados, configuración, compatibilidad)
+npx expo-doctor
+
+# Actualizar el SDK (por ejemplo, de 57 a 58)
+npx expo install expo@^58.0.0 --fix
+npx expo-doctor
+# Si usas development builds o carpetas nativas, recompila después
+
+# Auditoría de seguridad
+npm audit --omit=dev
+
+# Ver por qué está instalado un paquete (y si hay duplicados)
+npm ls react-native
+```
+
+Fija versiones de herramientas y automatiza las revisiones:
+
+```json title="package.json (fragmento)"
+{
+  "engines": { "node": ">=22.20.0" },
+  "scripts": {
+    "doctor": "npx expo-doctor",
+    "deps:check": "npx expo install --check"
+  },
+  "expo": {
+    "install": {
+      "exclude": ["react-native-svg"]
+    }
+  }
+}
+```
+
+```yaml title=".github/dependabot.yml"
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    ignore:
+      # Los paquetes del SDK se actualizan juntos con npx expo install --fix
+      - dependency-name: 'expo*'
+      - dependency-name: 'react-native*'
+```
+
+## Explicación del código
+
+- **`npx expo install`** consulta las versiones recomendadas para tu SDK (`bundledNativeModules.json` del paquete `expo`) y las instala con tu gestor de paquetes.
+- **`--check` / `--fix`** comparan y corrigen las versiones de los paquetes conocidos por el SDK.
+- **`expo-doctor`** revisa duplicados de React o React Native, configuraciones incompatibles y paquetes problemáticos.
+- **Actualizar el SDK con `expo@^58.0.0 --fix`** actualiza `expo` y alinea el resto de paquetes del SDK. Hazlo de una versión en una, leyendo el changelog (por ejemplo, SDK 58 eliminó `InteractionManager` y la prop `animated` de `Modal`, e hizo asíncrono `File.write`).
+- **`expo.install.exclude`** excluye un paquete de las comprobaciones si necesitas conscientemente otra versión.
+- **Dependabot o Renovate** abren PRs de actualización; excluye los paquetes del SDK para actualizarlos juntos con `expo install --fix`.
+
+## Buenas prácticas
+
+- **Menos dependencias es mejor**: cada una es código que no controlas.
+- **Un único gestor y lockfile commiteado**; en CI usa `npm ci`.
+- **Actualiza el SDK al poco de cada versión**: saltar varias versiones a la vez multiplica el trabajo.
+- **Si necesitas parchear una librería**, usa `patch-package` y abre un issue o PR al proyecto original.
+
+### Errores comunes
+
+- `npm install` de una librería nativa con la última versión, incompatible con tu SDK.
+- Mezclar `npm`, `yarn` y `pnpm` y acabar con dos lockfiles.
+- Actualizar React Native manualmente en un proyecto Expo sin actualizar el SDK.
+
+### Cuándo usar otra solución
+
+En monorepos, centraliza las versiones compartidas (catálogos de pnpm, o reglas de Renovate por grupo). Para dependencias internas, consulta [Biblioteca compartida](/docs/sistema-de-componentes/biblioteca-compartida).

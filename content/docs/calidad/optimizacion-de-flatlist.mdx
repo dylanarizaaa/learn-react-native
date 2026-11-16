@@ -1,0 +1,163 @@
+---
+title: Optimización de FlatList
+description: Listas largas fluidas. Claves estables, filas memoizadas, getItemLayout, ventana de renderizado, imágenes, y cuándo pasar a FlashList v2.
+difficulty: avanzado
+time: 22
+prerequisites:
+  - fundamentos/scrollview-y-flatlist
+  - react-typescript/usememo-y-usecallback
+related:
+  - calidad/rendimiento
+  - calidad/memoizacion
+  - datos/paginacion
+resources:
+  - title: React Native — Optimizar FlatList
+    url: https://reactnative.dev/docs/optimizing-flatlist-configuration
+  - title: FlashList — Documentación
+    url: https://shopify.github.io/flash-list/
+  - title: Expo — FlashList
+    url: https://docs.expo.dev/versions/latest/sdk/flash-list/
+keywords: [flatlist, optimización, getItemLayout, windowSize, initialNumToRender, maxToRenderPerBatch, removeClippedSubviews, FlashList, memo, listas largas]
+---
+
+## Introducción conceptual
+
+Las listas son donde más se notan los problemas de rendimiento: celdas en blanco al hacer scroll rápido, tirones o retraso al tocar. `FlatList` virtualiza (solo monta lo cercano a la pantalla), pero su rendimiento depende de **cuánto cuesta renderizar cada fila** y de **cuántas filas monta a la vez**.
+
+Las optimizaciones, por orden de impacto:
+
+1. **Filas baratas**: componentes simples, memoizados, sin trabajo pesado en el render.
+2. **Referencias estables**: `renderItem` y callbacks que no cambian en cada render.
+3. **Altura conocida** (`getItemLayout`): la lista no necesita medir cada fila.
+4. **Ajustes de la ventana**: cuántas filas montar al inicio y por lote.
+5. **FlashList**: reciclaje de celdas cuando lo anterior no basta.
+
+<Overview
+  purpose="Mantener listas de cientos o miles de elementos fluidas en dispositivos de gama media y baja."
+  importance="Las listas son la pantalla principal de la mayoría de apps; si van a tirones, toda la app parece lenta."
+  when="Listas con más de unas decenas de elementos, celdas con imágenes o scroll rápido."
+  problem="Evita celdas en blanco, tirones al desplazarse y toques que responden tarde mientras la lista renderiza."
+/>
+
+## Explicación visual
+
+| Prop | Por defecto | Efecto |
+| --- | --- | --- |
+| `initialNumToRender` | 10 | Filas del primer render (ajústalo para llenar la pantalla, no más) |
+| `maxToRenderPerBatch` | 10 | Filas renderizadas por lote al hacer scroll |
+| `windowSize` | 21 | Pantallas montadas (10 arriba, 10 abajo + visible). Menor = menos memoria, más celdas en blanco |
+| `getItemLayout` | — | Altura fija conocida: evita mediciones y permite `scrollToIndex` |
+| `removeClippedSubviews` | `false` (iOS) | Desconecta vistas fuera de pantalla (útil en Android con listas enormes) |
+
+## Ejemplo práctico
+
+Una lista de 5.000 transacciones con las optimizaciones aplicadas:
+
+```tsx title="src/features/transactions/screens/transactions-screen.tsx"
+import { memo, useCallback } from 'react';
+import { FlatList, Pressable, Text, View, type ListRenderItem } from 'react-native';
+import { Image } from 'expo-image';
+
+type Transaction = { id: string; merchant: string; logoUrl: string; amount: string; date: string };
+
+const ROW_HEIGHT = 72;
+
+// 1. Fila memoizada y ligera: solo se re-renderiza si cambian sus props
+const TransactionRow = memo(function TransactionRow({
+  item,
+  onPress,
+}: {
+  item: Transaction;
+  onPress: (id: string) => void;
+}) {
+  return (
+    <Pressable onPress={() => onPress(item.id)} style={{ height: ROW_HEIGHT }} className="flex-row items-center gap-3 px-4">
+      <Image
+        source={{ uri: item.logoUrl }}
+        recyclingKey={item.id} // evita ver la imagen de otra fila al reciclar
+        style={{ width: 40, height: 40, borderRadius: 20 }}
+        cachePolicy="memory-disk"
+      />
+      <View className="flex-1">
+        <Text className="font-medium" numberOfLines={1}>
+          {item.merchant}
+        </Text>
+        <Text className="text-sm text-zinc-500">{item.date}</Text>
+      </View>
+      <Text className="font-semibold">{item.amount}</Text>
+    </Pressable>
+  );
+});
+
+export function TransactionsScreen({ data, onOpen }: { data: Transaction[]; onOpen: (id: string) => void }) {
+  // 2. Referencias estables
+  const renderItem: ListRenderItem<Transaction> = useCallback(
+    ({ item }) => <TransactionRow item={item} onPress={onOpen} />,
+    [onOpen],
+  );
+  const keyExtractor = useCallback((item: Transaction) => item.id, []);
+
+  // 3. Altura fija conocida
+  const getItemLayout = useCallback(
+    (_: ArrayLike<Transaction> | null | undefined, index: number) => ({
+      length: ROW_HEIGHT,
+      offset: ROW_HEIGHT * index,
+      index,
+    }),
+    [],
+  );
+
+  return (
+    <FlatList
+      data={data}
+      renderItem={renderItem}
+      keyExtractor={keyExtractor}
+      getItemLayout={getItemLayout}
+      // 4. Ventana ajustada: ~1 pantalla inicial, lotes pequeños, menos memoria
+      initialNumToRender={12}
+      maxToRenderPerBatch={8}
+      windowSize={11}
+      removeClippedSubviews
+    />
+  );
+}
+```
+
+La misma lista con **FlashList v2** (incluida en el SDK de Expo):
+
+```bash
+npx expo install @shopify/flash-list
+```
+
+```tsx
+import { FlashList } from '@shopify/flash-list';
+
+<FlashList data={data} renderItem={renderItem} keyExtractor={keyExtractor} />;
+// v2: no necesita estimatedItemSize; mide y recicla celdas automáticamente
+```
+
+## Explicación del código
+
+- **`memo` en la fila**: al refrescar la lista o cambiar otro estado de la pantalla, solo se re-renderizan las filas cuyos datos cambiaron.
+- **`onPress` recibe el id**: pasamos la misma función `onOpen` a todas las filas en lugar de crear una función nueva por fila en el padre (`() => onOpen(item.id)`), lo que rompería `memo`.
+- **`useCallback`** mantiene `renderItem`, `keyExtractor` y `getItemLayout` estables entre renders. Con React Compiler activado, estas memoizaciones manuales son innecesarias: el compilador las aplica.
+- **`getItemLayout`** solo es correcto si **todas** las filas miden exactamente `ROW_HEIGHT` (incluidos separadores). Con alturas variables, no lo uses.
+- **`recyclingKey`** en `expo-image` y **`cachePolicy`**: las imágenes son la causa más habitual de listas lentas; usa miniaturas del tamaño mostrado.
+- **FlashList v2** recicla vistas en lugar de montar y desmontar: en listas largas y complejas suele ser notablemente más fluida. En la v2 ya no es necesario `estimatedItemSize`.
+
+## Buenas prácticas
+
+- **Mide en un dispositivo real de gama media** con la build de release, no en modo desarrollo (que es mucho más lento).
+- **Evita lógica en el render de la fila**: formatea fechas e importes antes (en el hook o con `select` de TanStack Query).
+- **Pagina** en lugar de cargar miles de elementos ([Paginación](/docs/datos/paginacion)).
+- **Activa React Compiler** para no depender de memoizaciones manuales ([Memoización](/docs/calidad/memoizacion)).
+
+### Errores comunes
+
+- Funciones y objetos inline en `renderItem` que invalidan `memo` (`style={{ … }}` en cada fila, `onPress={() => …}`).
+- `windowSize` muy pequeño "para optimizar": aparecen celdas en blanco al hacer scroll rápido.
+- Una `FlatList` dentro de un `ScrollView` del mismo sentido: se pierde la virtualización.
+
+### Cuándo usar otra solución
+
+Para cuadrículas tipo galería con alturas variables, FlashList ofrece un modo *masonry*. Para listas con secciones, `SectionList` o FlashList con elementos de cabecera. Si la lista sigue lenta tras todo esto, perfila con React Native DevTools ([Renderizado y rendimiento](/docs/calidad/rendimiento)).

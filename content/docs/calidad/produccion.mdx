@@ -1,0 +1,160 @@
+---
+title: Configuración para producción
+description: Checklist completo antes de publicar. Entornos, builds de release, minificación, monitorización, versiones, actualizaciones OTA, privacidad y lanzamiento gradual.
+difficulty: avanzado
+time: 22
+prerequisites:
+  - expo/eas-build
+  - calidad/manejo-de-errores
+related:
+  - expo/publicacion-en-tiendas
+  - expo/eas-update
+  - calidad/seguridad
+resources:
+  - title: Expo — Despliegue
+    url: https://docs.expo.dev/deploy/build-project/
+  - title: Expo — Manifiestos de privacidad (iOS)
+    url: https://docs.expo.dev/guides/apple-privacy/
+  - title: Expo — Monitorización con Sentry
+    url: https://docs.expo.dev/guides/using-sentry/
+keywords: [producción, release, checklist, minificación, R8, sentry, analytics, privacidad, privacy manifest, versiones, rollout]
+---
+
+## Introducción conceptual
+
+Pasar de "funciona en mi teléfono" a "funciona para miles de usuarios" requiere preparar la app para un entorno que no controlas: dispositivos variados, redes lentas, versiones antiguas instaladas y usuarios que no te van a reportar los errores. Este tema reúne lo que conviene revisar antes de cada lanzamiento importante.
+
+<Overview
+  purpose="Publicar versiones estables, observables y fáciles de corregir."
+  importance="Los problemas en producción cuestan valoraciones, usuarios y dinero; detectarlos y revertirlos rápido es clave."
+  when="Antes de la primera publicación y como checklist en cada versión con cambios nativos."
+  problem="Evita lanzar con variables de desarrollo, sin monitorización o sin forma de revertir un error."
+/>
+
+## Explicación visual
+
+<Flow
+  steps={[
+    { title: 'Configuración', desc: 'Entornos y variables' },
+    { title: 'Calidad', desc: 'Tests, lint, tipos' },
+    { title: 'Build de release', desc: 'EAS production', tone: 'brand' },
+    { title: 'Pruebas internas', desc: 'TestFlight / pista interna' },
+    { title: 'Lanzamiento gradual', desc: 'Monitorizar y ampliar' },
+  ]}
+/>
+
+### Checklist de producción
+
+<Checklist
+  items={[
+    'Variables de entorno de producción en EAS (environment: production)',
+    'Sin claves secretas en EXPO_PUBLIC_',
+    'Monitorización de errores con source maps (Sentry o similar)',
+    'Analítica de eventos clave respetando la privacidad',
+    'EAS Update configurado con canal production y runtimeVersion',
+    'autoIncrement y appVersionSource remote en eas.json',
+    'Iconos, splash y nombre definitivos',
+    'Permisos con textos claros; solo los necesarios',
+    'Manifiesto de privacidad de iOS y formulario de datos de Google Play',
+    'Pruebas en dispositivos reales de gama media con build de release',
+    'Accesibilidad básica revisada con lector de pantalla',
+    'Plan de rollback: update anterior o versión previa',
+  ]}
+/>
+
+## Ejemplo práctico
+
+Un `eas.json` de producción y un `app.config.ts` que diferencia entornos:
+
+<CodeTabs>
+
+```json title="eas.json"
+{
+  "cli": { "version": ">= 27.0.0", "appVersionSource": "remote" },
+  "build": {
+    "production": {
+      "environment": "production",
+      "channel": "production",
+      "autoIncrement": true,
+      "android": { "buildType": "app-bundle" }
+    }
+  },
+  "submit": {
+    "production": {
+      "android": { "track": "internal", "releaseStatus": "draft" }
+    }
+  }
+}
+```
+
+```ts title="app.config.ts"
+import type { ConfigContext, ExpoConfig } from 'expo/config';
+
+export default ({ config }: ConfigContext): ExpoConfig => ({
+  ...config,
+  name: 'Finanzas',
+  slug: 'finanzas',
+  version: '1.4.0',
+  runtimeVersion: { policy: 'appVersion' },
+  ios: {
+    ...config.ios,
+    bundleIdentifier: 'com.miempresa.finanzas',
+    privacyManifests: {
+      NSPrivacyAccessedAPITypes: [
+        {
+          NSPrivacyAccessedAPIType: 'NSPrivacyAccessedAPICategoryUserDefaults',
+          NSPrivacyAccessedAPITypeReasons: ['CA92.1'],
+        },
+      ],
+    },
+  },
+  android: { ...config.android, package: 'com.miempresa.finanzas' },
+  plugins: [
+    ...(config.plugins ?? []),
+    ['@sentry/react-native/expo', { organization: 'mi-empresa', project: 'finanzas-app' }],
+  ],
+});
+```
+
+```tsx title="src/app/_layout.tsx (fragmento)"
+import * as Sentry from '@sentry/react-native';
+import { initMonitoring } from '@/lib/monitoring';
+
+initMonitoring();
+
+function RootLayout() {
+  // …proveedores y navegación
+}
+
+// Envuelve la raíz para capturar errores y medir el rendimiento de las pantallas
+export default Sentry.wrap(RootLayout);
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`environment: "production"`** carga las variables de EAS del entorno de producción; **`channel`** vincula el build con las actualizaciones OTA de producción.
+- **`autoIncrement` + `appVersionSource: "remote"`**: EAS incrementa el número de build en cada compilación de producción.
+- **`runtimeVersion` con política `appVersion`**: solo recibirán un update OTA los binarios compatibles ([EAS Update](/docs/expo/eas-update)).
+- **`privacyManifests`**: Apple exige declarar el uso de ciertas APIs (como `UserDefaults`, que usan muchas librerías). Expo genera el `PrivacyInfo.xcprivacy` a partir de esta configuración.
+- **Plugin de Sentry**: sube automáticamente los *source maps* en cada build para ver errores con líneas de tu TypeScript.
+- **Minificación en Android**: en SDK 58, las builds de release de Android activan **R8** por defecto, reduciendo el tamaño. Si una librería falla tras la minificación, revisa sus reglas de ProGuard/R8.
+- **`Sentry.wrap`** añade un error boundary global y medición de rendimiento de navegación.
+
+## Buenas prácticas
+
+- **Lanzamiento gradual**: Google Play permite publicar a un porcentaje de usuarios; App Store, *phased release* durante 7 días. Combínalo con `--rollout-percentage` en EAS Update.
+- **Define métricas de salud** (porcentaje de sesiones sin fallos, errores por versión) y revísalas tras cada lanzamiento.
+- **Fuerza la actualización** solo cuando sea imprescindible (cambios incompatibles en la API), con una pantalla clara.
+- **Documenta el proceso** de publicación para que no dependa de una sola persona.
+
+### Errores comunes
+
+- Publicar con la URL de la API de staging.
+- Lanzar sin monitorización y enterarse de los fallos por las reseñas.
+- Romper la compatibilidad de la API con versiones antiguas de la app que siguen instaladas.
+
+### Cuándo usar otra solución
+
+Para equipos grandes, automatiza todo el flujo (tests → build → submit → update) con **EAS Workflows** o tu CI. Para el proceso de las tiendas en detalle, consulta [Publicación en Android e iOS](/docs/expo/publicacion-en-tiendas).

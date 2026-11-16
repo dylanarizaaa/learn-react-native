@@ -1,0 +1,157 @@
+---
+title: Manejo de errores en la app
+sidebarTitle: Manejo de errores
+description: Error boundaries, ErrorBoundary por ruta en Expo Router, errores no capturados, monitorización con Sentry y qué registrar (y qué no) en producción.
+difficulty: avanzado
+time: 22
+prerequisites:
+  - datos/manejo-de-errores
+related:
+  - calidad/depuracion
+  - calidad/produccion
+  - datos/estados-de-carga-y-vacios
+resources:
+  - title: React — Error boundaries
+    url: https://react.dev/reference/react/Component#catching-rendering-errors-with-an-error-boundary
+  - title: Expo Router — Manejo de errores
+    url: https://docs.expo.dev/router/error-handling/
+  - title: Expo — Usar Sentry
+    url: https://docs.expo.dev/guides/using-sentry/
+keywords: [error boundary, ErrorBoundary, expo router, sentry, crash, errores no capturados, monitorización, logging, ErrorUtils]
+---
+
+## Introducción conceptual
+
+Los errores de red se manejan en la capa de datos ([Manejo de errores en peticiones](/docs/datos/manejo-de-errores)). Este tema trata los **errores inesperados de la aplicación**: un `undefined is not an object` durante el render, una excepción en un manejador, una promesa rechazada que nadie captura.
+
+En React, un error durante el render **desmonta todo el árbol** si nadie lo captura: en producción, el usuario ve la app cerrarse o una pantalla en blanco. Las herramientas para evitarlo:
+
+1. **Error boundaries**: componentes que capturan errores de render de sus hijos y muestran una UI alternativa.
+2. **`ErrorBoundary` por ruta en Expo Router**: cada pantalla puede exportar su propio límite de error.
+3. **Monitorización** (Sentry u otro): saber qué falló, en qué versión y a cuántos usuarios.
+
+<Overview
+  purpose="Contener los fallos inesperados para que afecten lo mínimo posible y enterarte de ellos antes que tus usuarios."
+  importance="Ningún equipo detecta todos los errores en pruebas; lo que separa una app profesional es cómo reacciona y cuánto tarda en saberlo."
+  when="Desde la primera versión que llegue a usuarios reales."
+  problem="Evita pantallas en blanco, cierres sin explicación y errores en producción de los que nadie se entera."
+/>
+
+## Explicación visual
+
+<Layers
+  layers={[
+    { title: 'Monitorización', desc: 'Sentry / Crashlytics', items: ['Stack traces con source maps', 'Versión y dispositivo', 'Usuarios afectados'], tone: 'muted' },
+    { title: 'ErrorBoundary raíz', desc: 'Último recurso', items: ['Pantalla de error global', 'Botón reiniciar'] },
+    { title: 'ErrorBoundary por ruta', desc: 'Expo Router', items: ['La pantalla falla, la navegación sigue'], tone: 'brand' },
+    { title: 'Manejo local', desc: 'try/catch, estados de error', items: ['Peticiones', 'Validaciones'] },
+  ]}
+/>
+
+## Ejemplo práctico
+
+<CodeTabs>
+
+```tsx title="src/app/(app)/pedidos/[id].tsx"
+import { type ErrorBoundaryProps, useLocalSearchParams } from 'expo-router';
+import { View } from 'react-native';
+import { Button, Text } from '@/components/ui';
+import { OrderDetailScreen } from '@/features/orders';
+
+// Expo Router usa este componente si la pantalla lanza un error durante el render
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return (
+    <View className="flex-1 items-center justify-center gap-3 bg-background p-6">
+      <Text variant="heading">No pudimos mostrar este pedido</Text>
+      <Text variant="caption" align="center">
+        Ya registramos el problema. Puedes intentarlo de nuevo.
+      </Text>
+      {__DEV__ ? <Text variant="caption" tone="danger">{error.message}</Text> : null}
+      <Button onPress={retry}>Reintentar</Button>
+    </View>
+  );
+}
+
+export default function OrderRoute() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  return <OrderDetailScreen orderId={id} />;
+}
+```
+
+```tsx title="src/components/feedback/error-boundary.tsx"
+import { Component, type ErrorInfo, type ReactNode } from 'react';
+import * as Sentry from '@sentry/react-native';
+
+type Props = { children: ReactNode; fallback: (args: { error: Error; reset: () => void }) => ReactNode };
+type State = { error: Error | null };
+
+/** Error boundary reutilizable para secciones (los error boundaries siguen siendo clases) */
+export class ErrorBoundary extends Component<Props, State> {
+  state: State = { error: null };
+
+  static getDerivedStateFromError(error: Error): State {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    Sentry.captureException(error, { extra: { componentStack: info.componentStack } });
+  }
+
+  reset = () => this.setState({ error: null });
+
+  render() {
+    if (this.state.error) return this.props.fallback({ error: this.state.error, reset: this.reset });
+    return this.props.children;
+  }
+}
+```
+
+```ts title="src/lib/monitoring.ts"
+import * as Sentry from '@sentry/react-native';
+
+export function initMonitoring() {
+  Sentry.init({
+    dsn: process.env.EXPO_PUBLIC_SENTRY_DSN,
+    enabled: !__DEV__,
+    environment: process.env.EXPO_PUBLIC_APP_ENV,
+    tracesSampleRate: 0.2, // 20 % de las sesiones con trazas de rendimiento
+    sendDefaultPii: false, // no enviar datos personales por defecto
+  });
+}
+
+/** Identifica al usuario con un id interno, nunca con email o nombre */
+export function setMonitoringUser(userId: string | null) {
+  Sentry.setUser(userId ? { id: userId } : null);
+}
+```
+
+</CodeTabs>
+
+## Explicación del código
+
+- **`export function ErrorBoundary`** en un archivo de ruta: Expo Router lo usa automáticamente para esa pantalla. Recibe `error` y `retry` (vuelve a renderizar la pantalla). El resto de la app y la navegación siguen funcionando.
+- **Mostrar `error.message` solo en desarrollo**: en producción, un mensaje humano y una acción.
+- **El error boundary de clase**: React todavía no ofrece una API con hooks para esto. `getDerivedStateFromError` cambia a la UI de error y `componentDidCatch` registra el error con el *component stack*.
+- **Sentry** (`@sentry/react-native`, con su config plugin para Expo) captura errores no controlados, cierres nativos y promesas rechazadas, y con los *source maps* subidos durante el build muestra la línea exacta de tu TypeScript.
+- **`sendDefaultPii: false`** y **`setUser({ id })`**: identificas sesiones sin enviar datos personales.
+
+### Qué no capturan los error boundaries
+
+Errores en manejadores de eventos (`onPress`), código asíncrono (`setTimeout`, promesas) y errores fuera de React. Para esos: `try/catch` donde tenga sentido y la captura global de tu herramienta de monitorización.
+
+## Buenas prácticas
+
+- **Un boundary por ruta** y uno global en el layout raíz como último recurso.
+- **Sube los source maps** en cada build y cada `eas update` (el plugin de Sentry para Expo lo automatiza).
+- **Agrupa y prioriza**: un error que afecta al 5 % de los usuarios es más urgente que cien eventos de un solo dispositivo.
+- **No registres datos personales**, tokens ni contenidos de formularios.
+
+### Errores comunes
+
+- `catch` vacíos que esconden errores y dejan la app en estados imposibles.
+- Un único boundary en la raíz: cualquier error tumba toda la app.
+- Monitorización activa en desarrollo: llena el panel de ruido.
+
+### Cuándo usar otra solución
+
+Si ya usas Firebase, **Crashlytics** (con React Native Firebase) es una alternativa a Sentry. Para entender cómo reproducir un error, combina la monitorización con las herramientas de [Depuración](/docs/calidad/depuracion).
